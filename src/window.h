@@ -1,0 +1,112 @@
+#pragma once
+#include "base/core.h"
+#include "base/math.h"
+#include "base/arena.h"
+#include "base/strings.h"
+
+internal void wnd_open(String8 title, I32 w, I32 h);
+internal void wnd_close(void);
+internal V2 wnd_size(void);
+
+typedef U16 WND_Key;
+enum {
+  WND_Key_Nil = 0,
+
+  //- letters (contiguous, so WND_Key_A + (c - 'a') works)
+  WND_Key_A, WND_Key_B, WND_Key_C, WND_Key_D, WND_Key_E, WND_Key_F,
+  WND_Key_G, WND_Key_H, WND_Key_I, WND_Key_J, WND_Key_K, WND_Key_L,
+  WND_Key_M, WND_Key_N, WND_Key_O, WND_Key_P, WND_Key_Q, WND_Key_R,
+  WND_Key_S, WND_Key_T, WND_Key_U, WND_Key_V, WND_Key_W, WND_Key_X,
+  WND_Key_Y, WND_Key_Z,
+
+  //- digits (contiguous, so WND_Key_0 + (c - '0') works)
+  WND_Key_0, WND_Key_1, WND_Key_2, WND_Key_3, WND_Key_4,
+  WND_Key_5, WND_Key_6, WND_Key_7, WND_Key_8, WND_Key_9,
+
+  //- function keys (contiguous)
+  WND_Key_F1, WND_Key_F2, WND_Key_F3, WND_Key_F4, WND_Key_F5, WND_Key_F6,
+  WND_Key_F7, WND_Key_F8, WND_Key_F9, WND_Key_F10, WND_Key_F11, WND_Key_F12,
+
+  //- arrows
+  WND_Key_Left, WND_Key_Right, WND_Key_Up, WND_Key_Down,
+
+  //- editing / control
+  WND_Key_Escape,
+  WND_Key_Space,
+  WND_Key_Enter,
+  WND_Key_Tab,
+  WND_Key_Backspace,
+  WND_Key_Delete,
+  WND_Key_Insert,
+  WND_Key_Home,
+  WND_Key_End,
+  WND_Key_PageUp,
+  WND_Key_PageDown,
+
+  //- modifiers as keys (they get their own down/up events; the held state
+  //  also rides on every event via WND_Event.modifiers)
+  WND_Key_Shift,
+  WND_Key_Ctrl,
+  WND_Key_Alt,
+
+  //- punctuation commonly bound in games
+  WND_Key_Minus,
+  WND_Key_Equals,
+  WND_Key_Comma,
+  WND_Key_Period,
+  WND_Key_Slash,
+  WND_Key_Backtick,
+
+  WND_Key_COUNT,
+};
+
+typedef U8 WND_MouseButton;
+enum {
+  WND_MouseButton_Nil = 0,
+  WND_MouseButton_Left,
+  WND_MouseButton_Right,
+  WND_MouseButton_Middle,
+  WND_MouseButton_COUNT,
+};
+
+// OR'd together, hence the open-enum style is mandatory here
+typedef U32 WND_Modifiers;
+enum {
+  WND_Modifier_Shift = (1 << 0),
+  WND_Modifier_Ctrl  = (1 << 1),
+  WND_Modifier_Alt   = (1 << 2),
+};
+
+typedef U8 WND_EventType;
+enum {
+  WND_EventType_Nil,
+  WND_EventType_KeyDown,
+  WND_EventType_KeyUp,
+  WND_EventType_MouseDown,
+  WND_EventType_MouseUp,
+  WND_EventType_MouseMoved,
+  WND_EventType_Scroll,
+  WND_EventType_Resize,
+  WND_EventType_CloseRequested, // user hit the window's close button
+};
+
+// Fat struct: every event carries all fields, `type` says which mean anything.
+typedef struct WND_Event WND_Event;
+struct WND_Event {
+  WND_EventType type;
+  WND_Event* next;
+  V2 pos;    // mouse position, in client pixels (mouse events)
+  V2 scroll; // wheel delta (Scroll); +y is away from the user
+  V2 size;   // new client size (Resize)
+  WND_Modifiers modifiers; // held modifiers at event time (key + mouse events)
+  WND_Key key;
+  WND_MouseButton button;
+};
+
+typedef struct {
+  U64 count;
+  WND_Event* first;
+  WND_Event* last;
+} WND_EventList;
+
+internal WND_EventList wnd_get_events(Arena* arena);

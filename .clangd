@@ -1,0 +1,13 @@
+# clangd config for a unity build. Only src/main.c is compiled directly; every
+# other .c is #include'd into it. clangd indexes each file standalone, which
+# works because every .c re-includes the headers it needs -- the include guards
+# make those re-includes vanish in the real build.
+#
+# Compile flags live in compile_flags.txt, NOT here: flags in this file resolve
+# relative paths against the open file's directory, which once put src/base/ on
+# the include path and made our strings.h shadow the POSIX <strings.h> that
+# glibc's <string.h> pulls in. compile_flags.txt resolves against the project
+# root, so -Isrc always means exactly one thing.
+
+Diagnostics:
+  UnusedIncludes: None

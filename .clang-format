@@ -1,0 +1,51 @@
+---
+Language: Cpp
+BasedOnStyle: LLVM
+
+# Indentation
+IndentWidth: 2
+TabWidth: 2
+UseTab: Never
+IndentCaseLabels: true
+NamespaceIndentation: None
+
+# Never reflow. This style leans on hand-aligned tables, X-macro lists, and
+# generated code blocks that clang-format would destroy if it were allowed to
+# rewrap them.
+ColumnLimit: 0
+
+# Braces attached, whole signature on one line:
+#
+#   internal void foo(void) {
+#   }
+BreakBeforeBraces: Attach
+AlwaysBreakAfterReturnType: None
+
+# Pointers bind to the type.
+PointerAlignment: Left
+ReferenceAlignment: Left
+DerivePointerAlignment: false
+
+# `if(x)`, `for(;;)`, `while(x)` -- no space before the paren.
+SpaceBeforeParens: Never
+
+# Keep short one-liner guard clauses as written: `if(!ptr) { return 0; }`
+AllowShortBlocksOnASingleLine: Always
+AllowShortIfStatementsOnASingleLine: AllIfsAndElse
+AllowShortLoopsOnASingleLine: true
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortFunctionsOnASingleLine: None
+
+# CRITICAL for a unity build: include order is semantic, not alphabetical.
+# Reordering these silently breaks the build.
+SortIncludes: Never
+IndentPPDirectives: AfterHash
+
+# Misc
+AlignConsecutiveMacros: Consecutive
+AlignEscapedNewlines: Left
+AlignTrailingComments: true
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 2
+SpacesBeforeTrailingComments: 1
+InsertNewlineAtEOF: true
