@@ -1,4 +1,28 @@
 #include "base/core.h"
+#include "base/math.h"
+#include "base/os.h"
+#include "gfx/window.h"
+
+////////////////////////////////
+//~ fp: Frame Timing
+//
+// Backend-independent: backends call wnd__frame_mark from wnd_swap, this
+// keeps the delta.
+
+global U64 wnd__frame_last_us;
+global F32 wnd__frame_dt;
+
+internal void wnd__frame_mark(void) {
+  U64 now = os_now_us();
+  if(wnd__frame_last_us != 0) {
+    wnd__frame_dt = (F32)(now - wnd__frame_last_us) / 1000000.0f;
+  }
+  wnd__frame_last_us = now;
+}
+
+internal F32 wnd_frame_time(void) {
+  return wnd__frame_dt;
+}
 
 ////////////////////////////////
 //~ fp: Per-OS Backend

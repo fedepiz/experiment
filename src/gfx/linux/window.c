@@ -94,7 +94,7 @@ internal V2 wnd_size(void) {
 // while the mac side moves ahead.
 
 internal void wnd_equip_gl(void) { NotImplemented; }
-internal void wnd_swap(void)     { NotImplemented; }
+internal void wnd_swap(void)     { NotImplemented; wnd__frame_mark(); }
 internal V2  wnd_size_px(void)   { NotImplemented; V2 result = {0}; return result; }
 internal F32 wnd_scale(void)     { NotImplemented; return 1.0f; }
 

@@ -12,6 +12,7 @@
 #include "base/print.h"
 #include "base/strings.h"
 #include "tabula.h"
+#include "gfx/color.h"
 #include "gfx/window.h"
 #include "gfx/input.h"
 #include "gfx/draw.h"
@@ -53,7 +54,9 @@ int main(void) {
   }
 
 
-  Input input = {0};
+  D_Camera camera = {0};
+  camera.zoom = 2;
+  F32 stripes_angle = 0;
 
   for(B32 keep_going = true; keep_going;) {
     WND_EventList evts = wnd_get_events(frame_arena);
@@ -63,14 +66,14 @@ int main(void) {
       }
     }
 
-    input_process_events(&input, evts);
+    input_process_events(evts);
 
-    if(input_is_key_down(&input, WND_Key_Escape)) {
+    if(input_is_key_down(WND_Key_Escape)) {
       keep_going = false;
     }
 
-    if(input_is_mouse_button_pressed(&input, WND_MouseButton_Left)) {
-      V2 pos = input_mouse_pos(&input);
+    if(input_is_mouse_button_pressed(WND_MouseButton_Left)) {
+      V2 pos = input_mouse_pos();
       printf_str8("(%f, %f)\n", pos.x, pos.y);
     }
 
@@ -85,10 +88,11 @@ int main(void) {
       d_rect_outline((Rect){{100, 350}, {500, 550}}, (V4){1, 1, 1, 1}, 4);
 
       d_sprite(checker, (Rect){{550, 100}, {806, 356}}, (V4){0}); // zero tint = as-is
+      stripes_angle += 0.5f * wnd_frame_time();                   // half a radian per second
       D_SpriteParams sp = {0};
       sp.sprite = stripes;
       sp.dst = (Rect){{880, 120}, {1080, 320}};
-      sp.rotation = 0.4f;
+      sp.rotation = stripes_angle;
       d_sprite_ex(&sp);
 
       d_push_clip((Rect){{1150, 120}, {1350, 320}});
@@ -97,14 +101,47 @@ int main(void) {
 
       d_line((V2){550, 420}, (V2){1050, 480}, 3, (V4){1.0f, 0.8f, 0.2f, 1});
 
-      d_camera_begin((D_Camera){{0, 0}, 2});
+      d_camera_begin(camera);
       d_rect_rounded((Rect){{-60, 120}, {60, 200}}, (V4){0.2f, 0.8f, 0.4f, 1}, 10);
       d_camera_end();
 
-      d_text(font, 40, (V2){100, 600}, (V4){1, 1, 1, 1},
+      d_text(font, 40, (V2){100, 600}, Col_White,
              str8_lit("Imperium — draw layer online"));
-      d_text(font, 18, (V2){100, 660}, (V4){0.7f, 0.7f, 0.75f, 1},
+      d_text(font, 18, (V2){100, 660}, col_rgb(0.7f, 0.7f, 0.75f),
              str8_lit("rects, sprites, sheets, clip, camera, text"));
+
+      // hue ramp via col_hsva, fading out via col_with_alpha
+      for(I32 i = 0; i < 24; i += 1) {
+        F32 t = (F32)i / 24.0f;
+        d_rect((Rect){{100 + (F32)i * 30, 720}, {128 + (F32)i * 30, 760}},
+               col_with_alpha(col_hsva(t, 0.85f, 1.0f, 1.0f), 1.0f - t * 0.7f));
+      }
+
+      // Camera movmements
+      {
+        struct {
+          WND_Key key;
+          F32 x;
+          F32 y;
+        } INTERACTIONS[] = {
+            {WND_Key_A, -1, 0},
+            {WND_Key_D, 1, 0},
+            {WND_Key_W, 0, -1},
+            {WND_Key_S, 0, 1},
+        };
+
+        V2 d_trans = {0};
+
+        for(U32 i = 0; i < ArrayCount(INTERACTIONS); ++i) {
+          if(input_is_key_down((INTERACTIONS[i].key))) {
+            d_trans.x += INTERACTIONS[i].x;
+            d_trans.y += INTERACTIONS[i].y;
+          }
+        }
+        F32 delta = wnd_frame_time() * 100;
+
+        camera.center = v2_scaled_add(camera.center, d_trans, delta);
+      }
     }
     d_frame_end();
 

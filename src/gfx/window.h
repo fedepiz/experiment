@@ -21,6 +21,19 @@ internal void wnd_swap(void);
 internal V2  wnd_size_px(void);
 internal F32 wnd_scale(void);
 
+////////////////////////////////
+//~ fp: Frame Timing
+//
+// Delta between the last two wnd_swap calls, in seconds -- the swap is the
+// frame boundary, so under vsync this reads as the display period. 0 until
+// two swaps have happened; unclamped, so a long stall (debugger, window
+// drag) shows up honestly and callers decide what to do with it.
+
+internal F32 wnd_frame_time(void);
+
+// backend contract: every wnd_swap implementation calls this after presenting
+internal void wnd__frame_mark(void);
+
 typedef U16 WND_Key;
 enum {
   WND_Key_Nil = 0,

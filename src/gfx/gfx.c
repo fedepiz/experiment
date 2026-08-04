@@ -1,6 +1,7 @@
 ////////////////////////////////
 //~ fp: Gfx Layer -- all implementations, in dependency order
 
+#include "gfx/color.c"
 #include "gfx/window.c"
 #include "gfx/input.c"
 #include "gfx/render.c"

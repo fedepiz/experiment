@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <time.h>
 
 internal U64 os_page_size(void) {
   return (U64)sysconf(_SC_PAGESIZE);
@@ -35,6 +36,15 @@ internal void os_decommit(void* ptr, U64 size) {
 
 internal void os_release(void* ptr, U64 size) {
   munmap(ptr, size);
+}
+
+////////////////////////////////
+//~ fp: Time
+
+internal U64 os_now_us(void) {
+  struct timespec ts = {0};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (U64)ts.tv_sec * 1000000 + (U64)ts.tv_nsec / 1000;
 }
 
 ////////////////////////////////

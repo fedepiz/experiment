@@ -7,6 +7,10 @@ typedef struct {
   F32 y;
 } V2;
 
+internal V2 v2_add(V2 a, V2 b);
+internal V2 v2_sub(V2 a, V2 b);
+internal V2 v2_scaled_add(V2 a, V2 b, F32 c);
+
 typedef struct {
   F32 x;
   F32 y;

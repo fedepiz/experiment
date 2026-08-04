@@ -18,6 +18,13 @@ internal void  os_decommit(void* ptr, U64 size);
 internal void  os_release(void* ptr, U64 size);
 
 ////////////////////////////////
+//~ fp: Time
+
+// Monotonic microseconds from an arbitrary origin: differences mean
+// something, absolute values don't.
+internal U64 os_now_us(void);
+
+////////////////////////////////
 //~ fp: Console Output
 //
 // Unbuffered; the print layer formats a whole string first and hands it over

@@ -44,6 +44,7 @@ internal void wnd_equip_gl(void) {
 
 internal void wnd_swap(void) {
   cocoa_gl_swap();
+  wnd__frame_mark();
 }
 
 internal V2 wnd_size_px(void) {
