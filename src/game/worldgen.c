@@ -29,10 +29,18 @@ internal WG_Params wg_params_load(String8 path) {
 
   params.sea_level = tb_get_num(world, str8_lit("sea_level"), 0.32f);
   params.mountain_level = tb_get_num(world, str8_lit("mountain_level"), 0.62f);
+  params.desert_moisture = tb_get_num(world, str8_lit("desert_moisture"), 0.35f);
   params.forest_moisture = tb_get_num(world, str8_lit("forest_moisture"), 0.55f);
+  params.swamp_moisture = tb_get_num(world, str8_lit("swamp_moisture"), 0.60f);
+  params.swamp_drainage = tb_get_num(world, str8_lit("swamp_drainage"), 0.35f);
+  params.river_moisture = tb_get_num(world, str8_lit("river_moisture"), 0.10f);
   params.continent_falloff = tb_get_num(world, str8_lit("continent_falloff"), 0.35f);
 
   params.river_count = (I32)tb_get_num(world, str8_lit("river_count"), 8);
+  params.river_min_length = (I32)tb_get_num(world, str8_lit("river_min_length"), 6);
+  params.river_meander = tb_get_num(world, str8_lit("river_meander"), 0.015f);
+  params.pond_epsilon = tb_get_num(world, str8_lit("pond_epsilon"), 0.02f);
+  params.pond_max_tiles = (I32)tb_get_num(world, str8_lit("pond_max_tiles"), 64);
 
   params.road_cost = tb_get_num(world, str8_lit("road_cost"), 0.5f);
   params.river_cross_cost = tb_get_num(world, str8_lit("river_cross_cost"), 2.0f);
@@ -48,6 +56,8 @@ internal WG_Params wg_params_load(String8 path) {
   params.moisture_scale = ClampBot(params.moisture_scale, 1.0f);
   params.elevation_octaves = Clamp(1, params.elevation_octaves, 16);
   params.moisture_octaves = Clamp(1, params.moisture_octaves, 16);
+  params.river_min_length = ClampBot(params.river_min_length, 0);
+  params.pond_max_tiles = ClampBot(params.pond_max_tiles, 1);
   arena_release_scratch(scratch);
   return params;
 }
@@ -130,24 +140,59 @@ internal F32 wg__moisture_at(WG_Params* params, U64 seed, I32 x, I32 y) {
                  (F32)y / params->moisture_scale, params->moisture_octaves);
 }
 
+// How readily water leaves a tile, in [0,1]. Not a noise field of its own:
+// drainage is read off the landscape already built -- steep ground sheds
+// water (slope term, central differences over the elevation field), high
+// ground stands above the water table (height term). Low flat land near sea
+// level scores near 0, which is exactly where swamps belong.
+internal F32 wg__drainage_at(WG_Params* params, F32* elevation, I32 x, I32 y) {
+  I32 w = params->width;
+  I32 h = params->height;
+  I32 xl = ClampBot(x - 1, 0), xr = ClampTop(x + 1, w - 1);
+  I32 yu = ClampBot(y - 1, 0), yd = ClampTop(y + 1, h - 1);
+  F32 dx = (elevation[(U64)y * w + xr] - elevation[(U64)y * w + xl]) / (F32)Max(xr - xl, 1);
+  F32 dy = (elevation[(U64)yd * w + x] - elevation[(U64)yu * w + x]) / (F32)Max(yd - yu, 1);
+  F32 slope = sqrtf(dx * dx + dy * dy);
+  // typical fBm slopes here run ~0.002..0.03 elevation per tile; call a 1.2%
+  // grade fully drained so the range spreads across [0,1] instead of pooling
+  F32 slope_drain = ClampTop(slope * (1.0f / 0.012f), 1.0f);
+  F32 e = elevation[(U64)y * w + x];
+  F32 height_drain = Clamp(0.0f, (e - params->sea_level) / Max(params->mountain_level - params->sea_level, 0.01f), 1.0f);
+  return 0.6f * slope_drain + 0.4f * height_drain;
+}
+
 ////////////////////////////////
 //~ fp: Rivers
 //
 // Each river starts at the highest of a handful of hashed sample points and
-// walks steepest-descent over the elevation field, connecting the river
-// feature along the way, until it reaches water, flows off the map edge, or
-// bottoms out in a basin (a spring that dies in a valley is credible enough).
-// Rivers that cross an existing river simply merge -- connections are a mask,
-// so re-connecting is idempotent.
+// walks downhill over the elevation field until it reaches water, flows off
+// the map edge, or bottoms out in a basin -- which it floods into a pond.
+// Descent is not pure steepest: any strictly lower neighbor is eligible, and
+// a hashed jitter keyed on position picks the winner, so rivers meander
+// through their valleys instead of ruling straight lines. Position-keyed
+// jitter also means rivers that meet merge into tributary systems: from a
+// shared tile they choose the same way down, and connections are a mask, so
+// re-connecting is idempotent.
 
 #define WG__RIVER_SALT        0x517cc1b727220a95ull
+#define WG__MEANDER_SALT      0x2545f4914f6cdd1dull
 #define WG__ELEVATION_OFF_MAP (-1000.0f)
 
 internal void wg__carve_rivers(BD_Board* board, WG_Params* params, U64 seed, F32* elevation) {
   I32 w = board->width;
   I32 h = board->height;
+  // strict descent can never revisit a tile, so w * h bounds any walk exactly
+  U64 max_steps = (U64)w * h;
+  ArenaTemp scratch = arena_get_scratch(0, 0);
+  //- fp: trace buffer: a river is walked first and connected after, so one
+  //  that peters out under river_min_length steps is culled, not drawn
+  V2I* trace_pos = push_array_no_zero(scratch.arena, V2I, max_steps);
+  BD_Dir* trace_dir = push_array_no_zero(scratch.arena, BD_Dir, max_steps);
+  V2I* pond_queue = push_array_no_zero(scratch.arena, V2I, (U64)params->pond_max_tiles);
   for(I32 river = 0; river < params->river_count; river += 1) {
-    //- fp: source: highest of 32 hashed samples that isn't already underwater
+    //- fp: source: highest of 32 hashed samples on dry land; samples already
+    //  carrying a river are rejected, so every slot buys a new tributary
+    //  instead of retracing an existing channel
     V2I source = {0};
     F32 source_elevation = WG__ELEVATION_OFF_MAP;
     for(I32 attempt = 0; attempt < 32; attempt += 1) {
@@ -155,39 +200,93 @@ internal void wg__carve_rivers(BD_Board* board, WG_Params* params, U64 seed, F32
       V2I p = {(I32)(wg__hash(salt, river, attempt) % (U32)w),
                (I32)(wg__hash(salt + 1, river, attempt) % (U32)h)};
       F32 e = elevation[(U64)p.y * w + p.x];
-      if(e > source_elevation && bd_tile_at(board, p)->terrain != WG_TerrainType_Water) {
+      if(e > source_elevation && e >= params->sea_level &&
+         bd_feature_mask(board, p, BD_Feature_River) == 0) {
         source = p;
         source_elevation = e;
       }
     }
-    if(source_elevation <= WG__ELEVATION_OFF_MAP) { continue; } // all samples hit water
+    if(source_elevation <= WG__ELEVATION_OFF_MAP) { continue; } // no usable sample
 
-    //- fp: descend; step bound guards against float-tie pathologies
+    //- fp: descend, tracing. Eligibility is strictly-lower (termination);
+    //  preference among the eligible is jittered elevation (meander)
+    I32 length = 0;
+    B32 in_basin = 0;
     V2I at = source;
-    for(I32 step = 0; step < w + h; step += 1) {
+    for(U64 step = 0; step < max_steps; step += 1) {
       F32 here = elevation[(U64)at.y * w + at.x];
       BD_Dir down_dir = BD_Dir_COUNT;
-      F32 down_elevation = here;
+      F32 down_score = 0;
       B32 down_off_map = 0;
       for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += 1) {
         V2I n = v2i_add(at, bd_dir_delta(dir));
+        B32 off_map = !bd_in_bounds(board, n);
         // off the map counts as the lowest place there is: coastal springs
         // near the border drain off the world instead of pooling
-        F32 e = bd_in_bounds(board, n) ? elevation[(U64)n.y * w + n.x] : WG__ELEVATION_OFF_MAP;
-        if(e < down_elevation) {
+        F32 e = off_map ? WG__ELEVATION_OFF_MAP : elevation[(U64)n.y * w + n.x];
+        if(e >= here) { continue; } // only strictly downhill: no cycles
+        F32 score = e + params->river_meander *
+                        (wg__noise01(seed ^ WG__MEANDER_SALT, n.x, n.y) - 0.5f);
+        if(down_dir == BD_Dir_COUNT || score < down_score) {
           down_dir = dir;
-          down_elevation = e;
-          down_off_map = !bd_in_bounds(board, n);
+          down_score = score;
+          down_off_map = off_map;
         }
       }
-      if(down_dir == BD_Dir_COUNT) { break; } // basin: the river ends here
+      if(down_dir == BD_Dir_COUNT) { in_basin = 1; break; } // nowhere lower
 
-      bd_feature_connect(board, at, down_dir, BD_Feature_River);
+      trace_pos[length] = at;
+      trace_dir[length] = down_dir;
+      length += 1;
       if(down_off_map) { break; }
       at = v2i_add(at, bd_dir_delta(down_dir));
-      if(bd_tile_at(board, at)->terrain == WG_TerrainType_Water) { break; } // reached the sea
+      if(elevation[(U64)at.y * w + at.x] < params->sea_level) { break; } // reached the sea
+    }
+
+    if(length < params->river_min_length) { continue; } // stubby spring: cull it
+    for(I32 idx = 0; idx < length; idx += 1) {
+      bd_feature_connect(board, trace_pos[idx], trace_dir[idx], BD_Feature_River);
+    }
+
+    //- fp: a river ends *in* water, so the mouth tile's mirrored half would
+    //  draw a stub inside the sea: clear it, one-sidedly on purpose -- the
+    //  land neighbor keeps its half and flows right up to the water's edge.
+    //  (An off-map ending leaves `at` on land, so the condition skips it.)
+    if(!in_basin && elevation[(U64)at.y * w + at.x] < params->sea_level) {
+      bd_tile_at(board, at)->features[BD_Feature_River] = 0;
+    }
+
+    //- fp: a river that dies inland floods its basin into a pond: the
+    //  connected bowl of land within pond_epsilon of the basin's height
+    //  sinks just below sea level (bounded by pond_max_tiles), so
+    //  classification paints a lake there, its shores get the riverbank
+    //  treatment, and later rivers can end in it like a sea. Flooded tiles
+    //  drop below sea_level, so the fill can never revisit them.
+    if(in_basin) {
+      F32 basin_elevation = elevation[(U64)at.y * w + at.x];
+      F32 pond = params->sea_level - 0.01f;
+      elevation[(U64)at.y * w + at.x] = pond;
+      bd_tile_at(board, at)->features[BD_Feature_River] = 0; // no river inside the lake
+      pond_queue[0] = at;
+      I32 pond_count = 1;
+      for(I32 head = 0; head < pond_count; head += 1) {
+        for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += 1) {
+          V2I n = v2i_add(pond_queue[head], bd_dir_delta(dir));
+          if(pond_count >= params->pond_max_tiles) { break; }
+          if(!bd_in_bounds(board, n)) { continue; }
+          F32 e = elevation[(U64)n.y * w + n.x];
+          // >= sea_level: the fill stops where water already is
+          if(e >= params->sea_level && e <= basin_elevation + params->pond_epsilon) {
+            elevation[(U64)n.y * w + n.x] = pond;
+            bd_tile_at(board, n)->features[BD_Feature_River] = 0; // drowns any channel here
+            pond_queue[pond_count] = n;
+            pond_count += 1;
+          }
+        }
+      }
     }
   }
+  arena_release_scratch(scratch);
 }
 
 ////////////////////////////////
@@ -220,23 +319,45 @@ internal BD_Board* wg_generate(Arena* arena, WG_Params* params, U64 seed) {
     }
   }
 
-  //- fp: classify tiles
+  //- fp: rivers first: classification reads their presence, so river valleys
+  //  come out wetter than the rain alone would make them
+  wg__carve_rivers(board, params, seed, elevation);
+
+  //- fp: classify tiles. Elevation settles water / land / mountain; the land
+  //  between is a biome matrix of moisture against drainage: too dry ->
+  //  desert, wet but waterlogged -> swamp, wet and drained -> forest,
+  //  everything else -> plains
   for(I32 y = 0; y < h; y += 1) {
     for(I32 x = 0; x < w; x += 1) {
+      V2I p = {x, y};
       F32 e = elevation[(U64)y * w + x];
       WG_TerrainType type = WG_TerrainType_Plains;
       if(e < params->sea_level) {
         type = WG_TerrainType_Water;
       } else if(e > params->mountain_level) {
         type = WG_TerrainType_Mountain;
-      } else if(wg__moisture_at(params, seed, x, y) > params->forest_moisture) {
-        type = WG_TerrainType_Forest;
+      } else {
+        F32 moisture = wg__moisture_at(params, seed, x, y);
+
+        // a river on or beside the tile wets it: banks go green or boggy
+        B32 river_nearby = bd_feature_mask(board, p, BD_Feature_River) != 0;
+        for(BD_Dir dir = 0; !river_nearby && dir < BD_Dir_COUNT; dir += 1) {
+          river_nearby = bd_feature_mask(board, v2i_add(p, bd_dir_delta(dir)), BD_Feature_River) != 0;
+        }
+        if(river_nearby) { moisture += params->river_moisture; }
+
+        if(moisture < params->desert_moisture) {
+          type = WG_TerrainType_Desert;
+        } else if(moisture > params->swamp_moisture &&
+                  wg__drainage_at(params, elevation, x, y) < params->swamp_drainage) {
+          type = WG_TerrainType_Swamp;
+        } else if(moisture > params->forest_moisture) {
+          type = WG_TerrainType_Forest;
+        }
       }
-      bd_tile_at(board, (V2I){x, y})->terrain = type;
+      bd_tile_at(board, p)->terrain = type;
     }
   }
-
-  wg__carve_rivers(board, params, seed, elevation);
 
   arena_release_scratch(scratch);
   return board;

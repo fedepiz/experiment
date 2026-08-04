@@ -295,7 +295,6 @@ internal void pace_60fps_update(void) {
   if(interval != current_interval) {
     current_interval = interval;
     wnd_set_swap_interval(interval);
-    printf_str8("swap interval %d (%.0fHz monitor)\n", interval, hz);
   }
 }
 

@@ -12,16 +12,26 @@ world = {
   moisture_scale = 32
   moisture_octaves = 3
 
-  # classification thresholds over the [0,1] noise fields
+  # classification thresholds. Elevation splits water/land/mountain; the land
+  # between is moisture (rain, its own noise field) against drainage (read off
+  # the elevation landscape: slope + height above the water table)
   sea_level = 0.32
   mountain_level = 0.62
-  forest_moisture = 0.55
+  desert_moisture = 0.35  # moisture below -> desert
+  forest_moisture = 0.55  # moisture above -> forest
+  swamp_moisture = 0.60   # moisture above, and drainage below the next knob -> swamp
+  swamp_drainage = 0.35
+  river_moisture = 0.10   # extra moisture on and beside river tiles
 
   # how strongly elevation sinks toward the map edge (0 = none): higher
   # values pull the coastline inward until the land becomes one continent
   continent_falloff = 0.35
 
   river_count = 8
+  river_min_length = 6   # steps; rivers that trace shorter than this are culled
+  river_meander = 0.015  # descent jitter in elevation units; 0 = pure steepest descent
+  pond_epsilon = 0.02  # a basin floods its connected bowl up to this height above it
+  pond_max_tiles = 64  # hard cap on one pond's flood, whatever the epsilon
 
   # travel rule scalars forwarded onto the board
   road_cost = 0.5
