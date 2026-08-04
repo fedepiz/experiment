@@ -132,11 +132,18 @@ global const char* r_gl__vs_src =
   "  vec2 center = 0.5 * (a_dst.xy + a_dst.zw);\n"
   "  vec2 half_size = 0.5 * (a_dst.zw - a_dst.xy);\n"
   "  vec2 local = (2.0 * t - 1.0) * half_size;\n"
+  // unrotated corners come straight from a_dst (multiplying by 0/1 and adding
+  // 0 are exact in fp), NOT from center +- half_size, whose rounding differs
+  // between two quads sharing an edge coordinate and opens sliver gaps
+  // between abutting tiles
+  "  vec2 pos = a_dst.xy * (1.0 - t) + a_dst.zw * t;\n"
+  "  if (a_misc.z != 0.0) {\n"
   // y grows downward, so visual counter-clockwise is a clockwise rotation
   // in coordinate terms -- hence the transposed rotation matrix
-  "  float c = cos(a_misc.z);\n"
-  "  float s = sin(a_misc.z);\n"
-  "  vec2 pos = center + vec2(local.x * c + local.y * s, -local.x * s + local.y * c);\n"
+  "    float c = cos(a_misc.z);\n"
+  "    float s = sin(a_misc.z);\n"
+  "    pos = center + vec2(local.x * c + local.y * s, -local.x * s + local.y * c);\n"
+  "  }\n"
   "  gl_Position = vec4(2.0 * pos.x / u_viewport.x - 1.0, 1.0 - 2.0 * pos.y / u_viewport.y, 0.0, 1.0);\n"
   "  v_local = local;\n"
   "  v_pos = pos;\n"
@@ -172,10 +179,13 @@ global const char* r_gl__fs_src =
   "                              : ((v_local.y < 0.0) ? v_radii.y : v_radii.w);\n"
   "  float d = rounded_box_sdf(v_local, v_half_size, r);\n"
   "  float soft = max(v_border_soft.y, 0.001);\n" // 0 softness reads as hard edge
-  "  float coverage = 1.0 - smoothstep(-soft, soft, d);\n"
+  // the falloff band sits entirely OUTSIDE the shape (d in [0, 2*soft]), so a
+  // fragment on the boundary keeps full coverage -- abutting hard-edged quads
+  // tile without half-alpha seam lines at shared edges
+  "  float coverage = 1.0 - smoothstep(0.0, 2.0 * soft, d);\n"
   "  float border = v_border_soft.x;\n"
   "  if (border > 0.0) {\n"
-  "    coverage *= smoothstep(-soft, soft, d + border);\n" // keep only the edge band
+  "    coverage *= smoothstep(0.0, 2.0 * soft, d + border);\n" // keep only the edge band
   "  }\n"
   "  if (v_pos.x < v_clip.x || v_pos.y < v_clip.y || v_pos.x > v_clip.z || v_pos.y > v_clip.w) {\n"
   "    coverage = 0.0;\n"

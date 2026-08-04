@@ -23,6 +23,18 @@ internal V2 v2_scaled_add(V2 a, V2 b, F32 c) {
   return (V2){a.x + b.x * c, a.y + b.y * c};
 }
 
+internal B32 v2i_eq(V2I a, V2I b) {
+  return a.x == b.x && a.y == b.y;
+}
+
+internal V2I v2i_add(V2I a, V2I b) {
+  return (V2I){a.x + b.x, a.y + b.y};
+}
+
+internal V2I v2i_sub(V2I a, V2I b) {
+  return (V2I){a.x - b.x, a.y - b.y};
+}
+
 internal F32 v2_magnitude(V2 a) {
   return sqrtf(a.x * a.x + a.y * a.y);
 }

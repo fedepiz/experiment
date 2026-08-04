@@ -16,6 +16,16 @@ internal V2 v2_scaled_add(V2 a, V2 b, F32 c);
 internal F32 v2_magnitude(V2 a);
 internal V2 v2_norm(V2 a, V2 fallback);
 
+// Integer companion to V2, for grid/tile coordinates.
+typedef struct {
+  I32 x;
+  I32 y;
+} V2I;
+
+internal B32 v2i_eq(V2I a, V2I b);
+internal V2I v2i_add(V2I a, V2I b);
+internal V2I v2i_sub(V2I a, V2I b);
+
 typedef struct {
   F32 x;
   F32 y;

@@ -1,0 +1,272 @@
+#pragma once
+
+#include "base/core.h"
+#include "base/math.h"
+#include "base/arena.h"
+
+////////////////////////////////
+//~ fp: Board
+//
+// The game board: a 2d tile grid plus everything positioned on it. The board
+// owns spatial state and answers spatial questions -- terrain per tile,
+// features (rivers, roads) as inter-tile connections, pawns standing on
+// tiles, and pathfinding over all of the above. It knows nothing else of the
+// game: terrain kinds, pawn kinds, and pawn identities are opaque numbers the
+// game gives meaning to elsewhere (what a terrain looks like or what a pawn
+// *is* are not board questions).
+//
+// Coordinates are integer tile positions, (0,0) top-left, x right, y down.
+// Reads are total: out-of-bounds and stale-handle lookups resolve to shared
+// nil sentinels (read-only by convention), so query chains never crash.
+// Mutations that carry bookkeeping (features, pawns) go through functions,
+// which no-op on anything nil or out of bounds; plain per-tile data (terrain)
+// is written directly through bd_tile_at.
+
+////////////////////////////////
+//~ fp: Directions
+//
+// The eight tile neighborhoods, clockwise from north. Feature connection
+// masks below index bits by these, so the order is load-bearing: opposite
+// direction == +4 mod 8.
+
+typedef U32 BD_Dir;
+enum {
+  BD_Dir_N,
+  BD_Dir_NE,
+  BD_Dir_E,
+  BD_Dir_SE,
+  BD_Dir_S,
+  BD_Dir_SW,
+  BD_Dir_W,
+  BD_Dir_NW,
+  BD_Dir_COUNT,
+};
+
+internal V2I    bd_dir_delta(BD_Dir dir);
+internal BD_Dir bd_dir_opposite(BD_Dir dir);
+
+////////////////////////////////
+//~ fp: Features
+//
+// Linear things drawn over the terrain. A feature on a tile is a connection
+// mask: bit d set means "this feature continues toward neighbor d". Features
+// are inherently connective -- presence is mask != 0; a point-like thing with
+// no direction is a pawn, not a feature.
+
+typedef U32 BD_Feature;
+enum {
+  BD_Feature_River,
+  BD_Feature_Road,
+  BD_Feature_COUNT,
+};
+
+////////////////////////////////
+//~ fp: Tiles
+//
+// One cell of the grid. Terrain is an opaque id -- the board never interprets
+// it beyond indexing travel costs with it. The pawn list is bookkept: written
+// by pawn create/move/destroy, read freely.
+
+typedef U16 BD_Terrain;
+
+typedef struct BD_Pawn BD_Pawn;
+typedef struct {
+  BD_Terrain terrain;
+  U8 features[BD_Feature_COUNT]; // connection masks, bit d = toward BD_Dir d
+
+  // pawns standing here, maintained by pawn create/move/destroy
+  BD_Pawn* first_pawn;
+  BD_Pawn* last_pawn;
+} BD_Tile;
+
+////////////////////////////////
+//~ fp: Pawns
+//
+// Anything that stands on a tile: settlements, armies, markers -- the board
+// neither knows nor cares, it just positions them. Pawns are referred to by
+// id, not pointer: ids survive arbitrary create/destroy traffic and a stale
+// id resolves to the nil pawn instead of a recycled stranger. The zero id is
+// nil (ZII).
+
+typedef struct {
+  BD_Pawn* ptr;
+  U64 gen;
+} BD_PawnID;
+
+struct BD_Pawn {
+  BD_Pawn* next; // in its tile's pawn list; freelist link while destroyed
+  BD_Pawn* prev;
+  U64 gen; // bumps on destroy, invalidating outstanding ids
+
+  V2I pos;
+  U32 kind; // opaque to the board
+  U64 user; // opaque to the board
+};
+
+////////////////////////////////
+//~ fp: Travel Rules
+//
+// How movement costs read the map, owned by the board (board->rules): set
+// them once and every path query agrees on what movement means. The zero
+// rules are valid (ZII): every terrain costs 1, roads and rivers change
+// nothing.
+
+typedef struct {
+  // cost to enter a tile of terrain t is terrain_cost[t]; <= 0 means
+  // impassable, and ids >= terrain_cost_count are impassable too. A zero
+  // pointer means every terrain costs 1.
+  F32* terrain_cost;
+  U64 terrain_cost_count;
+
+  // when > 0 and the step follows a road connection, this replaces the
+  // terrain cost -- and waives the river crossing below (a road over a river
+  // is a bridge or ford)
+  F32 road_cost;
+
+  // when > 0, added to any step entering a tile a river runs through
+  F32 river_cross_cost;
+
+  B32 cardinal_only; // 4-connected movement instead of 8
+} BD_TravelRules;
+
+////////////////////////////////
+//~ fp: Path Cache
+//
+// Computed paths are remembered in a finite, linearly-searched array so that
+// repeated queries -- above all bd_path_next_towards called every turn while
+// something walks -- do not re-run A* each time. Hops live in one shared
+// point pool; when either the entries or the pool fill up, the whole cache is
+// dropped and rebuilds on demand.
+//
+// The cache never observes map mutations. Feature connect/disconnect clear it
+// themselves; after writing terrain or rules directly, call
+// bd_path_cache_clear or stale paths will be served.
+
+typedef struct {
+  V2I from;
+  V2I to;
+  U32 first; // into the board's point pool
+  U32 count; // hops including both endpoints; 0 = remembered "no path"
+  F32 cost;
+} BD_PathEntry;
+
+////////////////////////////////
+//~ fp: Board State
+
+typedef struct {
+  Arena* arena; // all board memory lives here (tiles, pawns, path cache)
+  I32 width;
+  I32 height;
+  BD_Tile* tiles; // width * height, row-major
+
+  BD_TravelRules rules;
+
+  BD_Pawn* first_free_pawn; // destroyed pawns, recycled by create
+  U64 pawn_count;           // alive pawns
+
+  //- fp: path cache, capacity chosen at alloc
+  BD_PathEntry* entries; // [entry_cap]
+  U32 entry_cap;
+  U32 entry_count;
+  V2I* points;      // shared hop pool; entries reference slices of it
+  U64 point_count;
+  U64 point_cap;    // width * height -- any single path fits
+} BD_Board;
+
+////////////////////////////////
+//~ fp: Nil
+//
+// Shared sentinels that out-of-bounds / stale lookups resolve to. Zeroed ==
+// nil (ZII), so these need no initialization. Read-only by convention --
+// nothing may ever write through a nil.
+
+global BD_Tile bd_nil_tile;
+global BD_Pawn bd_nil_pawn;
+
+////////////////////////////////
+//~ fp: Grid
+
+internal BD_Board* bd_board_alloc(Arena* arena, I32 width, I32 height, U32 path_cache_entries);
+
+internal B32      bd_in_bounds(BD_Board* board, V2I p);
+internal BD_Tile* bd_tile_at(BD_Board* board, V2I p); // out of bounds: the nil tile
+
+//- fp: tile-space distances; no board needed
+internal I32 bd_distance_steps(V2I a, V2I b); // moves under 8-way movement (chebyshev)
+internal F32 bd_distance(V2I a, V2I b);       // euclidean, "as the crow flies"
+
+////////////////////////////////
+//~ fp: Features
+//
+// Connections are kept mirrored: connecting p toward d also connects p's
+// neighbor toward opposite(d). At the map edge the neighbor half is simply
+// dropped -- a river may flow off the world.
+
+internal U8   bd_feature_mask(BD_Board* board, V2I p, BD_Feature feature); // presence = mask != 0
+internal void bd_feature_connect(BD_Board* board, V2I p, BD_Dir dir, BD_Feature feature);
+internal void bd_feature_disconnect(BD_Board* board, V2I p, BD_Dir dir, BD_Feature feature);
+
+////////////////////////////////
+//~ fp: Pawns
+//
+// Pawns on one tile read directly: bd_tile_at(...)->first_pawn, then ->next.
+
+internal BD_PawnID bd_pawn_create(BD_Board* board, V2I pos, U32 kind, U64 user); // nil id if pos out of bounds
+internal void      bd_pawn_destroy(BD_Board* board, BD_PawnID id);
+internal BD_Pawn*  bd_pawn_from_id(BD_PawnID id); // zero / stale: the nil pawn
+internal void      bd_pawn_move(BD_Board* board, BD_PawnID id, V2I to); // no-op on stale id or `to` out of bounds
+
+typedef struct {
+  BD_Pawn** v;
+  U64 count;
+} BD_PawnArray;
+
+// every alive pawn standing in [min, max] (corners inclusive), pushed on `arena`
+internal BD_PawnArray bd_pawns_in_rect(Arena* arena, BD_Board* board, V2I min, V2I max);
+
+////////////////////////////////
+//~ fp: Terrain Queries
+//
+// A rectangular window of terrain, copied out row-major. The requested rect
+// is clamped to the board first; `min` and width/height describe what was
+// actually covered, so a request hanging off the edge comes back smaller
+// rather than padded. Zero width/height means the rect missed the board.
+
+typedef struct {
+  V2I min;    // top-left tile the window actually starts at
+  I32 width;  // window dimensions; v holds width * height ids
+  I32 height;
+  BD_Terrain* v; // row-major: v[y * width + x] is terrain at min + (x, y)
+} BD_TerrainPatch;
+
+// terrain in [min, max] (corners inclusive), pushed on `arena`
+internal BD_TerrainPatch bd_terrain_in_rect(Arena* arena, BD_Board* board, V2I min, V2I max);
+
+////////////////////////////////
+//~ fp: Pathfinding
+//
+// A* under board->rules, answered from the path cache (computing and filling
+// it on miss). bd_path_find hands back the whole path; bd_path_next_towards
+// is the walk-one-step form game logic will call every tick.
+
+// waypoints from `from` to `to`, both included, copied onto `arena`;
+// count == 0 means no path
+typedef struct {
+  V2I* points;
+  U64 count;
+  F32 cost; // total, under board->rules
+} BD_Path;
+
+internal BD_Path bd_path_find(Arena* arena, BD_Board* board, V2I from, V2I to);
+
+// cost of the single step from `from` onto the adjacent tile `to` under
+// board->rules -- exactly what pathfinding pays for that hop, so movement
+// that spends a budget agrees with the routes A* picks. <= 0 means the step
+// cannot be taken (out of bounds, not adjacent, impassable).
+internal F32 bd_step_cost(BD_Board* board, V2I from, V2I to);
+
+// the tile after `from` on the path to `to`; `from` itself when already
+// there, or when no path exists (v2i_eq with `from` detects "not moving")
+internal V2I bd_path_next_towards(BD_Board* board, V2I from, V2I to);
+
+internal void bd_path_cache_clear(BD_Board* board);
