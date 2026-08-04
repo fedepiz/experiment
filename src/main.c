@@ -11,6 +11,7 @@
 #include "base/core.h"
 #include "base/print.h"
 #include "base/strings.h"
+#include "game/board.h"
 #include "tabula.h"
 #include "game/game.h"
 #include "gfx/color.h"
@@ -21,86 +22,56 @@
 ////////////////////////////////
 //~ fp: temp: Test Map
 //
-// A 256x256 world to exercise board + draw together: terrain painted
-// procedurally (deterministic integer-hash noise, no rng state), one road
-// laid along the terrain's own best path, and a debug rendering -- colored
-// tiles, a dot where a road runs, a rounded rect per pawn.
+// The world itself comes from worldgen (knobs in data/world.tabula); this
+// section is the demo glue around it: snapping demo points onto passable
+// land, one road laid along the terrain's own best path, and a debug
+// rendering -- colored tiles, line segments for rivers and roads, a rounded
+// rect per pawn.
 
-enum {
-  Terrain_Plains,
-  Terrain_Forest,
-  Terrain_Mountain,
-  Terrain_Water,
-  Terrain_COUNT,
-};
-
-#define MAP_DIM  256
 #define MAP_TILE 8.0f // world units per tile
 
-global F32 map_terrain_cost[Terrain_COUNT] = {1.0f, 2.0f, 0, 0}; // mountain/water impassable
-global V4 map_terrain_colors[Terrain_COUNT] = {
-    {0.47f, 0.62f, 0.33f, 1}, // plains
-    {0.23f, 0.42f, 0.24f, 1}, // forest
-    {0.54f, 0.52f, 0.50f, 1}, // mountain
-    {0.18f, 0.32f, 0.55f, 1}, // water
-};
-global V4 map_pawn_colors[] = {
+global V4 MAP_PAWN_COLORS[] = {
     {0.95f, 0.80f, 0.25f, 1},
     {0.88f, 0.32f, 0.26f, 1},
     {0.93f, 0.93f, 0.96f, 1},
 };
 
-internal U32 map__noise(I32 x, I32 y) {
-  U32 h = (U32)x * 374761393u + (U32)y * 668265263u;
-  h ^= h >> 16;
-  h *= 0x7feb352du;
-  h ^= h >> 15;
-  h *= 0x846ca68bu;
-  h ^= h >> 16;
-  return h;
+internal B32 map_tile_passable(BD_Board* board, V2I p) {
+  BD_Terrain terrain = bd_tile_at(board, p)->terrain;
+  return terrain < board->rules.terrain_cost_count &&
+         board->rules.terrain_cost[terrain] > 0;
 }
 
-internal BD_Board* map_create(Arena* arena) {
-  BD_Board* board = bd_board_alloc(arena, MAP_DIM, MAP_DIM, 1024);
-  board->rules.terrain_cost = map_terrain_cost;
-  board->rules.terrain_cost_count = Terrain_COUNT;
-  board->rules.road_cost = 0.5f;
-
-  for(I32 y = 0; y < MAP_DIM; y += 1) {
-    for(I32 x = 0; x < MAP_DIM; x += 1) {
-      BD_Terrain terrain = Terrain_Plains;
-      if(map__noise(x >> 3, y >> 3) % 100 < 35) { terrain = Terrain_Forest; }
-
-      // north-south mountain ridge wiggling as a triangle wave, with one pass
-      I32 tri = (y % 64) < 32 ? (y % 64) : 64 - (y % 64);
-      I32 ridge = 128 + tri - 16;
-      B32 in_pass = 120 <= y && y < 136;
-      if(!in_pass && ridge - 5 <= x && x <= ridge + 5) { terrain = Terrain_Mountain; }
-
-      // two lakes
-      I32 dx0 = x - 70, dy0 = y - 170;
-      I32 dx1 = x - 190, dy1 = y - 60;
-      if(dx0 * dx0 + dy0 * dy0 < 25 * 25 || dx1 * dx1 + dy1 * dy1 < 18 * 18) {
-        terrain = Terrain_Water;
+// nearest passable tile to `want`, searching outward ring by ring; `want`
+// itself when the whole board is impassable (callers just get a dead pawn)
+internal V2I map_snap_passable(BD_Board* board, V2I want) {
+  I32 max_radius = Max(board->width, board->height);
+  for(I32 radius = 0; radius < max_radius; radius += 1) {
+    for(I32 dy = -radius; dy <= radius; dy += 1) {
+      for(I32 dx = -radius; dx <= radius; dx += 1) {
+        if(Max(dx, -dx) != radius && Max(dy, -dy) != radius) { continue; } // ring, not disc
+        V2I p = {want.x + dx, want.y + dy};
+        if(bd_in_bounds(board, p) && map_tile_passable(board, p)) { return p; }
       }
-
-      bd_tile_at(board, (V2I){x, y})->terrain = terrain;
     }
   }
+  return want;
+}
 
-  // a road between two would-be settlements, following the terrain's own
-  // best path (through the mountain pass)
+internal BD_Board* map_create(Arena* arena, U64 seed) {
+  WG_Params params = wg_params_load(str8_lit("data/world.tabula"));
+  BD_Board* board = wg_generate(arena, &params, seed);
+
+  // a road between two would-be settlements on opposite sides of the
+  // continent, following the terrain's own best path
   {
+    V2I west = map_snap_passable(board, (V2I){board->width / 6, board->height / 2});
+    V2I east = map_snap_passable(board, (V2I){board->width * 5 / 6, board->height / 2});
     ArenaTemp scratch = arena_get_scratch(0, 0);
-    BD_Path path = bd_path_find(scratch.arena, board, (V2I){40, 128}, (V2I){216, 128});
+    BD_Path path = bd_path_find(scratch.arena, board, west, east);
     for(U64 idx = 0; idx + 1 < path.count; idx += 1) {
-      V2I delta = v2i_sub(path.points[idx + 1], path.points[idx]);
-      for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += 1) {
-        if(v2i_eq(bd_dir_delta(dir), delta)) {
-          bd_feature_connect(board, path.points[idx], dir, BD_Feature_Road);
-          break;
-        }
-      }
+      BD_Dir dir = bd_dir_from_delta(v2i_sub(path.points[idx + 1], path.points[idx]));
+      bd_feature_connect(board, path.points[idx], dir, BD_Feature_Road);
     }
     arena_release_scratch(scratch);
   }
@@ -121,17 +92,43 @@ internal void map_render(BD_Board* board, D_Camera camera) {
     I32 x1 = ClampTop((I32)(world_max.x / MAP_TILE) + 1, board->width - 1);
     I32 y1 = ClampTop((I32)(world_max.y / MAP_TILE) + 1, board->height - 1);
 
-    F32 dot = MAP_TILE * 0.15f;
     for(I32 y = y0; y <= y1; y += 1) {
       for(I32 x = x0; x <= x1; x += 1) {
         BD_Tile* tile = bd_tile_at(board, (V2I){x, y});
         Rect r = {{x * MAP_TILE, y * MAP_TILE}, {(x + 1) * MAP_TILE, (y + 1) * MAP_TILE}};
-        V4 color = tile->terrain < Terrain_COUNT ? map_terrain_colors[tile->terrain] : (V4){1, 0, 1, 1}; // magenta = bad id
+        V4 color = tile->terrain < WG_TerrainType_COUNT
+                       ? WG_TERRAIN_DATA[tile->terrain].color
+                       : (V4){1, 0, 1, 1}; // magenta = bad id
         d_rect(r, color);
-        if(tile->features[BD_Feature_Road] != 0) {
-          V2 c = {(x + 0.5f) * MAP_TILE, (y + 0.5f) * MAP_TILE};
-          d_rect_rounded((Rect){{c.x - dot, c.y - dot}, {c.x + dot, c.y + dot}},
-                         (V4){0.42f, 0.31f, 0.20f, 1}, dot);
+      }
+    }
+
+    // features as half-segments, tile center toward each connected neighbor;
+    // the neighbor draws the matching half, so connections read as one line
+    // (an edge tile's off-map half sends rivers visibly off the world).
+    // Rivers under roads: where both run, the road is the bridge.
+    struct {
+      BD_Feature feature;
+      F32 thickness;
+      V4 color;
+    } FEATURE_STYLES[] = {
+        {BD_Feature_River, MAP_TILE * 0.25f, {0.25f, 0.45f, 0.75f, 1}},
+        {BD_Feature_Road, MAP_TILE * 0.18f, {0.42f, 0.31f, 0.20f, 1}},
+    };
+    for(U32 style_idx = 0; style_idx < ArrayCount(FEATURE_STYLES); style_idx += 1) {
+      for(I32 y = y0; y <= y1; y += 1) {
+        for(I32 x = x0; x <= x1; x += 1) {
+          U8 mask = bd_tile_at(board, (V2I){x, y})->features[FEATURE_STYLES[style_idx].feature];
+          if(mask == 0) { continue; }
+          V2 center = {(x + 0.5f) * MAP_TILE, (y + 0.5f) * MAP_TILE};
+          for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += 1) {
+            if(((mask >> dir) & 1) == 0) { continue; }
+            V2I delta = bd_dir_delta(dir);
+            V2 edge = {center.x + delta.x * MAP_TILE * 0.5f,
+                       center.y + delta.y * MAP_TILE * 0.5f};
+            d_line(center, edge, FEATURE_STYLES[style_idx].thickness,
+                   FEATURE_STYLES[style_idx].color);
+          }
         }
       }
     }
@@ -145,7 +142,7 @@ internal void map_render(BD_Board* board, D_Camera camera) {
             pawn != 0; pawn = pawn->next) {
           Rect r = {{x * MAP_TILE + inset, y * MAP_TILE + inset},
                     {(x + 1) * MAP_TILE - inset, (y + 1) * MAP_TILE - inset}};
-          d_rect_rounded(r, map_pawn_colors[pawn->kind % ArrayCount(map_pawn_colors)],
+          d_rect_rounded(r, MAP_PAWN_COLORS[pawn->kind % ArrayCount(MAP_PAWN_COLORS)],
                          (MAP_TILE - 2 * inset) * 0.35f);
         }
       }
@@ -344,6 +341,79 @@ internal void fps_draw(FPS_Counter* counter) {
 }
 
 ////////////////////////////////
+//~ fp: temp: Game State
+//
+// Everything the demo simulates, gathered on one struct: the board plus a few
+// entities wandering a waypoint loop. Entities bank movement points each tick
+// and pay the board's step cost to walk, so terrain speed is felt, not just
+// routed around: forest crossings crawl, road hops fly.
+
+typedef struct {
+  BD_PawnID id;
+  U32 goal;   // index into game->waypoints
+  F32 points; // banked movement points; steps are paid at bd_step_cost
+} Entity;
+
+typedef struct {
+  B32 initialised;
+  BD_Board* board;
+  V2I waypoints[4];
+  Entity entities[3];
+  F32 move_timer;
+} Game;
+
+internal void game_init(Arena* arena, Game* game, U64 seed) {
+  MemoryZeroStruct(game);
+  game->board = map_create(arena, seed);
+
+  // corner-ish waypoints, snapped onto whatever land this world grew there
+  V2I corners[] = {{30, 30}, {220, 40}, {210, 210}, {40, 220}};
+  StaticAssert(ArrayCount(corners) == ArrayCount(game->waypoints), waypoint_count);
+  for(U32 i = 0; i < ArrayCount(game->waypoints); i += 1) {
+    game->waypoints[i] = map_snap_passable(game->board, corners[i]);
+  }
+
+  for(U32 i = 0; i < ArrayCount(game->entities); i += 1) {
+    game->entities[i].id = bd_pawn_create(game->board, game->waypoints[i], i, 0);
+    game->entities[i].goal = (i + 1) % ArrayCount(game->waypoints);
+    game->entities[i].points = 0;
+  }
+
+  game->initialised = true;
+}
+
+internal void game_update(Game* game) {
+  game->move_timer = ClampTop(game->move_timer + wnd_frame_time(), 0.5f);
+  while(game->move_timer > 0.1f) {
+    game->move_timer -= 0.1f;
+    for(U32 i = 0; i < ArrayCount(game->entities); i += 1) {
+      Entity* entity = &game->entities[i];
+      // 1 point per tick: a plains step; banking is capped so waiting at a
+      // cheap stretch cannot buy a later teleport across an expensive one
+      entity->points = ClampTop(entity->points + 1.0f, 4.0f);
+      for(;;) {
+        BD_Pawn* pawn = bd_pawn_from_id(entity->id);
+        V2I goal = game->waypoints[entity->goal];
+        if(v2i_eq(pawn->pos, goal)) {
+          entity->goal = (entity->goal + 1) % ArrayCount(game->waypoints);
+          goal = game->waypoints[entity->goal];
+        }
+        V2I next = bd_path_next_towards(game->board, pawn->pos, goal);
+        if(v2i_eq(next, pawn->pos)) {
+          // unreachable from here: skip that waypoint
+          entity->goal = (entity->goal + 1) % ArrayCount(game->waypoints);
+          break;
+        }
+        F32 cost = bd_step_cost(game->board, pawn->pos, next);
+        if(cost <= 0 || entity->points < cost) { break; } // not affordable yet
+        entity->points -= cost;
+        bd_pawn_move(game->board, entity->id, next);
+      }
+    }
+  }
+}
+
+////////////////////////////////
 //~ fp: Entry Point
 
 int main(void) {
@@ -355,30 +425,16 @@ int main(void) {
   wnd_equip_gl();
   d_init();
 
-  //- fp: temp: the long-lived map, plus a few pawns wandering waypoints
-  Arena* map_arena = arena_alloc();
-  BD_Board* board = map_create(map_arena);
-
-  V2I waypoints[] = {{30, 30}, {220, 40}, {210, 210}, {40, 220}};
-  struct {
-    BD_PawnID id;
-    U32 goal;   // index into waypoints
-    F32 points; // banked movement points; steps are paid at bd_step_cost
-  } entities[3];
-  for(U32 i = 0; i < ArrayCount(entities); i += 1) {
-    entities[i].id = bd_pawn_create(board, waypoints[i], i, 0);
-    entities[i].goal = (i + 1) % ArrayCount(waypoints);
-    entities[i].points = 0;
-  }
-  F32 move_timer = 0;
+  //- fp: temp: the long-lived game state
+  Arena* game_arena = arena_alloc();
+  Game game = {0};
+  U64 game_next_seed = 2704;
 
   //- fp: temp: fps overlay
   FPS_Counter fps_counter = {0};
   fps_counter.font = d_font_open(str8_lit("assets/fonts/Arial.ttf"));
 
   D_Camera camera = {0};
-  camera.center = (V2){MAP_DIM * MAP_TILE / 2, MAP_DIM * MAP_TILE / 2};
-  camera.zoom = 0.5f; // whole map in view; scroll to zoom in
 
   for(B32 keep_going = true; keep_going;) {
     WND_EventList evts = wnd_get_events(frame_arena);
@@ -401,49 +457,32 @@ int main(void) {
 
     pace_60fps_update();
 
-    //- fp: temp: entities bank movement points each tick and pay the
-    //  board's step cost to walk, so terrain speed is felt, not just routed
-    //  around: forest crossings crawl, road hops fly
-    move_timer = ClampTop(move_timer + wnd_frame_time(), 0.5f);
-    while(move_timer > 0.1f) {
-      move_timer -= 0.1f;
-      for(U32 i = 0; i < ArrayCount(entities); i += 1) {
-        // 1 point per tick: a plains step; banking is capped so waiting at a
-        // cheap stretch cannot buy a later teleport across an expensive one
-        entities[i].points = ClampTop(entities[i].points + 1.0f, 4.0f);
-        for(;;) {
-          BD_Pawn* pawn = bd_pawn_from_id(entities[i].id);
-          V2I goal = waypoints[entities[i].goal];
-          if(v2i_eq(pawn->pos, goal)) {
-            entities[i].goal = (entities[i].goal + 1) % ArrayCount(waypoints);
-            goal = waypoints[entities[i].goal];
-          }
-          V2I next = bd_path_next_towards(board, pawn->pos, goal);
-          if(v2i_eq(next, pawn->pos)) {
-            // unreachable from here: skip that waypoint
-            entities[i].goal = (entities[i].goal + 1) % ArrayCount(waypoints);
-            break;
-          }
-          F32 cost = bd_step_cost(board, pawn->pos, next);
-          if(cost <= 0 || entities[i].points < cost) { break; } // not affordable yet
-          entities[i].points -= cost;
-          bd_pawn_move(board, entities[i].id, next);
-        }
-      }
+    if(!game.initialised) {
+      arena_clear(game_arena);
+      game_init(game_arena, &game, game_next_seed++);
+      // Reset the camera
+      camera.center = (V2){game.board->width * MAP_TILE / 2, game.board->height * MAP_TILE / 2};
+      camera.zoom = 0.5f; // whole map in view; scroll to zoom in
     }
+
+    game_update(&game);
 
     d_frame_begin(frame_arena, wnd_size_px(), wnd_scale());
     {
-      map_render(board, camera); // fp: parked for the pacing experiment below
+      map_render(game.board, camera); // fp: parked for the pacing experiment below
       // test_render(camera); // fp: parked draw-layer demo scene
 
       fps_update(&fps_counter);
       fps_draw(&fps_counter);
-
-      // Camera movmements
-      camera_update(&camera);
     }
     d_frame_end();
+
+    // Camera movmements
+    camera_update(&camera);
+
+    if(input_is_key_pressed(WND_Key_R)) {
+      game.initialised = false;
+    }
 
     wnd_swap(); // vsync: paces the loop to the display rate
     arena_clear(frame_arena);

@@ -1,0 +1,29 @@
+# World generation knobs, read by game/worldgen.h. Terrain types themselves
+# (colors, movement costs) are hardcoded there -- this file only tunes the
+# generator.
+
+world = {
+  width = 256
+  height = 256
+
+  # noise fields: scale is tiles per noise-lattice cell
+  elevation_scale = 48
+  elevation_octaves = 4
+  moisture_scale = 32
+  moisture_octaves = 3
+
+  # classification thresholds over the [0,1] noise fields
+  sea_level = 0.32
+  mountain_level = 0.62
+  forest_moisture = 0.55
+
+  # how strongly elevation sinks toward the map edge (0 = none): higher
+  # values pull the coastline inward until the land becomes one continent
+  continent_falloff = 0.35
+
+  river_count = 8
+
+  # travel rule scalars forwarded onto the board
+  road_cost = 0.5
+  river_cross_cost = 2.0
+}

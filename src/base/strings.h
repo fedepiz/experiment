@@ -22,6 +22,7 @@ typedef struct {
 internal String8 str8(U8* str, U64 size);
 internal String8 str8_cstring(char* cstr);
 #define str8_lit(s) str8((U8*)(s), sizeof(s) - 1)
+#define str8_lit_comp(s) {(U8*)(s), sizeof(s) - 1} // braced form for static initializers
 
 //- fp: printf bridge -- printf("%.*s", str8_varg(s))
 #define str8_varg(s) (int)(s).size, (s).str

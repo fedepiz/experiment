@@ -44,6 +44,7 @@ enum {
 
 internal V2I    bd_dir_delta(BD_Dir dir);
 internal BD_Dir bd_dir_opposite(BD_Dir dir);
+internal BD_Dir bd_dir_from_delta(V2I delta); // BD_Dir_COUNT when delta isn't a single step
 
 ////////////////////////////////
 //~ fp: Features

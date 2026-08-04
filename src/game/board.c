@@ -23,6 +23,17 @@ internal BD_Dir bd_dir_opposite(BD_Dir dir) {
   return (dir + 4) % BD_Dir_COUNT;
 }
 
+internal BD_Dir bd_dir_from_delta(V2I delta) {
+  BD_Dir result = BD_Dir_COUNT;
+  for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += 1) {
+    if(v2i_eq(bd__dir_deltas[dir], delta)) {
+      result = dir;
+      break;
+    }
+  }
+  return result;
+}
+
 ////////////////////////////////
 //~ fp: Grid
 
