@@ -4,7 +4,7 @@
 #include "base/arena.h"
 #include "base/tctx.h"
 #include "base/strings.h"
-#include "window.h"
+#include "gfx/window.h"
 
 ////////////////////////////////
 //~ fp: X11 Backend
@@ -86,6 +86,17 @@ internal V2 wnd_size(void) {
   }
   return result;
 }
+
+////////////////////////////////
+//~ fp: OpenGL
+//
+// GLX context creation still to come; stubs keep the Linux build compiling
+// while the mac side moves ahead.
+
+internal void wnd_equip_gl(void) { NotImplemented; }
+internal void wnd_swap(void)     { NotImplemented; }
+internal V2  wnd_size_px(void)   { NotImplemented; V2 result = {0}; return result; }
+internal F32 wnd_scale(void)     { NotImplemented; return 1.0f; }
 
 ////////////////////////////////
 //~ fp: Event Translation

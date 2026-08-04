@@ -11,3 +11,12 @@
 
 Diagnostics:
   UnusedIncludes: None
+
+---
+# compile_flags.txt forces -xc so headers parse as C; mac/cocoa.m is the one
+# Objective-C file (its own TU, outside the unity build) and needs that undone.
+If:
+  PathMatch: .*\.m
+CompileFlags:
+  Remove: -xc
+  Add: -xobjective-c

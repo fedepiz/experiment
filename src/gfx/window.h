@@ -8,6 +8,19 @@ internal void wnd_open(String8 title, I32 w, I32 h);
 internal void wnd_close(void);
 internal V2 wnd_size(void);
 
+////////////////////////////////
+//~ fp: OpenGL
+//
+// The window owns the GL context: equip once after wnd_open, swap once per
+// frame (swap blocks to the display rate -- vsync paces the main loop).
+// wnd_size is points; wnd_size_px is the framebuffer in pixels; wnd_scale is
+// pixels per point (2 on retina) -- the pair r_frame_begin wants.
+
+internal void wnd_equip_gl(void);
+internal void wnd_swap(void);
+internal V2  wnd_size_px(void);
+internal F32 wnd_scale(void);
+
 typedef U16 WND_Key;
 enum {
   WND_Key_Nil = 0,

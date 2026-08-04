@@ -20,11 +20,10 @@ DEBUG="-g -O0 -DBUILD_DEBUG=1"
 RELEASE="-g -O2 -DBUILD_DEBUG=0"
 
 # system libraries per OS: everything we wrote rides in the unity TU; only
-# these link. (The mac line is aspirational -- os.c/window.c still need mac
-# backends before a mac build gets past their #errors.)
+# these link.
 case "$(uname -s)" in
   Linux)  LIBS="-lX11" ;;
-  Darwin) LIBS="-framework Cocoa" ;;
+  Darwin) LIBS="-framework Cocoa -framework OpenGL" ;;
   *)      LIBS="" ;;
 esac
 
@@ -37,7 +36,17 @@ cmd_build() {
   esac
   mkdir -p build
   # shellcheck disable=SC2086
-  $CC $flags src/main.c -o build/app $LIBS
+  case "$(uname -s)" in
+    Darwin)
+      # mac/cocoa.m is the one TU outside the unity build: Cocoa wants ObjC,
+      # so it lives behind the C API in mac/cocoa.h and links in here
+      $CC $flags -c src/gfx/mac/cocoa.m -o build/cocoa.o
+      $CC $flags src/main.c build/cocoa.o -o build/app $LIBS
+      ;;
+    *)
+      $CC $flags src/main.c -o build/app $LIBS
+      ;;
+  esac
   echo "built build/app ($mode)"
 }
 
