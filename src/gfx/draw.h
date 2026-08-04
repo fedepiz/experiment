@@ -130,12 +130,16 @@ typedef struct {
   V2 size;  // texels; == src dims, for convenience
 } D_Sprite;
 
-internal void          d_spritesheet_begin(void);
+// w/h are the sheet's texel dimensions -- capacity is the caller's call,
+// since eager packing must allocate before the content arrives. 0 reads as
+// a 2048 default (ZII).
+internal void          d_spritesheet_begin(I32 w, I32 h);
 internal D_Sprite      d_spritesheet_push(D_Image image); // ZII: zero image or full sheet = nil sprite
 internal D_SpriteSheet d_spritesheet_end(void);
 internal void          d_spritesheet_release(D_SpriteSheet sheet); // its sprites draw nothing afterwards
 
-// a one-image sheet in one call, for standalone images (backgrounds, ...)
+// a one-image sheet in one call, sized exactly to the image, for standalone
+// images (backgrounds, ...)
 internal D_Sprite d_sprite_from_image(D_Image image);
 
 //- fp: sprite drawing
