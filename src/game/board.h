@@ -25,20 +25,16 @@
 ////////////////////////////////
 //~ fp: Directions
 //
-// The eight tile neighborhoods, clockwise from north. Feature connection
-// masks below index bits by these, so the order is load-bearing: opposite
-// direction == +4 mod 8.
+// The four tile neighborhoods, clockwise from north -- movement and features
+// are 4-connected, DF-style. Feature connection masks below index bits by
+// these, so the order is load-bearing: opposite direction == +2 mod 4.
 
 typedef U32 BD_Dir;
 enum {
   BD_Dir_N,
-  BD_Dir_NE,
   BD_Dir_E,
-  BD_Dir_SE,
   BD_Dir_S,
-  BD_Dir_SW,
   BD_Dir_W,
-  BD_Dir_NW,
   BD_Dir_COUNT,
 };
 
@@ -126,8 +122,6 @@ typedef struct {
 
   // when > 0, added to any step entering a tile a river runs through
   F32 river_cross_cost;
-
-  B32 cardinal_only; // 4-connected movement instead of 8
 } BD_TravelRules;
 
 ////////////////////////////////
@@ -193,7 +187,7 @@ internal B32      bd_in_bounds(BD_Board* board, V2I p);
 internal BD_Tile* bd_tile_at(BD_Board* board, V2I p); // out of bounds: the nil tile
 
 //- fp: tile-space distances; no board needed
-internal I32 bd_distance_steps(V2I a, V2I b); // moves under 8-way movement (chebyshev)
+internal I32 bd_distance_steps(V2I a, V2I b); // moves under 4-way movement (manhattan)
 internal F32 bd_distance(V2I a, V2I b);       // euclidean, "as the crow flies"
 
 ////////////////////////////////

@@ -10,7 +10,7 @@
 //~ fp: Directions
 
 global V2I bd__dir_deltas[BD_Dir_COUNT] = {
-  {0, -1}, {1, -1}, {1, 0}, {1, 1}, {0, 1}, {-1, 1}, {-1, 0}, {-1, -1},
+  {0, -1}, {1, 0}, {0, 1}, {-1, 0},
 };
 
 internal V2I bd_dir_delta(BD_Dir dir) {
@@ -20,7 +20,7 @@ internal V2I bd_dir_delta(BD_Dir dir) {
 
 internal BD_Dir bd_dir_opposite(BD_Dir dir) {
   Assert(dir < BD_Dir_COUNT);
-  return (dir + 4) % BD_Dir_COUNT;
+  return (dir + 2) % BD_Dir_COUNT;
 }
 
 internal BD_Dir bd_dir_from_delta(V2I delta) {
@@ -67,7 +67,7 @@ internal BD_Tile* bd_tile_at(BD_Board* board, V2I p) {
 internal I32 bd_distance_steps(V2I a, V2I b) {
   I32 dx = a.x > b.x ? a.x - b.x : b.x - a.x;
   I32 dy = a.y > b.y ? a.y - b.y : b.y - a.y;
-  return Max(dx, dy);
+  return dx + dy;
 }
 
 internal F32 bd_distance(V2I a, V2I b) {
@@ -226,7 +226,7 @@ internal BD_TerrainPatch bd_terrain_in_rect(Arena* arena, BD_Board* board, V2I m
 // open set is a binary heap with lazy deletion: a relaxed node is re-pushed
 // rather than re-keyed, and stale pops (g no longer the best known) are
 // skipped. Pushes are bounded by the grid's in-degree, so the heap array is
-// sized 8 * tiles + 1 up front and never grows.
+// sized 4 * tiles + 1 up front and never grows.
 
 typedef struct {
   F32 f;
@@ -279,7 +279,6 @@ internal F32 bd__step_cost(BD_Board* board, BD_Tile* from_tile, BD_Dir dir, BD_T
   } else if(to_tile->features[BD_Feature_River] != 0 && rules->river_cross_cost > 0) {
     cost += rules->river_cross_cost;
   }
-  if(dir & 1) { cost *= 1.41421356f; } // odd dirs are the diagonals
   return cost;
 }
 
@@ -299,16 +298,8 @@ internal F32 bd__min_step_cost(BD_TravelRules* rules) {
   return result;
 }
 
-internal F32 bd__heuristic(V2I a, V2I b, F32 min_cost, B32 cardinal_only) {
-  I32 dx = a.x > b.x ? a.x - b.x : b.x - a.x;
-  I32 dy = a.y > b.y ? a.y - b.y : b.y - a.y;
-  F32 steps;
-  if(cardinal_only) {
-    steps = (F32)(dx + dy); // manhattan
-  } else {
-    steps = (F32)Max(dx, dy) + 0.41421356f * (F32)Min(dx, dy); // octile
-  }
-  return steps * min_cost;
+internal F32 bd__heuristic(V2I a, V2I b, F32 min_cost) {
+  return (F32)bd_distance_steps(a, b) * min_cost; // manhattan
 }
 
 // runs A* under board->rules; the path goes on `arena` (count 0 = no path)
@@ -332,7 +323,7 @@ internal BD_Path bd__path_compute(Arena* arena, BD_Board* board, V2I from, V2I t
   F32* best_g = push_array_no_zero(scratch.arena, F32, tile_count);
   U32* parent = push_array_no_zero(scratch.arena, U32, tile_count);
   U8* state = push_array(scratch.arena, U8, tile_count); // 0 unseen, 1 open, 2 closed
-  BD__PathNode* heap = push_array_no_zero(scratch.arena, BD__PathNode, tile_count * 8 + 1);
+  BD__PathNode* heap = push_array_no_zero(scratch.arena, BD__PathNode, tile_count * 4 + 1);
   U64 heap_count = 0;
 
   U32 start = (U32)((U64)from.y * w + from.x);
@@ -341,7 +332,7 @@ internal BD_Path bd__path_compute(Arena* arena, BD_Board* board, V2I from, V2I t
   parent[start] = start;
   state[start] = 1;
   bd__heap_push(heap, &heap_count,
-                (BD__PathNode){bd__heuristic(from, to, min_cost, rules->cardinal_only), 0, start});
+                (BD__PathNode){bd__heuristic(from, to, min_cost), 0, start});
 
   B32 found = 0;
   while(heap_count > 0) {
@@ -352,8 +343,7 @@ internal BD_Path bd__path_compute(Arena* arena, BD_Board* board, V2I from, V2I t
 
     V2I p = {(I32)(node.idx % w), (I32)(node.idx / w)};
     BD_Tile* tile = &board->tiles[node.idx];
-    U32 dir_step = rules->cardinal_only ? 2 : 1; // even dirs are the cardinals
-    for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += dir_step) {
+    for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += 1) {
       V2I np = v2i_add(p, bd__dir_deltas[dir]);
       if(!bd_in_bounds(board, np)) { continue; }
       U32 nidx = (U32)((U64)np.y * w + np.x);
@@ -366,7 +356,7 @@ internal BD_Path bd__path_compute(Arena* arena, BD_Board* board, V2I from, V2I t
         parent[nidx] = node.idx;
         state[nidx] = 1;
         bd__heap_push(heap, &heap_count,
-                      (BD__PathNode){g + bd__heuristic(np, to, min_cost, rules->cardinal_only), g, nidx});
+                      (BD__PathNode){g + bd__heuristic(np, to, min_cost), g, nidx});
       }
     }
   }
@@ -391,13 +381,9 @@ internal BD_Path bd__path_compute(Arena* arena, BD_Board* board, V2I from, V2I t
 internal F32 bd_step_cost(BD_Board* board, V2I from, V2I to) {
   F32 result = 0;
   if(bd_in_bounds(board, from) && bd_in_bounds(board, to)) {
-    V2I delta = v2i_sub(to, from);
-    U32 dir_step = board->rules.cardinal_only ? 2 : 1; // even dirs are the cardinals
-    for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += dir_step) {
-      if(v2i_eq(bd__dir_deltas[dir], delta)) {
-        result = bd__step_cost(board, bd_tile_at(board, from), dir, bd_tile_at(board, to));
-        break;
-      }
+    BD_Dir dir = bd_dir_from_delta(v2i_sub(to, from));
+    if(dir < BD_Dir_COUNT) {
+      result = bd__step_cost(board, bd_tile_at(board, from), dir, bd_tile_at(board, to));
     }
   }
   return result;
