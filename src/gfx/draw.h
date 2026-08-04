@@ -105,15 +105,21 @@ internal void d_line(V2 a, V2 b, F32 thickness, V4 color);
 // Push tall images first for tighter sheets, if you care. Everything samples
 // linearly for now, fonts included.
 
+// Storage is RGBA8, but callers never frob bytes: pixels read and write as
+// V4 colors in 0..1 through the accessors below.
 typedef struct {
   I32 w;
   I32 h;
   U8* pixels; // RGBA8, w*h*4 bytes
 } D_Image;
 
-// ZII: a missing/broken file decodes as the zero image (needs a decoder --
-// stb_image, wired when a real use case lands)
+// ZII: a missing or undecodable file loads as the zero image. Decodes
+// whatever stb_image speaks (png, jpg, bmp, tga, gif, ...).
 internal D_Image d_image_load(Arena* arena, String8 path);
+internal D_Image d_image_create(Arena* arena, I32 w, I32 h, V4 color);
+
+internal V4   d_image_get_px(D_Image image, I32 x, I32 y);           // out of bounds / nil image: {0}
+internal void d_image_set_px(D_Image image, I32 x, I32 y, V4 color); // out of bounds / nil image: no-op
 
 //- fp: sprite sheets
 

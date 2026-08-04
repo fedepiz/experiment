@@ -18,7 +18,7 @@
 // simply never closes. Everything drawn funnels through d__emit, where the
 // camera transform and the current clip land on the quad.
 
-// stbtt uses malloc internally for rasterization temporaries -- contained
+// stbtt/stbi use malloc internally for their temporaries -- contained
 // third-party internals; everything of ours rides arenas as usual
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-parameter"
@@ -26,6 +26,10 @@
 #define STBTT_STATIC
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "gfx/stb_truetype.h"
+#define STB_IMAGE_STATIC
+#define STBI_NO_STDIO // files arrive as bytes via os_read_entire_file
+#define STB_IMAGE_IMPLEMENTATION
+#include "gfx/stb_image.h"
 #pragma clang diagnostic pop
 
 ////////////////////////////////
@@ -416,12 +420,71 @@ internal D_Sprite d_sprite_from_image(D_Image image) {
 ////////////////////////////////
 //~ fp: Images
 
+internal U8 d__u8_from_unit(F32 x) {
+  F32 clamped = Clamp(0.0f, x, 1.0f);
+  return (U8)(clamped * 255.0f + 0.5f);
+}
+
 internal D_Image d_image_load(Arena* arena, String8 path) {
-  // needs a decoder (stb_image) -- wired when a real use case lands
-  Unused(arena);
-  Unused(path);
   D_Image result = {0};
+  B32 read_ok = 0;
+  ArenaTemp scratch = arena_get_scratch(&arena, 1);
+  String8 file = os_read_entire_file(scratch.arena, path, &read_ok);
+  if(read_ok && file.size > 0) {
+    int w = 0, h = 0, source_comp = 0;
+    U8* decoded = stbi_load_from_memory(file.str, (int)file.size, &w, &h, &source_comp, 4);
+    if(decoded != 0) {
+      result.w = (I32)w;
+      result.h = (I32)h;
+      result.pixels = push_array_no_zero(arena, U8, (U64)w * (U64)h * 4);
+      MemoryCopy(result.pixels, decoded, (U64)w * (U64)h * 4);
+      stbi_image_free(decoded); // stbi's malloc; ours lives on the arena
+    }
+  }
+  arena_release_scratch(scratch);
   return result;
+}
+
+internal D_Image d_image_create(Arena* arena, I32 w, I32 h, V4 color) {
+  D_Image result = {0};
+  if(w > 0 && h > 0) {
+    result.w = w;
+    result.h = h;
+    result.pixels = push_array_no_zero(arena, U8, (U64)w * (U64)h * 4);
+    U8 rgba[4] = {
+      d__u8_from_unit(color.x),
+      d__u8_from_unit(color.y),
+      d__u8_from_unit(color.z),
+      d__u8_from_unit(color.w),
+    };
+    U64 count = (U64)w * (U64)h;
+    for(U64 i = 0; i < count; i += 1) {
+      MemoryCopy(result.pixels + i * 4, rgba, 4);
+    }
+  }
+  return result;
+}
+
+internal V4 d_image_get_px(D_Image image, I32 x, I32 y) {
+  V4 result = {0};
+  if(image.pixels != 0 && 0 <= x && x < image.w && 0 <= y && y < image.h) {
+    U8* px = &image.pixels[((U64)y * (U64)image.w + (U64)x) * 4];
+    result.x = (F32)px[0] / 255.0f;
+    result.y = (F32)px[1] / 255.0f;
+    result.z = (F32)px[2] / 255.0f;
+    result.w = (F32)px[3] / 255.0f;
+  }
+  return result;
+}
+
+internal void d_image_set_px(D_Image image, I32 x, I32 y, V4 color) {
+  if(image.pixels != 0 && 0 <= x && x < image.w && 0 <= y && y < image.h) {
+    U8* px = &image.pixels[((U64)y * (U64)image.w + (U64)x) * 4];
+    px[0] = d__u8_from_unit(color.x);
+    px[1] = d__u8_from_unit(color.y);
+    px[2] = d__u8_from_unit(color.z);
+    px[3] = d__u8_from_unit(color.w);
+  }
 }
 
 ////////////////////////////////

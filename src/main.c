@@ -35,27 +35,19 @@ int main(void) {
   D_Sprite stripes = {0};
   {
     enum { SPRITE_DIM = 128 };
-    U8* checker_px = push_array(frame_arena, U8, SPRITE_DIM * SPRITE_DIM * 4);
-    U8* stripes_px = push_array(frame_arena, U8, SPRITE_DIM * SPRITE_DIM * 4);
+    D_Image checker_img = d_image_create(frame_arena, SPRITE_DIM, SPRITE_DIM, (V4){0});
+    D_Image stripes_img = d_image_create(frame_arena, SPRITE_DIM, SPRITE_DIM, (V4){0});
     for(I32 y = 0; y < SPRITE_DIM; y += 1) {
       for(I32 x = 0; x < SPRITE_DIM; x += 1) {
-        U8* c = &checker_px[(y * SPRITE_DIM + x) * 4];
         B32 c_on = (((x >> 4) + (y >> 4)) & 1);
-        c[0] = c_on ? 230 : 40;
-        c[1] = c_on ? 90 : 40;
-        c[2] = c_on ? 200 : 48;
-        c[3] = 255;
-        U8* s = &stripes_px[(y * SPRITE_DIM + x) * 4];
+        d_image_set_px(checker_img, x, y, c_on ? (V4){0.90f, 0.35f, 0.78f, 1} : (V4){0.16f, 0.16f, 0.19f, 1});
         B32 s_on = (((x + y) >> 4) & 1);
-        s[0] = s_on ? 60 : 20;
-        s[1] = s_on ? 210 : 60;
-        s[2] = s_on ? 190 : 60;
-        s[3] = 255;
+        d_image_set_px(stripes_img, x, y, s_on ? (V4){0.24f, 0.82f, 0.75f, 1} : (V4){0.08f, 0.24f, 0.24f, 1});
       }
     }
     d_spritesheet_begin(512, 256);
-    checker = d_spritesheet_push((D_Image){SPRITE_DIM, SPRITE_DIM, checker_px});
-    stripes = d_spritesheet_push((D_Image){SPRITE_DIM, SPRITE_DIM, stripes_px});
+    checker = d_spritesheet_push(checker_img);
+    stripes = d_spritesheet_push(stripes_img);
     d_spritesheet_end();
     arena_clear(frame_arena); // pixels are on the GPU now
   }
