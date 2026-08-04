@@ -303,8 +303,8 @@ internal D_Sheet* d__sheet_from_id(U64 id) {
 
 // Allocates a sheet slot and its GPU texture. opt_data fills it verbatim
 // (perfectly-sized one-image sheets); with no data the texture is zeroed --
-// the packer leaves 1-texel gutters between regions, and linear sampling
-// must find transparent black there, not stale memory.
+// packed regions whose pusher does not fill the gutter ring (glyphs) rely on
+// linear sampling finding transparent black there, not stale memory.
 internal U64 d__sheet_create(I32 w, I32 h, R_TexFormat format, void* opt_data) {
   U64 result = 0;
   U64 slot = D_SHEET_CAP;
@@ -339,20 +339,28 @@ internal U64 d__sheet_create(I32 w, I32 h, R_TexFormat format, void* opt_data) {
 }
 
 // incremental shelf packing: the position is final the moment it is handed
-// out, which is what lets sprites resolve at push time
+// out, which is what lets sprites resolve at push time. Every region is
+// reserved with a D__SHEET_GUTTER ring around its content, so linear
+// sampling at a sprite's edge can never reach a neighboring region. What the
+// ring holds is the pusher's business: sprite images duplicate their edge
+// texels into it (tiles butt seamlessly); glyphs leave it transparent black
+// (correct for alpha-blended text).
+#define D__SHEET_GUTTER 1
+
 internal B32 d__sheet_pack(D_Sheet* sheet, I32 w, I32 h, I32* out_x, I32* out_y) {
   B32 result = 0;
-  I32 pad = 1;                              // gutter
-  if(sheet->shelf_x + w + pad > sheet->w) { // shelf full: open the next one
+  I32 fw = w + 2 * D__SHEET_GUTTER;
+  I32 fh = h + 2 * D__SHEET_GUTTER;
+  if(sheet->shelf_x + fw > sheet->w) { // shelf full: open the next one
     sheet->shelf_y += sheet->shelf_h;
     sheet->shelf_x = 0;
     sheet->shelf_h = 0;
   }
-  if(sheet->shelf_x + w + pad <= sheet->w && sheet->shelf_y + h + pad <= sheet->h) {
-    *out_x = sheet->shelf_x;
-    *out_y = sheet->shelf_y;
-    sheet->shelf_x += w + pad;
-    sheet->shelf_h = Max(sheet->shelf_h, h + pad);
+  if(sheet->shelf_x + fw <= sheet->w && sheet->shelf_y + fh <= sheet->h) {
+    *out_x = sheet->shelf_x + D__SHEET_GUTTER;
+    *out_y = sheet->shelf_y + D__SHEET_GUTTER;
+    sheet->shelf_x += fw;
+    sheet->shelf_h = Max(sheet->shelf_h, fh);
     result = 1;
   }
   return result;
@@ -374,7 +382,24 @@ internal D_Sprite d_spritesheet_push(D_Image image) {
   if(sheet != 0 && image.pixels != 0 && image.w > 0 && image.h > 0) {
     I32 x = 0, y = 0;
     if(d__sheet_pack(sheet, image.w, image.h, &x, &y)) {
-      r_tex_update(sheet->tex, x, y, image.w, image.h, image.pixels);
+      // upload the image plus its gutter ring, filled with clamped edge
+      // texels: linear sampling at the sprite's border then blends with the
+      // sprite's own colors, so tiled sprites butt without seams
+      ArenaTemp scratch = arena_get_scratch(0, 0);
+      I32 fw = image.w + 2 * D__SHEET_GUTTER;
+      I32 fh = image.h + 2 * D__SHEET_GUTTER;
+      U8* staging = push_array_no_zero(scratch.arena, U8, (U64)fw * fh * 4);
+      for(I32 sy = 0; sy < fh; sy += 1) {
+        I32 cy = Clamp(0, sy - D__SHEET_GUTTER, image.h - 1);
+        for(I32 sx = 0; sx < fw; sx += 1) {
+          I32 cx = Clamp(0, sx - D__SHEET_GUTTER, image.w - 1);
+          MemoryCopy(staging + ((U64)sy * fw + sx) * 4,
+                     image.pixels + ((U64)cy * image.w + cx) * 4, 4);
+        }
+      }
+      r_tex_update(sheet->tex, x - D__SHEET_GUTTER, y - D__SHEET_GUTTER, fw, fh, staging);
+      arena_release_scratch(scratch);
+
       result.sheet.u64 = d_state.open_sheet;
       result.src = (Rect){{(F32)x, (F32)y}, {(F32)(x + image.w), (F32)(y + image.h)}};
       result.size = (V2){(F32)image.w, (F32)image.h};

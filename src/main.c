@@ -1,4 +1,4 @@
-////////////////////////////////
+﻿////////////////////////////////
 //~ fp: Layer Includes
 //
 // The only file the compiler is pointed at. All headers first, then all
@@ -35,6 +35,117 @@ global V4 MAP_PAWN_COLORS[] = {
     {0.88f, 0.32f, 0.26f, 1},
     {0.93f, 0.93f, 0.96f, 1},
 };
+
+////////////////////////////////
+//~ fp: temp: Map Assets
+//
+// Everything map_render draws from, loaded once at startup and packed into
+// one runtime spritesheet. Today that is terrain tiles (tools/gen_tiles.py ->
+// assets/tiles/<terrain>_<n>.png); entity sprites, feature art, and the rest
+// join this struct as they get art. Variants for a terrain load until the
+// first missing file; a terrain with no art at all keeps count 0 and
+// map_render falls back to its flat WG_TERRAIN_DATA color, so art can arrive
+// terrain by terrain.
+
+#define MAP_TILE_VARIANTS 8
+
+// ground tiles are world-space slices: a 4x4 seamless torus per terrain,
+// indexed by map position, so neighboring tiles continue one texture
+#define MAP_GROUND_GRID 4
+#define MAP_GROUND_VARIANTS (MAP_GROUND_GRID * MAP_GROUND_GRID)
+
+typedef struct {
+  D_Sprite terrain_sprites[WG_TerrainType_COUNT][MAP_GROUND_VARIANTS];
+  U32 terrain_variant_counts[WG_TerrainType_COUNT];
+
+  // pictographic sprites (tree clusters, rock masses) drawn over the ground
+  // tile; terrains without overlay art keep count 0 and draw ground only
+  D_Sprite overlay_sprites[WG_TerrainType_COUNT][MAP_TILE_VARIANTS];
+  U32 overlay_variant_counts[WG_TerrainType_COUNT];
+
+  // sparser art for tiles on a region's border (lone trees, small rocks):
+  // forests thin out and massifs crumble instead of ending in a wall
+  D_Sprite edge_overlay_sprites[WG_TerrainType_COUNT][MAP_TILE_VARIANTS];
+  U32 edge_overlay_variant_counts[WG_TerrainType_COUNT];
+
+  // ground fringes (DF edge-shapes style): a terrain's ground cut by a
+  // ragged mask, drawn spilling over the boundary onto the neighbor tile;
+  // indexed by the side of the tile the owning neighbor lies on
+  D_Sprite fringe_sprites[WG_TerrainType_COUNT][BD_Dir_COUNT][MAP_TILE_VARIANTS];
+  U32 fringe_variant_counts[WG_TerrainType_COUNT][BD_Dir_COUNT];
+} MapAssets;
+
+// who spills over whom where grounds meet: higher rank fringes onto lower,
+// so every boundary blends exactly once, in one direction. Zero never spills
+// onto anyone; water only receives, which is exactly what makes coastlines
+// read as ragged land-over-water.
+global U8 MAP_FRINGE_RANK[WG_TerrainType_COUNT] = {
+    0, // nil
+    0, // water
+    5, // plains
+    4, // forest
+    1, // mountain
+    2, // desert
+    3, // swamp
+};
+
+global char* MAP_FRINGE_DIR_NAMES[BD_Dir_COUNT] = {"n", "e", "s", "w"};
+
+internal MapAssets map_assets_load(void) {
+  MapAssets assets = {0};
+  ArenaTemp scratch = arena_get_scratch(0, 0);
+  d_spritesheet_begin(512, 512);
+  for(WG_TerrainType type = 0; type < WG_TerrainType_COUNT; type += 1) {
+    for(U32 variant = 0; variant < MAP_GROUND_VARIANTS; variant += 1) {
+      String8 path = push_str8f(scratch.arena, "assets/tiles/%S_%u.png",
+                                WG_TERRAIN_DATA[type].name, variant);
+      D_Image image = d_image_load(scratch.arena, path);
+      if(image.w == 0) { break; } // ZII: missing/broken file is the zero image
+      assets.terrain_sprites[type][variant] = d_spritesheet_push(image);
+      assets.terrain_variant_counts[type] += 1;
+    }
+    for(U32 variant = 0; variant < MAP_TILE_VARIANTS; variant += 1) {
+      String8 path = push_str8f(scratch.arena, "assets/tiles/%S_overlay_%u.png",
+                                WG_TERRAIN_DATA[type].name, variant);
+      D_Image image = d_image_load(scratch.arena, path);
+      if(image.w == 0) { break; }
+      assets.overlay_sprites[type][variant] = d_spritesheet_push(image);
+      assets.overlay_variant_counts[type] += 1;
+    }
+    for(U32 variant = 0; variant < MAP_TILE_VARIANTS; variant += 1) {
+      String8 path = push_str8f(scratch.arena, "assets/tiles/%S_edge_%u.png",
+                                WG_TERRAIN_DATA[type].name, variant);
+      D_Image image = d_image_load(scratch.arena, path);
+      if(image.w == 0) { break; }
+      assets.edge_overlay_sprites[type][variant] = d_spritesheet_push(image);
+      assets.edge_overlay_variant_counts[type] += 1;
+    }
+    for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += 1) {
+      for(U32 variant = 0; variant < MAP_TILE_VARIANTS; variant += 1) {
+        String8 path = push_str8f(scratch.arena, "assets/tiles/%S_fringe_%s_%u.png",
+                                  WG_TERRAIN_DATA[type].name, MAP_FRINGE_DIR_NAMES[dir], variant);
+        D_Image image = d_image_load(scratch.arena, path);
+        if(image.w == 0) { break; }
+        assets.fringe_sprites[type][dir][variant] = d_spritesheet_push(image);
+        assets.fringe_variant_counts[type][dir] += 1;
+      }
+    }
+  }
+  d_spritesheet_end();
+  arena_release_scratch(scratch);
+  return assets;
+}
+
+// which variant a tile shows -- pure position hash, so it never flickers
+internal U32 map_variant_noise(I32 x, I32 y) {
+  U32 h = (U32)x * 374761393u + (U32)y * 668265263u;
+  h ^= h >> 16;
+  h *= 0x7feb352du;
+  h ^= h >> 15;
+  h *= 0x846ca68bu;
+  h ^= h >> 16;
+  return h;
+}
 
 internal B32 map_tile_passable(BD_Board* board, V2I p) {
   BD_Terrain terrain = bd_tile_at(board, p)->terrain;
@@ -78,7 +189,7 @@ internal BD_Board* map_create(Arena* arena, U64 seed) {
   return board;
 }
 
-internal void map_render(BD_Board* board, D_Camera camera) {
+internal void map_render(BD_Board* board, MapAssets* assets, D_Camera camera) {
   V2 vp = wnd_size();
   d_rect((Rect){{0, 0}, {vp.x, vp.y}}, (V4){0.06f, 0.06f, 0.08f, 1});
 
@@ -96,10 +207,52 @@ internal void map_render(BD_Board* board, D_Camera camera) {
       for(I32 x = x0; x <= x1; x += 1) {
         BD_Tile* tile = bd_tile_at(board, (V2I){x, y});
         Rect r = {{x * MAP_TILE, y * MAP_TILE}, {(x + 1) * MAP_TILE, (y + 1) * MAP_TILE}};
-        V4 color = tile->terrain < WG_TerrainType_COUNT
-                       ? WG_TERRAIN_DATA[tile->terrain].color
-                       : (V4){1, 0, 1, 1}; // magenta = bad id
-        d_rect(r, color);
+        BD_Terrain terrain = tile->terrain < WG_TerrainType_COUNT ? tile->terrain : WG_TerrainType_Nil;
+        U32 h = map_variant_noise(x, y); // ground and overlay pick from different bits
+        U32 count = assets->terrain_variant_counts[terrain];
+        if(count == MAP_GROUND_VARIANTS) {
+          // a full set is a world-space sliced torus: index by position and
+          // neighboring tiles continue one seamless texture
+          U32 variant = (U32)((y & (MAP_GROUND_GRID - 1)) * MAP_GROUND_GRID +
+                              (x & (MAP_GROUND_GRID - 1)));
+          d_sprite(assets->terrain_sprites[terrain][variant], r, (V4){0}); // zero tint = as-is
+        } else if(count > 0) {
+          d_sprite(assets->terrain_sprites[terrain][h % count], r, (V4){0});
+        } else {
+          d_rect(r, WG_TERRAIN_DATA[terrain].color); // nil's table color is loud magenta
+        }
+
+        BD_Terrain neighbors[BD_Dir_COUNT];
+        B32 on_region_border = 0;
+        for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += 1) {
+          neighbors[dir] = bd_tile_at(board, v2i_add((V2I){x, y}, bd_dir_delta(dir)))->terrain;
+          on_region_border |= neighbors[dir] != terrain;
+        }
+
+        // ground fringes: the dominant neighbor's ground spills a ragged
+        // tongue across the boundary, so tones wander over the tile grid.
+        // Water ranks 0, so shores are land fringing over water -- ragged
+        // coastlines fall out of the same rule
+        for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += 1) {
+          BD_Terrain neighbor = neighbors[dir];
+          if(neighbor >= WG_TerrainType_COUNT || neighbor == terrain) { continue; }
+          if(MAP_FRINGE_RANK[neighbor] <= MAP_FRINGE_RANK[terrain]) { continue; }
+          U32 fringe_count = assets->fringe_variant_counts[neighbor][dir];
+          if(fringe_count == 0) { continue; }
+          U32 fh = map_variant_noise(x + (I32)dir * 131, y);
+          d_sprite(assets->fringe_sprites[neighbor][dir][fh % fringe_count], r, (V4){0});
+        }
+
+        // overlays taper at the region border: sparse edge art there, full
+        // art inside -- with occasional bare gaps so a massif or forest
+        // reads as scattered shapes, not a carpet of one tile art per cell
+        U32 overlay_count = assets->overlay_variant_counts[terrain];
+        U32 edge_count = assets->edge_overlay_variant_counts[terrain];
+        if(on_region_border && edge_count > 0) {
+          d_sprite(assets->edge_overlay_sprites[terrain][(h >> 8) % edge_count], r, (V4){0});
+        } else if(overlay_count > 0 && (h >> 16) % 100 < 80) {
+          d_sprite(assets->overlay_sprites[terrain][(h >> 8) % overlay_count], r, (V4){0});
+        }
       }
     }
 
@@ -212,7 +365,7 @@ internal void test_render(D_Camera camera) {
   d_camera_end();
 
   d_text(font, 40, (V2){100, 600}, Col_White,
-         str8_lit("Imperium — draw layer online"));
+         str8_lit("Imperium â€” draw layer online"));
   d_text(font, 18, (V2){100, 660}, col_rgb(0.7f, 0.7f, 0.75f),
          str8_lit("rects, sprites, sheets, clip, camera, text"));
 
@@ -429,6 +582,8 @@ int main(void) {
   Game game = {0};
   U64 game_next_seed = 2704;
 
+  MapAssets map_assets = map_assets_load();
+
   //- fp: temp: fps overlay
   FPS_Counter fps_counter = {0};
   fps_counter.font = d_font_open(str8_lit("assets/fonts/Arial.ttf"));
@@ -468,7 +623,7 @@ int main(void) {
 
     d_frame_begin(frame_arena, wnd_size_px(), wnd_scale());
     {
-      map_render(game.board, camera); // fp: parked for the pacing experiment below
+      map_render(game.board, &map_assets, camera); // fp: parked for the pacing experiment below
       // test_render(camera); // fp: parked draw-layer demo scene
 
       fps_update(&fps_counter);
