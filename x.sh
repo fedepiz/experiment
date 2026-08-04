@@ -3,8 +3,12 @@
 set -eu
 cd "$(dirname "$0")"
 
-# cc resolves to gcc on Linux and clang on macOS; override with CC=... if needed
-CC="${CC:-cc}"
+# cc resolves to gcc on Linux and clang on macOS; Windows (Git Bash / MSYS)
+# ships no cc shim, so clang is named outright. Override with CC=... if needed.
+case "$(uname -s)" in
+  MINGW*|MSYS*) CC="${CC:-clang}" ;;
+  *)            CC="${CC:-cc}" ;;
+esac
 # _DEFAULT_SOURCE: strict c11 hides POSIX/BSD prototypes (mmap's MAP_ANONYMOUS,
 # madvise, ...) on glibc; macOS ignores it harmlessly. Must be a build flag,
 # not a #define in a .c file: in a unity build the first system header is
@@ -20,11 +24,13 @@ DEBUG="-g -O0 -DBUILD_DEBUG=1"
 RELEASE="-g -O2 -DBUILD_DEBUG=0"
 
 # system libraries per OS: everything we wrote rides in the unity TU; only
-# these link.
+# these link. EXE is the platform's executable suffix.
+EXE=""
 case "$(uname -s)" in
-  Linux)  LIBS="-lX11" ;;
-  Darwin) LIBS="-framework Cocoa -framework OpenGL" ;;
-  *)      LIBS="" ;;
+  Linux)        LIBS="-lX11" ;;
+  Darwin)       LIBS="-framework Cocoa -framework OpenGL" ;;
+  MINGW*|MSYS*) LIBS="-luser32 -lgdi32 -lopengl32"; EXE=".exe" ;;
+  *)            LIBS="" ;;
 esac
 
 cmd_build() {
@@ -44,10 +50,10 @@ cmd_build() {
       $CC $flags src/main.c build/cocoa.o -o build/app $LIBS
       ;;
     *)
-      $CC $flags src/main.c -o build/app $LIBS
+      $CC $flags src/main.c -o "build/app$EXE" $LIBS
       ;;
   esac
-  echo "built build/app ($mode)"
+  echo "built build/app$EXE ($mode)"
 }
 
 cmd_run() {
@@ -58,7 +64,7 @@ cmd_run() {
     --debug)   mode=debug; shift ;;
   esac
   cmd_build "$mode"
-  ./build/app "$@"
+  "./build/app$EXE" "$@"
 }
 
 cmd_clean() {

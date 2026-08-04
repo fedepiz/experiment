@@ -19,6 +19,12 @@
 // Sizes and positions are in points, not pixels (on retina, 1 point = 2
 // pixels); orientation matches X11 (top-left origin). Nothing cares about the
 // point/pixel distinction yet -- revisit when rendering lands.
+//
+// The OS_MAC guard keeps the file quiet in clangd, which parses it standalone
+// on every platform; real builds only include it on mac anyway, via
+// gfx/window.c.
+
+#if OS_MAC
 
 internal void wnd_open(String8 title, I32 w, I32 h) {
   cocoa_window_open((const char*)title.str, (int)title.size, (int)w, (int)h);
@@ -56,6 +62,21 @@ internal V2 wnd_size_px(void) {
 
 internal F32 wnd_scale(void) {
   return (F32)cocoa_backing_scale();
+}
+
+internal void wnd_set_swap_interval(I32 interval) {
+  // needs a cocoa-layer call (NSOpenGLCPSwapInterval); trips loudly so it
+  // isn't forgotten
+  Unused(interval);
+  NotImplemented;
+}
+
+internal F32 wnd_refresh_rate(void) {
+  // no CGDisplay query through the cocoa layer yet; trips loudly rather than
+  // returning a quiet 0 (which would silently disable frame-time snapping
+  // and be forgotten)
+  NotImplemented;
+  return 0;
 }
 
 ////////////////////////////////
@@ -234,3 +255,5 @@ internal WND_EventList wnd_get_events(Arena* arena) {
   }
   return list;
 }
+
+#endif // OS_MAC

@@ -12,6 +12,12 @@
 // Xlib pollutes the TU with typedefs and macros (Window, Display, True, None,
 // ...) -- in a unity build that pollution is global, so avoid those names for
 // our own symbols.
+//
+// The OS_LINUX guard keeps the file quiet in clangd, which parses it
+// standalone on every platform (no X11 headers off Linux); real builds only
+// include it on Linux anyway, via gfx/window.c.
+
+#if OS_LINUX
 
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -97,6 +103,12 @@ internal void wnd_equip_gl(void) { NotImplemented; }
 internal void wnd_swap(void)     { NotImplemented; wnd__frame_mark(); }
 internal V2  wnd_size_px(void)   { NotImplemented; V2 result = {0}; return result; }
 internal F32 wnd_scale(void)     { NotImplemented; return 1.0f; }
+
+// XRandR query still to come; trips loudly rather than returning a quiet 0
+// (which would silently disable frame-time snapping and be forgotten)
+internal F32 wnd_refresh_rate(void) { NotImplemented; return 0; }
+
+internal void wnd_set_swap_interval(I32 interval) { Unused(interval); NotImplemented; }
 
 ////////////////////////////////
 //~ fp: Event Translation
@@ -226,3 +238,5 @@ internal WND_EventList wnd_get_events(Arena* arena) {
   }
   return list;
 }
+
+#endif // OS_LINUX

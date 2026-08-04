@@ -21,6 +21,9 @@
 # define GL_SILENCE_DEPRECATION // deliberate GL-over-Metal choice; see cocoa.m
 # include <OpenGL/gl3.h>
 # define R_GL_BACKEND 1
+#elif OS_WINDOWS
+# include "gfx/win/gl.c" // the 1.1 header + runtime loading of everything newer
+# define R_GL_BACKEND 1
 #else
 # define R_GL_BACKEND 0
 #endif
@@ -129,14 +132,21 @@ global const char* r_gl__vs_src =
   "flat out vec2 v_border_soft;\n"
   "void main() {\n"
   "  vec2 t = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));\n"
+  "  vec2 corner = 2.0 * t - 1.0;\n"
   "  vec2 center = 0.5 * (a_dst.xy + a_dst.zw);\n"
   "  vec2 half_size = 0.5 * (a_dst.zw - a_dst.xy);\n"
-  "  vec2 local = (2.0 * t - 1.0) * half_size;\n"
+  // the fade band lies entirely outside the shape (see the fragment shader),
+  // so the quad inflates by the band's full width to give it fragments to
+  // live in -- without this, straight edges clip the band away and only
+  // corners come out antialiased. pad is 0 for hard-edged quads.
+  "  float pad = 2.0 * a_misc.y;\n"
+  "  vec2 local = corner * (half_size + vec2(pad));\n"
   // unrotated corners come straight from a_dst (multiplying by 0/1 and adding
   // 0 are exact in fp), NOT from center +- half_size, whose rounding differs
   // between two quads sharing an edge coordinate and opens sliver gaps
-  // between abutting tiles
-  "  vec2 pos = a_dst.xy * (1.0 - t) + a_dst.zw * t;\n"
+  // between abutting tiles; the +- pad term is exactly 0 there (soft quads
+  // don't abut, so their inexactness is fine)
+  "  vec2 pos = a_dst.xy * (1.0 - t) + a_dst.zw * t + corner * pad;\n"
   "  if (a_misc.z != 0.0) {\n"
   // y grows downward, so visual counter-clockwise is a clockwise rotation
   // in coordinate terms -- hence the transposed rotation matrix
@@ -147,7 +157,10 @@ global const char* r_gl__vs_src =
   "  gl_Position = vec4(2.0 * pos.x / u_viewport.x - 1.0, 1.0 - 2.0 * pos.y / u_viewport.y, 0.0, 1.0);\n"
   "  v_local = local;\n"
   "  v_pos = pos;\n"
-  "  v_uv = mix(a_src.xy, a_src.zw, t);\n"
+  // uv stretches with the inflation so texels stay glued to the geometry;
+  // at pad 0 this reduces to exactly t (0.5 +- 0.5 is exact in fp)
+  "  vec2 t_uv = 0.5 + (t - 0.5) * (half_size + vec2(pad)) / max(half_size, vec2(1e-6));\n"
+  "  v_uv = mix(a_src.xy, a_src.zw, t_uv);\n"
   "  v_color = mix(mix(a_color_tl, a_color_tr, t.x), mix(a_color_bl, a_color_br, t.x), t.y);\n"
   "  v_half_size = half_size;\n"
   "  v_clip = a_clip;\n"
@@ -217,6 +230,10 @@ internal GLuint r_gl__compile_shader(GLenum kind, const char* src) {
 
 // Requires a current GL context: wnd_open + wnd_equip_gl first.
 internal void r_init(void) {
+#if OS_WINDOWS
+  r_gl__load_procs(); // needs that current context too -- see win/gl.c
+#endif
+
   //- program
   GLuint vs = r_gl__compile_shader(GL_VERTEX_SHADER, r_gl__vs_src);
   GLuint fs = r_gl__compile_shader(GL_FRAGMENT_SHADER, r_gl__fs_src);

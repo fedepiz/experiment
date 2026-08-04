@@ -21,15 +21,32 @@ internal void wnd_swap(void);
 internal V2  wnd_size_px(void);
 internal F32 wnd_scale(void);
 
+// vblanks per swap: 1 (the equip default) presents every refresh; 2 locks to
+// every second one -- the hardware-paced way to run a 120Hz display at 60,
+// as opposed to a timer cap, which beats against the vblank clock and judders
+internal void wnd_set_swap_interval(I32 interval);
+
 ////////////////////////////////
 //~ fp: Frame Timing
 //
 // Delta between the last two wnd_swap calls, in seconds -- the swap is the
 // frame boundary, so under vsync this reads as the display period. 0 until
-// two swaps have happened; unclamped, so a long stall (debugger, window
-// drag) shows up honestly and callers decide what to do with it.
+// two swaps have happened. When the display rate is known, time is paid out
+// in whole display periods, with a running debt banking the difference from
+// the measured wall time: presentation is quantized to vblanks, so whole
+// periods are the only honest currency, and the raw unblock times (which
+// wobble with driver queueing and scheduling) would read as motion jitter on
+// a rock-steady display. The debt is kept within about a period, so reported
+// time never drifts from wall time; stalls -- debugger pauses, window drags
+// -- pay out immediately as many whole periods, and callers decide what to
+// do with them.
 
 internal F32 wnd_frame_time(void);
+internal F32 wnd_frame_time_raw(void); // the unsnapped measurement, for diagnostics
+
+// refresh rate of the display the window sits on, in Hz; 0 when the backend
+// has no query yet (mac, linux), which disables the snapping above
+internal F32 wnd_refresh_rate(void);
 
 // backend contract: every wnd_swap implementation calls this after presenting
 internal void wnd__frame_mark(void);

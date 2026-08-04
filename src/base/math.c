@@ -3,6 +3,10 @@
 
 #include <math.h>
 
+internal F32 f32_exp2(F32 x) {
+  return exp2f(x);
+}
+
 internal B32 v2_eq(V2 a, V2 b) {
   return a.x == b.x && a.y == b.y;
 }

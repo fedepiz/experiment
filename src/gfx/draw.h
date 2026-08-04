@@ -57,6 +57,12 @@ typedef struct {
   V2  center; // world point at the viewport center
   F32 zoom;   // screen points per world unit; 0 reads as 1, so the zero
               // camera is a valid identity camera at the origin (ZII)
+
+  // inertial movement state, carried for whoever steers the camera (see
+  // camera_update); the transform math below never reads it. ZII: the zero
+  // camera is at rest.
+  V2  pan_vel;  // world units per second
+  F32 zoom_vel; // doublings per second
 } D_Camera;
 
 // Pure math on the camera value, except that the viewport size is read from

@@ -2,6 +2,10 @@
 
 #include "base/core.h"
 
+// 2^x -- the natural base for framerate-independent exponential rates: the
+// factor per second is exp2(rate), so `rate` reads as doublings per second.
+internal F32 f32_exp2(F32 x);
+
 typedef struct {
   F32 x;
   F32 y;

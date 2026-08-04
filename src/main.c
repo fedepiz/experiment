@@ -251,16 +251,55 @@ internal void camera_update(D_Camera* camera) {
       d_zoom += INTERACTIONS[i].z;
     }
   }
+  F32 dt = wnd_frame_time();
   F32 zoom = (camera->zoom == 0) ? 1.0f : camera->zoom;
-  // world-units-per-second scaled by 1/zoom, so panning covers a
-  // constant fraction of the screen at any zoom level
-  F32 delta = wnd_frame_time() * 400.0f / zoom;
 
-  camera->center = v2_scaled_add(camera->center, d_trans, delta);
+  //- inertial movement: the keys steer a target velocity, and the camera's
+  //  velocity exponentially chases it -- the same curve accelerates on press
+  //  and glides to a stop on release. `blend` is the fraction of the
+  //  remaining gap closed this frame; putting dt in the exponent makes two
+  //  half-frames compose to exactly one whole one, so the feel survives any
+  //  framerate. Bigger rate = snappier (velocity half-life = 1/rate seconds).
+  F32 blend = 1.0f - f32_exp2(-8.0f * dt);
 
-  // scroll zooms, exponentially so steps feel even at any level
-  zoom *= 1.0f + 0.1f * d_zoom;
+  // pan target is world-units-per-second scaled by 1/zoom, so panning covers
+  // a constant fraction of the screen at any zoom level; the zoom target is
+  // in doublings per second -- exponential, so it reads as the same speed at
+  // every level (the 1/zoom factor belongs to panning alone)
+  V2 pan_target = v2_scale(d_trans, 400.0f / zoom);
+  F32 zoom_target = 3.0f * d_zoom;
+  camera->pan_vel = v2_add(camera->pan_vel, v2_scale(v2_sub(pan_target, camera->pan_vel), blend));
+  camera->zoom_vel += (zoom_target - camera->zoom_vel) * blend;
+
+  camera->center = v2_scaled_add(camera->center, camera->pan_vel, dt);
+  zoom *= f32_exp2(camera->zoom_vel * dt);
   camera->zoom = Clamp(0.25f, zoom, 8.0f);
+}
+
+////////////////////////////////
+//~ fp: temp: 60fps Present Pacing
+//
+// Hardware-paces presentation to 60fps: when the monitor runs at a whole
+// multiple of 60 (60Hz, 120Hz, ...), present every Nth vblank -- the display
+// clock then enforces an exact 60 on every screen, and a drag between
+// mixed-rate monitors re-resolves through the cached wnd_refresh_rate.
+// Non-multiples (144Hz, 90Hz) fall back to every vblank; the +-2Hz tolerance
+// absorbs fractional rates (119.98 reads as 120). Call once per frame.
+
+internal void pace_60fps_update(void) {
+  local_persist I32 current_interval = 0;
+  F32 hz = wnd_refresh_rate();
+  I32 multiple = (I32)(hz / 60.0f + 0.5f);
+  I32 interval = 1;
+  if(multiple >= 1 &&
+     60.0f * (F32)multiple - 2.0f < hz && hz < 60.0f * (F32)multiple + 2.0f) {
+    interval = multiple;
+  }
+  if(interval != current_interval) {
+    current_interval = interval;
+    wnd_set_swap_interval(interval);
+    printf_str8("swap interval %d (%.0fHz monitor)\n", interval, hz);
+  }
 }
 
 ////////////////////////////////
@@ -360,6 +399,8 @@ int main(void) {
       printf_str8("(%f, %f)\n", pos.x, pos.y);
     }
 
+    pace_60fps_update();
+
     //- fp: temp: entities bank movement points each tick and pay the
     //  board's step cost to walk, so terrain speed is felt, not just routed
     //  around: forest crossings crawl, road hops fly
@@ -393,7 +434,7 @@ int main(void) {
 
     d_frame_begin(frame_arena, wnd_size_px(), wnd_scale());
     {
-      map_render(board, camera);
+      map_render(board, camera); // fp: parked for the pacing experiment below
       // test_render(camera); // fp: parked draw-layer demo scene
 
       fps_update(&fps_counter);

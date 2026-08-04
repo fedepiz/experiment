@@ -11,17 +11,40 @@
 
 global U64 wnd__frame_last_us;
 global F32 wnd__frame_dt;
+global F32 wnd__frame_dt_raw;
+global F32 wnd__frame_debt; // measured-but-unreported wall time, seconds
 
 internal void wnd__frame_mark(void) {
   U64 now = os_now_us();
   if(wnd__frame_last_us != 0) {
-    wnd__frame_dt = (F32)(now - wnd__frame_last_us) / 1000000.0f;
+    F32 dt = (F32)(now - wnd__frame_last_us) / 1000000.0f;
+    wnd__frame_dt_raw = dt;
+    // pay time out in whole display periods, banking the difference from the
+    // measurement as a debt (see the header). The steady state reports
+    // exactly one period per frame no matter how the raw unblock times
+    // wobble -- a 17ms block followed by a 0.5ms queue-absorbed return reads
+    // as two even periods, which is what the display actually showed. Real
+    // slowdowns push the debt past the threshold and pay out extra whole
+    // periods immediately, so a stall is still a stall.
+    F32 hz = wnd_refresh_rate();
+    if(hz > 0) {
+      F32 period = 1.0f / hz;
+      wnd__frame_debt += dt - period;
+      dt = period;
+      while(wnd__frame_debt > 1.5f * period) { dt += period; wnd__frame_debt -= period; }
+      while(wnd__frame_debt < -0.5f * period && dt > 0) { dt -= period; wnd__frame_debt += period; }
+    }
+    wnd__frame_dt = dt;
   }
   wnd__frame_last_us = now;
 }
 
 internal F32 wnd_frame_time(void) {
   return wnd__frame_dt;
+}
+
+internal F32 wnd_frame_time_raw(void) {
+  return wnd__frame_dt_raw;
 }
 
 ////////////////////////////////

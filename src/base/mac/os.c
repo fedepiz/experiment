@@ -4,6 +4,11 @@
 #include "base/strings.h"
 #include "base/os.h"
 
+// The OS_MAC guard keeps the file quiet in clangd, which parses it standalone
+// on every platform (no POSIX headers off unix); real builds only include it
+// on mac anyway, via base/os.c.
+#if OS_MAC
+
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -119,3 +124,5 @@ internal B32 os_write_entire_file(String8 path, String8 data) {
   }
   return result;
 }
+
+#endif // OS_MAC
