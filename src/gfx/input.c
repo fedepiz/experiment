@@ -14,6 +14,7 @@ typedef struct {
   B8 mouse_prev[WND_MouseButton_COUNT];
   B8 mouse_pressed[WND_MouseButton_COUNT]; // latch, same idea
   V2 mouse_pos;
+  V2 scroll; // accumulated over the frame: several wheel events sum
 } Input;
 
 global Input input_state;
@@ -42,6 +43,10 @@ internal V2 input_mouse_pos(void) {
   return input_state.mouse_pos;
 }
 
+internal V2 input_scroll(void) {
+  return input_state.scroll;
+}
+
 internal void input_process_events(WND_EventList event_list) {
   // last frame's state becomes prev, and the per-frame latches reset --
   // BEFORE this frame's events land, or edges can never be observed
@@ -49,6 +54,7 @@ internal void input_process_events(WND_EventList event_list) {
   MemoryCopy(input_state.mouse_prev, input_state.mouse_current, sizeof(input_state.mouse_current));
   MemoryZeroArray(input_state.key_pressed);
   MemoryZeroArray(input_state.mouse_pressed);
+  MemoryZeroStruct(&input_state.scroll);
 
   for(WND_Event* evt = event_list.first; evt; evt = evt->next) {
     switch(evt->type) {
@@ -68,6 +74,9 @@ internal void input_process_events(WND_EventList event_list) {
         break;
       case WND_EventType_MouseMoved:
         input_state.mouse_pos = evt->pos;
+        break;
+      case WND_EventType_Scroll:
+        input_state.scroll = v2_add(input_state.scroll, evt->scroll);
         break;
       default:
         break;

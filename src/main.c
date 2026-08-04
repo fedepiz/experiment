@@ -141,6 +141,11 @@ int main(void) {
         F32 delta = wnd_frame_time() * 100;
 
         camera.center = v2_scaled_add(camera.center, d_trans, delta);
+
+        // scroll zooms, exponentially so steps feel even at any level
+        F32 zoom = (camera.zoom == 0) ? 1.0f : camera.zoom;
+        zoom *= 1.0f + 0.1f * input_scroll().y;
+        camera.zoom = Clamp(0.25f, zoom, 8.0f);
       }
     }
     d_frame_end();
