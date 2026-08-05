@@ -72,7 +72,7 @@
 // construction.
 
 #define TL_TORUS_GRID  4
-#define TL_CLASS_CAP   16
+#define TL_CLASS_CAP   24
 #define TL_NETWORK_CAP 4
 #define TL_VARIANT_CAP 8
 

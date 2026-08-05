@@ -1,4 +1,6 @@
 # World generation knobs and terrain definitions, read by game/worldgen.h.
+# Every knob must be present: parse fallbacks are zero on purpose, so a
+# missing or misspelled key produces an obviously broken world.
 
 world = {
   width = 128
@@ -13,6 +15,18 @@ world = {
   moisture_scale = 20
   moisture_octaves = 5
   moisture_persistence = 0.7
+
+  # temperature: piecewise-linear latitude gradient through three points
+  # (equator = the map's middle row), wobbled by its own noise field, cooled
+  # by temperature_lapse per unit of elevation above the sea
+  temperature_north = 0.15
+  temperature_equator = 0.8
+  temperature_south = 0.45
+  temperature_variation = 0.15
+  temperature_scale = 40
+  temperature_octaves = 3
+  temperature_persistence = 0.5
+  temperature_lapse = 0.6
 
   # field anchors: sea_level says where water sits (rivers trace to it,
   # coasts test against it), drainage_ceiling is the elevation where the
@@ -41,12 +55,22 @@ world = {
   river_cross_cost = 2.0
 
   # Terrain rows, matched IN ORDER: a tile takes the first row whose bands
-  # all contain its field values (elevation / moisture / drainage, each
-  # 0..1; a missing band means "don't care", so the last row catches all).
-  # The row's position is its id; name is also the art prefix
-  # (<name>_ground.png etc). rank orders boundary spill: higher covers
-  # lower -- softer forms over harder ones. move_cost <= 0 is impassable.
+  # all contain its field values (elevation / moisture / drainage /
+  # temperature, each 0..1; a missing band means "don't care", so the last
+  # row catches all). The row's position is its id; name is also the art
+  # prefix (<name>_ground.png etc). rank orders boundary spill: higher
+  # covers lower -- softer forms over harder ones. move_cost <= 0 is
+  # impassable. overlay_density is the percent of interior tiles carrying
+  # overlay art -- rows with overlay art must declare it.
 
+  terrain_type = {
+    name = ice
+    color = [0.78 0.86 0.93]
+    rank = 3
+    move_cost = 0
+    elevation = [0.0 0.32]
+    temperature = [0.0 0.15]
+  }
   terrain_type = {
     name = ocean
     color = [0.12 0.22 0.42]
@@ -62,23 +86,33 @@ world = {
     elevation = [0.22 0.32]
   }
   terrain_type = {
+    name = snowcap
+    color = [0.88 0.90 0.95]
+    rank = 6
+    move_cost = 0
+    elevation = [0.62 1.0]
+    temperature = [0.0 0.22]
+  }
+  terrain_type = {
     name = mountain
     color = [0.54 0.52 0.50]
-    rank = 4
+    rank = 5
     move_cost = 0
+    overlay_density = 80
     elevation = [0.62 1.0]
   }
   terrain_type = {
     name = hills
     color = [0.52 0.56 0.38]
-    rank = 5
+    rank = 7
     move_cost = 2.0
+    overlay_density = 80
     elevation = [0.55 0.62]
   }
   terrain_type = {
     name = beach
     color = [0.85 0.79 0.60]
-    rank = 3
+    rank = 4
     move_cost = 1.0
     elevation = [0.32 0.34]
     needs_coast = 1
@@ -86,22 +120,58 @@ world = {
   terrain_type = {
     name = badlands
     color = [0.62 0.44 0.30]
-    rank = 6
+    rank = 8
     move_cost = 2.0
     moisture = [0.0 0.35]
     drainage = [0.65 1.0]
+    temperature = [0.45 1.0]
   }
   terrain_type = {
     name = desert
     color = [0.78 0.70 0.48]
-    rank = 7
+    rank = 9
     move_cost = 1.5
     moisture = [0.0 0.35]
+    temperature = [0.45 1.0]
+  }
+  terrain_type = {
+    name = taiga
+    color = [0.20 0.35 0.28]
+    rank = 13
+    move_cost = 2.0
+    overlay_density = 80
+    moisture = [0.45 1.0]
+    temperature = [0.0 0.3]
+  }
+  terrain_type = {
+    name = tundra
+    color = [0.62 0.65 0.55]
+    rank = 10
+    move_cost = 1.5
+    temperature = [0.0 0.25]
+  }
+  terrain_type = {
+    name = jungle
+    color = [0.13 0.42 0.20]
+    rank = 15
+    move_cost = 3.0
+    overlay_density = 85
+    moisture = [0.55 1.0]
+    temperature = [0.75 1.0]
+  }
+  terrain_type = {
+    name = savanna
+    color = [0.62 0.58 0.33]
+    rank = 11
+    move_cost = 1.0
+    overlay_density = 35
+    moisture = [0.35 0.55]
+    temperature = [0.7 1.0]
   }
   terrain_type = {
     name = swamp
     color = [0.30 0.42 0.36]
-    rank = 8
+    rank = 12
     move_cost = 3.0
     moisture = [0.60 1.0]
     drainage = [0.0 0.35]
@@ -109,14 +179,15 @@ world = {
   terrain_type = {
     name = forest
     color = [0.23 0.42 0.24]
-    rank = 9
+    rank = 14
     move_cost = 2.0
+    overlay_density = 80
     moisture = [0.55 1.0]
   }
   terrain_type = {
     name = plains
     color = [0.47 0.62 0.33]
-    rank = 10
+    rank = 16
     move_cost = 1.0
   }
 }

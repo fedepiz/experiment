@@ -36,7 +36,7 @@
 // magenta); the classifier starts at row 1, and a tile no row claims stays
 // nil (wg_params_load reports any such gap in the band data).
 
-#define WG_TERRAIN_CAP 16
+#define WG_TERRAIN_CAP 24
 
 typedef struct {
   F32 min;
@@ -54,6 +54,7 @@ typedef struct {
   WG_Band elevation;
   WG_Band moisture;
   WG_Band drainage;
+  WG_Band temperature;
   B32 needs_coast;     // only matches with the sea one step away
 } WG_TerrainDef;
 
@@ -61,10 +62,11 @@ typedef struct {
 ////////////////////////////////
 //~ fp: Generation Parameters
 //
-// Every knob the generator reads, filled from the file's `world` object with
-// workable defaults for anything missing. Loading never fails hard: a missing
-// or broken file reports to stderr (mirroring tabula itself) and yields pure
-// defaults.
+// Every knob the generator reads, filled from the file's `world` object. All
+// parse fallbacks are ZERO on purpose: the file is the single source of
+// truth, and a missing or misspelled key must produce an obviously broken
+// world, never a quietly substituted default. Loading still never fails
+// hard: a broken file reports to stderr (mirroring tabula itself).
 
 typedef struct {
   I32 width;
@@ -79,6 +81,18 @@ typedef struct {
   F32 moisture_scale;
   I32 moisture_octaves;
   F32 moisture_persistence;
+
+  //- fp: temperature: a north/equator/south gradient (piecewise-linear by
+  //  latitude; the equator point is the map's middle row), plus noise
+  //  wobble, minus a lapse cooling for land standing above the sea
+  F32 temperature_north;
+  F32 temperature_equator;
+  F32 temperature_south;
+  F32 temperature_variation;
+  F32 temperature_scale;
+  I32 temperature_octaves;
+  F32 temperature_persistence;
+  F32 temperature_lapse;
 
   //- fp: field semantics. Classification itself lives in the terrain rows;
   //  these anchor the fields the rows read: sea_level says where water sits

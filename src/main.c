@@ -46,7 +46,7 @@ global V4 MAP_PAWN_COLORS[] = {
 // table lookup with no policy. Assets stay factored: ground paintings, mask
 // shapes, overlay art; never baked combinations.
 
-#define MAP_SPRITE_CAP 512
+#define MAP_SPRITE_CAP 1024
 
 typedef struct {
   D_Sprite sprites[MAP_SPRITE_CAP]; // id 0 reserved: "no art"

@@ -41,12 +41,14 @@ internal B32 wg__band_contains(WG_Band band, F32 v) {
 }
 
 // first row (past nil) whose bands all contain the fields; 0 = no row claims it
-internal U32 wg__classify(WG_Params* params, F32 e, F32 moisture, F32 drainage, B32 coast) {
+internal U32 wg__classify(WG_Params* params, F32 e, F32 moisture, F32 drainage,
+                          F32 temperature, B32 coast) {
   for(U32 i = 1; i < params->terrain_count; i += 1) {
     WG_TerrainDef* def = &params->terrains[i];
     if(!wg__band_contains(def->elevation, e)) { continue; }
     if(!wg__band_contains(def->moisture, moisture)) { continue; }
     if(!wg__band_contains(def->drainage, drainage)) { continue; }
+    if(!wg__band_contains(def->temperature, temperature)) { continue; }
     if(def->needs_coast && !coast) { continue; }
     return i;
   }
@@ -57,17 +59,17 @@ internal U32 wg__classify(WG_Params* params, F32 e, F32 moisture, F32 drainage, 
 // some cell in the grid of all band boundaries: testing those midpoints is an
 // exact check. Gaps report to stderr and classify as nil (loud magenta).
 internal void wg__report_band_gaps(String8 path, WG_Params* params) {
-  F32 cuts[3][2 * WG_TERRAIN_CAP + 2];
-  U32 cut_counts[3];
-  for(U32 dim = 0; dim < 3; dim += 1) {
+  F32 cuts[4][2 * WG_TERRAIN_CAP + 2];
+  U32 cut_counts[4];
+  for(U32 dim = 0; dim < 4; dim += 1) {
     cuts[dim][0] = 0;
     cuts[dim][1] = 1;
     cut_counts[dim] = 2;
   }
   for(U32 i = 1; i < params->terrain_count; i += 1) {
     WG_TerrainDef* def = &params->terrains[i];
-    WG_Band bands[3] = {def->elevation, def->moisture, def->drainage};
-    for(U32 dim = 0; dim < 3; dim += 1) {
+    WG_Band bands[4] = {def->elevation, def->moisture, def->drainage, def->temperature};
+    for(U32 dim = 0; dim < 4; dim += 1) {
       if(bands[dim].min == 0 && bands[dim].max == 0) { continue; }
       cuts[dim][cut_counts[dim]] = bands[dim].min;
       cuts[dim][cut_counts[dim] + 1] = bands[dim].max;
@@ -78,13 +80,16 @@ internal void wg__report_band_gaps(String8 path, WG_Params* params) {
   for(U32 ei = 0; ei + 1 < cut_counts[0] && gaps < 4; ei += 1) {
     for(U32 mi = 0; mi + 1 < cut_counts[1] && gaps < 4; mi += 1) {
       for(U32 di = 0; di + 1 < cut_counts[2] && gaps < 4; di += 1) {
-        F32 e = 0.5f * (cuts[0][ei] + cuts[0][ei + 1]);
-        F32 m = 0.5f * (cuts[1][mi] + cuts[1][mi + 1]);
-        F32 d = 0.5f * (cuts[2][di] + cuts[2][di + 1]);
-        if(wg__classify(params, e, m, d, 0) == 0) {
-          eprintf_str8("%S: no terrain matches elevation %.2f moisture %.2f drainage %.2f\n",
-                       path, e, m, d);
-          gaps += 1;
+        for(U32 ti = 0; ti + 1 < cut_counts[3] && gaps < 4; ti += 1) {
+          F32 e = 0.5f * (cuts[0][ei] + cuts[0][ei + 1]);
+          F32 m = 0.5f * (cuts[1][mi] + cuts[1][mi + 1]);
+          F32 d = 0.5f * (cuts[2][di] + cuts[2][di + 1]);
+          F32 t = 0.5f * (cuts[3][ti] + cuts[3][ti + 1]);
+          if(wg__classify(params, e, m, d, t, 0) == 0) {
+            eprintf_str8("%S: no terrain matches elevation %.2f moisture %.2f drainage %.2f temperature %.2f\n",
+                         path, e, m, d, t);
+            gaps += 1;
+          }
         }
       }
     }
@@ -96,22 +101,34 @@ internal WG_Params wg_params_load(Arena* arena, String8 path) {
   TB_Value* root = tb_parse_file_and_report(scratch.arena, path);
   TB_Value* world = tb_get(root, str8_lit("world"));
 
+  // all fallbacks are zero on purpose: a missing or misspelled key must
+  // produce an obviously broken world, not a quietly substituted default --
+  // the file is the single source of truth
   WG_Params params = {0};
-  params.width = (I32)tb_get_num(world, str8_lit("width"), 256);
-  params.height = (I32)tb_get_num(world, str8_lit("height"), 256);
+  params.width = (I32)tb_get_num(world, str8_lit("width"), 0);
+  params.height = (I32)tb_get_num(world, str8_lit("height"), 0);
 
-  params.elevation_scale = tb_get_num(world, str8_lit("elevation_scale"), 48);
-  params.elevation_octaves = (I32)tb_get_num(world, str8_lit("elevation_octaves"), 4);
-  params.elevation_persistence = tb_get_num(world, str8_lit("elevation_persistence"), 0.5f);
-  params.moisture_scale = tb_get_num(world, str8_lit("moisture_scale"), 32);
-  params.moisture_octaves = (I32)tb_get_num(world, str8_lit("moisture_octaves"), 3);
-  params.moisture_persistence = tb_get_num(world, str8_lit("moisture_persistence"), 0.5f);
+  params.elevation_scale = tb_get_num(world, str8_lit("elevation_scale"), 0);
+  params.elevation_octaves = (I32)tb_get_num(world, str8_lit("elevation_octaves"), 0);
+  params.elevation_persistence = tb_get_num(world, str8_lit("elevation_persistence"), 0);
+  params.moisture_scale = tb_get_num(world, str8_lit("moisture_scale"), 0);
+  params.moisture_octaves = (I32)tb_get_num(world, str8_lit("moisture_octaves"), 0);
+  params.moisture_persistence = tb_get_num(world, str8_lit("moisture_persistence"), 0);
 
-  params.sea_level = tb_get_num(world, str8_lit("sea_level"), 0.32f);
-  params.drainage_ceiling = tb_get_num(world, str8_lit("drainage_ceiling"), 0.62f);
-  params.river_moisture = tb_get_num(world, str8_lit("river_moisture"), 0.10f);
-  params.continent_edge = tb_get_num(world, str8_lit("continent_edge"), 0.35f);
-  params.continent_smoothness = tb_get_num(world, str8_lit("continent_smoothness"), 0.25f);
+  params.temperature_north = tb_get_num(world, str8_lit("temperature_north"), 0);
+  params.temperature_equator = tb_get_num(world, str8_lit("temperature_equator"), 0);
+  params.temperature_south = tb_get_num(world, str8_lit("temperature_south"), 0);
+  params.temperature_variation = tb_get_num(world, str8_lit("temperature_variation"), 0);
+  params.temperature_scale = tb_get_num(world, str8_lit("temperature_scale"), 0);
+  params.temperature_octaves = (I32)tb_get_num(world, str8_lit("temperature_octaves"), 0);
+  params.temperature_persistence = tb_get_num(world, str8_lit("temperature_persistence"), 0);
+  params.temperature_lapse = tb_get_num(world, str8_lit("temperature_lapse"), 0);
+
+  params.sea_level = tb_get_num(world, str8_lit("sea_level"), 0);
+  params.drainage_ceiling = tb_get_num(world, str8_lit("drainage_ceiling"), 0);
+  params.river_moisture = tb_get_num(world, str8_lit("river_moisture"), 0);
+  params.continent_edge = tb_get_num(world, str8_lit("continent_edge"), 0);
+  params.continent_smoothness = tb_get_num(world, str8_lit("continent_smoothness"), 0);
 
   //- fp: terrain rows, in file order; row 0 is the baked nil
   {
@@ -132,26 +149,28 @@ internal WG_Params wg_params_load(Arena* arena, String8 path) {
     params.terrain_count += 1;
 
     def->name = push_str8_copy(arena, tb_get_str8(src, str8_lit("name"), str8_lit("unnamed")));
-    def->color = wg__color_from_key(src, str8_lit("color"), (V4){1, 0, 1, 1});
+    def->color = wg__color_from_key(src, str8_lit("color"), (V4){1, 0, 1, 1}); // magenta = the loud fallback
     def->rank = (U8)tb_get_num(src, str8_lit("rank"), 0);
-    def->overlay_density = (U32)tb_get_num(src, str8_lit("overlay_density"), 80);
-    def->move_cost = tb_get_num(src, str8_lit("move_cost"), 1.0f);
+    def->overlay_density = (U32)tb_get_num(src, str8_lit("overlay_density"), 0);
+    def->move_cost = tb_get_num(src, str8_lit("move_cost"), 0); // missing = impassable, visibly
+
     def->elevation = wg__band_from_key(src, str8_lit("elevation"));
     def->moisture = wg__band_from_key(src, str8_lit("moisture"));
     def->drainage = wg__band_from_key(src, str8_lit("drainage"));
+    def->temperature = wg__band_from_key(src, str8_lit("temperature"));
     def->needs_coast = tb_get_num(src, str8_lit("needs_coast"), 0) != 0;
   }
   wg__report_band_gaps(path, &params);
 
-  params.river_count = (I32)tb_get_num(world, str8_lit("river_count"), 8);
-  params.river_max_tries = (I32)tb_get_num(world, str8_lit("river_max_tries"), (F32)params.river_count);
-  params.river_min_length = (I32)tb_get_num(world, str8_lit("river_min_length"), 6);
-  params.river_meander = tb_get_num(world, str8_lit("river_meander"), 0.015f);
-  params.pond_epsilon = tb_get_num(world, str8_lit("pond_epsilon"), 0.02f);
-  params.pond_max_tiles = (I32)tb_get_num(world, str8_lit("pond_max_tiles"), 64);
+  params.river_count = (I32)tb_get_num(world, str8_lit("river_count"), 0);
+  params.river_max_tries = (I32)tb_get_num(world, str8_lit("river_max_tries"), 0);
+  params.river_min_length = (I32)tb_get_num(world, str8_lit("river_min_length"), 0);
+  params.river_meander = tb_get_num(world, str8_lit("river_meander"), 0);
+  params.pond_epsilon = tb_get_num(world, str8_lit("pond_epsilon"), 0);
+  params.pond_max_tiles = (I32)tb_get_num(world, str8_lit("pond_max_tiles"), 0);
 
-  params.road_cost = tb_get_num(world, str8_lit("road_cost"), 0.5f);
-  params.river_cross_cost = tb_get_num(world, str8_lit("river_cross_cost"), 2.0f);
+  params.road_cost = tb_get_num(world, str8_lit("road_cost"), 0);
+  params.river_cross_cost = tb_get_num(world, str8_lit("river_cross_cost"), 0);
 
   //- fp: keep downstream code out of degenerate territory, loudly
   if(params.width < 1 || params.height < 1) {
@@ -166,6 +185,9 @@ internal WG_Params wg_params_load(Arena* arena, String8 path) {
   params.moisture_octaves = Clamp(1, params.moisture_octaves, 16);
   params.elevation_persistence = Clamp(0.05f, params.elevation_persistence, 1.0f);
   params.moisture_persistence = Clamp(0.05f, params.moisture_persistence, 1.0f);
+  params.temperature_scale = ClampBot(params.temperature_scale, 1.0f);
+  params.temperature_octaves = Clamp(1, params.temperature_octaves, 16);
+  params.temperature_persistence = Clamp(0.05f, params.temperature_persistence, 1.0f);
   params.continent_edge = Clamp(0.0f, params.continent_edge, 1.0f);
   // the blend must complete before the border, or the border isn't water
   params.continent_smoothness = Clamp(0.001f, params.continent_smoothness,
@@ -263,6 +285,23 @@ internal F32 wg__moisture_at(WG_Params* params, U64 seed, I32 x, I32 y) {
   return wg__fbm(seed ^ WG__MOISTURE_SALT, (F32)x / params->moisture_scale,
                  (F32)y / params->moisture_scale, params->moisture_octaves,
                  params->moisture_persistence);
+}
+
+#define WG__TEMPERATURE_SALT 0x2545f4914f6cdd1dull
+
+// a north/equator/south latitude gradient (piecewise-linear; the equator is
+// the map's middle row), wobbled by noise, cooled by altitude above the sea
+internal F32 wg__temperature_at(WG_Params* params, U64 seed, F32 e, I32 x, I32 y) {
+  F32 lat = (F32)y / (F32)Max(params->height - 1, 1); // 0 north edge, 1 south edge
+  F32 t = lat < 0.5f
+              ? params->temperature_north + (params->temperature_equator - params->temperature_north) * (lat * 2.0f)
+              : params->temperature_equator + (params->temperature_south - params->temperature_equator) * (lat * 2.0f - 1.0f);
+  F32 wobble = wg__fbm(seed ^ WG__TEMPERATURE_SALT, (F32)x / params->temperature_scale,
+                       (F32)y / params->temperature_scale, params->temperature_octaves,
+                       params->temperature_persistence);
+  t += params->temperature_variation * (wobble - 0.5f);
+  t -= params->temperature_lapse * Max(e - params->sea_level, 0.0f);
+  return Clamp(0.0f, t, 1.0f);
 }
 
 // How readily water leaves a tile, in [0,1]. Not a noise field of its own:
@@ -462,6 +501,7 @@ internal BD_Board* wg_generate(Arena* arena, WG_Params* params, U64 seed) {
       F32 e = elevation[(U64)y * w + x];
       F32 moisture = wg__moisture_at(params, seed, x, y);
       F32 drainage = wg__drainage_at(params, elevation, x, y);
+      F32 temperature = wg__temperature_at(params, seed, e, x, y);
 
       B32 river_nearby = bd_feature_mask(board, p, BD_Feature_River) != 0;
       for(BD_Dir dir = 0; !river_nearby && dir < BD_Dir_COUNT; dir += 1) {
@@ -478,7 +518,8 @@ internal BD_Board* wg_generate(Arena* arena, WG_Params* params, U64 seed) {
         }
       }
 
-      bd_tile_at(board, p)->terrain = (BD_Terrain)wg__classify(params, e, moisture, drainage, coast);
+      bd_tile_at(board, p)->terrain =
+          (BD_Terrain)wg__classify(params, e, moisture, drainage, temperature, coast);
     }
   }
 

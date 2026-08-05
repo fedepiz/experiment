@@ -251,6 +251,69 @@ def paint_beach(rng, decorated, w=SIZE, h=SIZE):
     return px
 
 
+def paint_ice(rng, decorated, w=SIZE, h=SIZE):
+    del decorated
+    ramp = [(196, 212, 228), (210, 224, 238), (224, 236, 248)]
+    px = blotch_field(rng, ramp, (0.25, 0.50, 0.25), w, h)
+    dashes(rng, px, int(2 * area(px)), (168, 190, 214), length=(3, 6))  # pressure cracks
+    speckles(rng, px, int(2 * area(px)), (242, 248, 252))
+    return px
+
+
+def paint_snowcap(rng, decorated, w=SIZE, h=SIZE):
+    del decorated
+    ramp = [(206, 212, 224), (222, 228, 238), (238, 242, 250)]
+    px = blotch_field(rng, ramp, (0.30, 0.45, 0.25), w, h, passes=3)
+    for _ in range(int(2 * area(px))):  # rock showing through the snow
+        x = rng.randrange(w)
+        y = rng.randrange(h)
+        step = rng.choice([1, -1])
+        for i in range(rng.randrange(2, 4)):
+            put_wrap(px, x + i, y + i * step, (150, 150, 156))
+    return px
+
+
+def paint_tundra(rng, decorated, w=SIZE, h=SIZE):
+    ramp = [(148, 154, 136), (162, 168, 150), (176, 182, 162)]
+    px = blotch_field(rng, ramp, (0.30, 0.45, 0.25), w, h)
+    speckles(rng, px, int(5 * area(px)), (134, 140, 124))
+    if decorated:
+        for _ in range(max(1, int(0.4 * area(px)))):  # rust lichen
+            put_wrap(px, rng.randrange(w), rng.randrange(h), (168, 138, 104))
+    return px
+
+
+def paint_taiga(rng, decorated, w=SIZE, h=SIZE):
+    ramp = [(40, 68, 58), (50, 82, 68), (60, 94, 78)]
+    px = blotch_field(rng, ramp, (0.30, 0.50, 0.20), w, h)
+    speckles(rng, px, int(6 * area(px)), (32, 56, 48))
+    if decorated:
+        for _ in range(max(1, int(0.3 * area(px)))):  # snow patches
+            put_wrap(px, rng.randrange(w), rng.randrange(h), (208, 218, 224))
+    return px
+
+
+def paint_jungle(rng, decorated, w=SIZE, h=SIZE):
+    ramp = [(26, 88, 42), (34, 104, 50), (44, 120, 60)]
+    px = blotch_field(rng, ramp, (0.30, 0.50, 0.20), w, h)
+    speckles(rng, px, int(8 * area(px)), (20, 72, 36))
+    if decorated:
+        flower = [(214, 160, 62), (198, 84, 110)]
+        for _ in range(max(1, int(0.4 * area(px)))):
+            put_wrap(px, rng.randrange(w), rng.randrange(h), rng.choice(flower))
+    return px
+
+
+def paint_savanna(rng, decorated, w=SIZE, h=SIZE):
+    ramp = [(148, 138, 78), (164, 152, 88), (178, 166, 98)]
+    px = blotch_field(rng, ramp, (0.25, 0.50, 0.25), w, h)
+    dashes(rng, px, int(4 * area(px)), (134, 124, 70), length=(2, 4))  # dry grass
+    if decorated:
+        for _ in range(max(1, int(0.3 * area(px)))):
+            put_wrap(px, rng.randrange(w), rng.randrange(h), (110, 96, 58))
+    return px
+
+
 TERRAINS = {
     "water": paint_water,
     "plains": paint_plains,
@@ -262,6 +325,12 @@ TERRAINS = {
     "hills": paint_hills,
     "badlands": paint_badlands,
     "beach": paint_beach,
+    "ice": paint_ice,
+    "snowcap": paint_snowcap,
+    "tundra": paint_tundra,
+    "taiga": paint_taiga,
+    "jungle": paint_jungle,
+    "savanna": paint_savanna,
 }
 
 
@@ -295,11 +364,15 @@ def outline_silhouette(px, edge_color, bottom_color):
     return out
 
 
-def _canopy_mass(px, rng, blobs):
+CANOPY_TEMPERATE = ((44, 82, 48), (58, 106, 60), (88, 136, 74))
+CANOPY_JUNGLE = ((20, 76, 34), (30, 96, 44), (64, 132, 58))
+
+
+def _canopy_mass(px, rng, blobs, palette=CANOPY_TEMPERATE):
     """A lumpy connected canopy: the union of overlapping discs, shaded as
     one mass by a top-left light with a dithered boundary. Aggregate, not
     tree portraits -- at world scale a tile is a whole woodland."""
-    dark, mid, light = (44, 82, 48), (58, 106, 60), (88, 136, 74)
+    dark, mid, light = palette
     for y in range(SIZE):
         for x in range(SIZE):
             best = None
@@ -449,10 +522,101 @@ def paint_hill_knolls(rng, decorated):
     return outline_silhouette(px, (92, 94, 64), (76, 78, 52))
 
 
+def _conifer_spires(px, rng, spires):
+    """Pointed conifer silhouettes -- the cold-forest read -- lit from the left."""
+    dark, mid, light = (26, 52, 44), (36, 68, 54), (56, 92, 68)
+    for cx, top, half_base, height in sorted(spires, key=lambda s: s[1]):
+        base = min(top + height, SIZE - 1)
+        for y in range(int(top), int(base) + 1):
+            f = (y - top) / max(height, 1e-3)
+            hw = half_base * f
+            for x in range(int(cx - hw), int(cx + hw) + 1):
+                if not 0 <= x < SIZE:
+                    continue
+                lit = (cx - x) / max(half_base, 1e-3) + rng.uniform(-0.3, 0.3)
+                px[y][x] = light if lit > 0.5 else dark if lit < -0.5 else mid
+
+
+def paint_taiga_mass(rng, decorated):
+    del decorated
+    px = new_canvas()
+    spires = []
+    for _ in range(rng.randrange(3, 6)):
+        half = rng.uniform(1.6, 2.6)
+        height = rng.uniform(7.0, 11.0)
+        spires.append((rng.uniform(half + 0.5, SIZE - half - 0.5),
+                       rng.uniform(1.0, SIZE - height - 1.0), half, height))
+    _conifer_spires(px, rng, spires)
+    return outline_silhouette(px, (22, 44, 38), (16, 34, 30))
+
+
+def paint_taiga_sparse(rng, decorated):
+    del decorated
+    px = new_canvas()
+    spires = []
+    for _ in range(rng.randrange(1, 3)):
+        half = rng.uniform(1.4, 2.0)
+        height = rng.uniform(6.0, 9.0)
+        spires.append((rng.uniform(half + 0.5, SIZE - half - 0.5),
+                       rng.uniform(2.0, SIZE - height - 1.0), half, height))
+    _conifer_spires(px, rng, spires)
+    return outline_silhouette(px, (22, 44, 38), (16, 34, 30))
+
+
+def paint_jungle_mass(rng, decorated):
+    del decorated
+    px = new_canvas()
+    blobs = []
+    for _ in range(rng.randrange(6, 9)):
+        r = rng.uniform(2.4, 3.8)
+        blobs.append((rng.uniform(r - 0.5, SIZE - r + 0.5), rng.uniform(r - 0.5, SIZE - r + 0.5), r))
+    _canopy_mass(px, rng, blobs, CANOPY_JUNGLE)
+    return outline_silhouette(px, (16, 60, 28), (12, 46, 22))
+
+
+def paint_jungle_sparse(rng, decorated):
+    del decorated
+    px = new_canvas()
+    blobs = []
+    for _ in range(rng.randrange(2, 4)):
+        r = rng.uniform(1.8, 2.8)
+        blobs.append((rng.uniform(r + 0.5, SIZE - r - 0.5), rng.uniform(r + 0.5, SIZE - r - 0.5), r))
+    _canopy_mass(px, rng, blobs, CANOPY_JUNGLE)
+    return outline_silhouette(px, (16, 60, 28), (12, 46, 22))
+
+
+def paint_savanna_trees(rng, decorated):
+    """1-2 flat-topped umbrella trees over open grass."""
+    del decorated
+    px = new_canvas()
+    trunk = (96, 74, 46)
+    dark, mid, light = (74, 96, 44), (92, 116, 54), (116, 140, 66)
+    for _ in range(rng.randrange(1, 3)):
+        cx = rng.uniform(3.5, SIZE - 3.5)
+        cy = rng.uniform(4.0, 9.0)
+        rx = rng.uniform(3.0, 4.5)
+        ry = rng.uniform(1.2, 1.9)
+        tx = int(round(cx))
+        for ty in range(int(cy), min(int(cy) + 6, SIZE - 1)):
+            put(px, tx, ty, trunk)
+        for y in range(SIZE):
+            for x in range(SIZE):
+                dx = (x - cx) / rx
+                dy = (y - cy) / ry
+                if dx * dx + dy * dy > 1.0:
+                    continue
+                lit = (-dx - dy) * 0.7 + rng.uniform(-0.25, 0.25)
+                px[y][x] = light if lit > 0.4 else dark if lit < -0.5 else mid
+    return outline_silhouette(px, (60, 78, 36), (48, 62, 30))
+
+
 OVERLAYS = {
     "forest": paint_forest_mass,
     "mountain": paint_rock_mass,
     "hills": paint_hill_mounds,
+    "taiga": paint_taiga_mass,
+    "jungle": paint_jungle_mass,
+    "savanna": paint_savanna_trees,
 }
 
 # sparser art for tiles on a region's border, so forests thin out and
@@ -461,6 +625,8 @@ EDGE_OVERLAYS = {
     "forest": paint_forest_fringe,
     "mountain": paint_rock_scatter,
     "hills": paint_hill_knolls,
+    "taiga": paint_taiga_sparse,
+    "jungle": paint_jungle_sparse,
 }
 
 
