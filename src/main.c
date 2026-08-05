@@ -577,9 +577,207 @@ internal void game_update(Game* game) {
 ////////////////////////////////
 //~ fp: Entry Point
 
-int main(void) {
+////////////////////////////////
+//~ fp: temp: Worldgen Report
+//
+// `app worlds N [first_seed]`: generate N worlds headless and print one CSV
+// row of metrics per world to stdout, for offline analysis.
+
+internal U32 report__terrain_by_name(WG_Params* params, String8 name) {
+  for(U32 i = 0; i < params->terrain_count; i += 1) {
+    if(str8_match(params->terrains[i].name, name, 0)) { return i; }
+  }
+  return 0;
+}
+
+typedef struct {
+  U16 group;
+  U16 touches_border;
+  I32 size;
+} Report_Component;
+
+// 4-connected components of equal group values; group 0 tiles are skipped
+internal I32 report__components(Arena* arena, U16* groups, I32 w, I32 h,
+                                Report_Component* out) {
+  U8* visited = push_array(arena, U8, (U64)w * h);
+  V2I* queue = push_array_no_zero(arena, V2I, (U64)w * h);
+  I32 count = 0;
+  for(I32 y = 0; y < h; y += 1) {
+    for(I32 x = 0; x < w; x += 1) {
+      U64 idx = (U64)y * w + x;
+      if(visited[idx] || groups[idx] == 0) { continue; }
+      Report_Component comp = {groups[idx], 0, 0};
+      visited[idx] = 1;
+      queue[0] = (V2I){x, y};
+      I32 queue_count = 1;
+      for(I32 head = 0; head < queue_count; head += 1) {
+        V2I p = queue[head];
+        comp.size += 1;
+        if(p.x == 0 || p.y == 0 || p.x == w - 1 || p.y == h - 1) { comp.touches_border = 1; }
+        for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += 1) {
+          V2I n = v2i_add(p, bd_dir_delta(dir));
+          if(n.x < 0 || n.y < 0 || n.x >= w || n.y >= h) { continue; }
+          U64 nidx = (U64)n.y * w + n.x;
+          if(visited[nidx] || groups[nidx] != comp.group) { continue; }
+          visited[nidx] = 1;
+          queue[queue_count] = n;
+          queue_count += 1;
+        }
+      }
+      out[count] = comp;
+      count += 1;
+    }
+  }
+  return count;
+}
+
+internal void worldgen_report(I32 world_count, U64 first_seed) {
+  Arena* arena = arena_alloc();
+  WG_Params params = wg_params_load(arena, str8_lit("data/world.tabula"));
+
+  // the report knows some terrains by role; ids resolve by name so the file
+  // stays free to reorder
+  U32 id_water = report__terrain_by_name(&params, str8_lit("water"));
+  U32 id_ocean = report__terrain_by_name(&params, str8_lit("ocean"));
+  U32 id_ice = report__terrain_by_name(&params, str8_lit("ice"));
+  U32 id_beach = report__terrain_by_name(&params, str8_lit("beach"));
+  U32 id_mountain = report__terrain_by_name(&params, str8_lit("mountain"));
+  U32 id_snowcap = report__terrain_by_name(&params, str8_lit("snowcap"));
+  B32 is_hot[WG_TERRAIN_CAP] = {0};
+  B32 is_cold[WG_TERRAIN_CAP] = {0};
+  is_hot[report__terrain_by_name(&params, str8_lit("desert"))] = 1;
+  is_hot[report__terrain_by_name(&params, str8_lit("badlands"))] = 1;
+  is_hot[report__terrain_by_name(&params, str8_lit("savanna"))] = 1;
+  is_hot[report__terrain_by_name(&params, str8_lit("jungle"))] = 1;
+  is_cold[id_ice] = 1;
+  is_cold[id_snowcap] = 1;
+  is_cold[report__terrain_by_name(&params, str8_lit("tundra"))] = 1;
+  is_cold[report__terrain_by_name(&params, str8_lit("taiga"))] = 1;
+
+  printf_str8("seed");
+  for(U32 i = 1; i < params.terrain_count; i += 1) { printf_str8(",%S", params.terrains[i].name); }
+  printf_str8(",land,landmasses,largest_landmass,ranges,largest_range,specks,lakes"
+              ",river_tiles,river_nets,coast,beach_on_coast,hot_cold,nil,passable_largest\n");
+
+  Arena* world_arena = arena_alloc();
+  for(I32 world = 0; world < world_count; world += 1) {
+    arena_clear(world_arena);
+    U64 seed = first_seed + (U64)world;
+    BD_Board* board = wg_generate(world_arena, &params, seed);
+    I32 w = board->width;
+    I32 h = board->height;
+    U64 tiles = (U64)w * h;
+
+    U32 counts[WG_TERRAIN_CAP] = {0};
+    U16* by_terrain = push_array_no_zero(world_arena, U16, tiles); // terrain+1: no group 0
+    U16* by_land = push_array(world_arena, U16, tiles);
+    U16* by_range = push_array(world_arena, U16, tiles);
+    U16* by_passable = push_array(world_arena, U16, tiles);
+    U16* by_river = push_array(world_arena, U16, tiles);
+    U64 river_tiles = 0;
+    U64 coast = 0;
+    U64 hot_cold = 0;
+    for(I32 y = 0; y < h; y += 1) {
+      for(I32 x = 0; x < w; x += 1) {
+        U64 idx = (U64)y * w + x;
+        BD_Tile* tile = bd_tile_at(board, (V2I){x, y});
+        U32 t = tile->terrain;
+        counts[t] += 1;
+        B32 land = t != 0 && t != id_water && t != id_ocean && t != id_ice;
+        by_terrain[idx] = (U16)(t + 1);
+        by_land[idx] = (U16)land;
+        by_range[idx] = t == id_mountain || t == id_snowcap;
+        by_passable[idx] = t < board->rules.terrain_cost_count && board->rules.terrain_cost[t] > 0;
+        by_river[idx] = tile->features[BD_Feature_River] != 0;
+        river_tiles += by_river[idx];
+        if(land) {
+          B32 sea_beside = 0;
+          for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += 1) {
+            V2I n = v2i_add((V2I){x, y}, bd_dir_delta(dir));
+            U32 nt = bd_tile_at(board, n)->terrain;
+            sea_beside |= bd_in_bounds(board, n) && (nt == id_water || nt == id_ocean);
+          }
+          coast += sea_beside;
+        }
+        // unordered adjacent pairs: only look right and down
+        for(U32 pair = 0; pair < 2; pair += 1) {
+          V2I n = pair == 0 ? (V2I){x + 1, y} : (V2I){x, y + 1};
+          if(!bd_in_bounds(board, n)) { continue; }
+          U32 nt = bd_tile_at(board, n)->terrain;
+          hot_cold += (is_hot[t] && is_cold[nt]) || (is_cold[t] && is_hot[nt]);
+        }
+      }
+    }
+
+    Report_Component* comps = push_array_no_zero(world_arena, Report_Component, tiles);
+    I32 speck_count = 0;
+    I32 lake_count = 0;
+    I32 comp_count = report__components(world_arena, by_terrain, w, h, comps);
+    for(I32 i = 0; i < comp_count; i += 1) {
+      U32 t = (U32)comps[i].group - 1;
+      speck_count += comps[i].size <= 2;
+      lake_count += (t == id_water || t == id_ocean) && !comps[i].touches_border;
+    }
+    I32 landmass_count = report__components(world_arena, by_land, w, h, comps);
+    I32 largest_landmass = 0;
+    U64 land_tiles = 0;
+    for(I32 i = 0; i < landmass_count; i += 1) {
+      largest_landmass = Max(largest_landmass, comps[i].size);
+      land_tiles += (U64)comps[i].size;
+    }
+    I32 range_count = report__components(world_arena, by_range, w, h, comps);
+    I32 largest_range = 0;
+    for(I32 i = 0; i < range_count; i += 1) { largest_range = Max(largest_range, comps[i].size); }
+    I32 passable_count = report__components(world_arena, by_passable, w, h, comps);
+    U64 passable_tiles = 0;
+    I32 largest_passable = 0;
+    for(I32 i = 0; i < passable_count; i += 1) {
+      largest_passable = Max(largest_passable, comps[i].size);
+      passable_tiles += (U64)comps[i].size;
+    }
+    I32 river_net_count = report__components(world_arena, by_river, w, h, comps);
+
+    printf_str8("%llu", (unsigned long long)seed);
+    for(U32 i = 1; i < params.terrain_count; i += 1) {
+      printf_str8(",%.4f", (F32)counts[i] / (F32)tiles);
+    }
+    printf_str8(",%.4f,%d,%.4f,%d,%d,%d,%d,%llu,%d,%llu,%.4f,%llu,%u,%.4f\n",
+                (F32)land_tiles / (F32)tiles,
+                landmass_count,
+                land_tiles > 0 ? (F32)largest_landmass / (F32)land_tiles : 0.0f,
+                range_count,
+                largest_range,
+                speck_count,
+                lake_count,
+                (unsigned long long)river_tiles,
+                river_net_count,
+                (unsigned long long)coast,
+                coast > 0 ? (F32)counts[id_beach] / (F32)coast : 0.0f,
+                (unsigned long long)hot_cold,
+                counts[0],
+                passable_tiles > 0 ? (F32)largest_passable / (F32)passable_tiles : 0.0f);
+  }
+}
+
+int main(int argc, char** argv) {
   TCTX tctx;
   tctx_init_and_equip(&tctx);
+
+  //- fp: temp: headless report mode exits before any window exists
+  if(argc >= 3 && str8_match(str8_cstring(argv[1]), str8_lit("worlds"), 0)) {
+    I32 world_count = 0;
+    String8 count_arg = str8_cstring(argv[2]);
+    for(U64 i = 0; i < count_arg.size; i += 1) { world_count = world_count * 10 + (count_arg.str[i] - '0'); }
+    U64 first_seed = 1;
+    if(argc >= 4) {
+      first_seed = 0;
+      String8 seed_arg = str8_cstring(argv[3]);
+      for(U64 i = 0; i < seed_arg.size; i += 1) { first_seed = first_seed * 10 + (U64)(seed_arg.str[i] - '0'); }
+    }
+    worldgen_report(world_count, first_seed);
+    tctx_release();
+    return 0;
+  }
 
   Arena* frame_arena = arena_alloc();
   wnd_open(str8_lit("Imperium"), 1600, 900);

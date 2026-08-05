@@ -123,12 +123,21 @@ internal WG_Params wg_params_load(Arena* arena, String8 path) {
   params.temperature_octaves = (I32)tb_get_num(world, str8_lit("temperature_octaves"), 0);
   params.temperature_persistence = tb_get_num(world, str8_lit("temperature_persistence"), 0);
   params.temperature_lapse = tb_get_num(world, str8_lit("temperature_lapse"), 0);
+  params.temperature_lapse_exponent = tb_get_num(world, str8_lit("temperature_lapse_exponent"), 0);
 
   params.sea_level = tb_get_num(world, str8_lit("sea_level"), 0);
   params.drainage_ceiling = tb_get_num(world, str8_lit("drainage_ceiling"), 0);
+  params.drainage_full_slope = tb_get_num(world, str8_lit("drainage_full_slope"), 0);
   params.river_moisture = tb_get_num(world, str8_lit("river_moisture"), 0);
   params.continent_edge = tb_get_num(world, str8_lit("continent_edge"), 0);
   params.continent_smoothness = tb_get_num(world, str8_lit("continent_smoothness"), 0);
+  params.min_region_size = (I32)tb_get_num(world, str8_lit("min_region_size"), 0);
+  params.ridge_count = (I32)tb_get_num(world, str8_lit("ridge_count"), 0);
+  params.ridge_height = tb_get_num(world, str8_lit("ridge_height"), 0);
+  params.ridge_width = tb_get_num(world, str8_lit("ridge_width"), 0);
+  params.ridge_wander = tb_get_num(world, str8_lit("ridge_wander"), 0);
+  params.ridge_min_length = tb_get_num(world, str8_lit("ridge_min_length"), 0);
+  params.elevation_amplitude = tb_get_num(world, str8_lit("elevation_amplitude"), 0);
 
   //- fp: terrain rows, in file order; row 0 is the baked nil
   {
@@ -188,10 +197,12 @@ internal WG_Params wg_params_load(Arena* arena, String8 path) {
   params.temperature_scale = ClampBot(params.temperature_scale, 1.0f);
   params.temperature_octaves = Clamp(1, params.temperature_octaves, 16);
   params.temperature_persistence = Clamp(0.05f, params.temperature_persistence, 1.0f);
+  params.temperature_lapse_exponent = ClampBot(params.temperature_lapse_exponent, 0.1f);
   params.continent_edge = Clamp(0.0f, params.continent_edge, 1.0f);
   // the blend must complete before the border, or the border isn't water
   params.continent_smoothness = Clamp(0.001f, params.continent_smoothness,
                                       Max(params.continent_edge, 0.001f));
+  params.ridge_count = Clamp(0, params.ridge_count, 64);
   params.river_min_length = ClampBot(params.river_min_length, 0);
   params.river_max_tries = ClampBot(params.river_max_tries, 0);
   params.pond_max_tiles = ClampBot(params.pond_max_tiles, 1);
@@ -260,10 +271,81 @@ internal F32 wg__fbm(U64 seed, F32 x, F32 y, I32 octaves, F32 persistence) {
 // Elevation is fBm minus a radial falloff toward the map edge, so the border
 // tends to ocean and the land reads as a continent rather than wallpaper.
 
-internal F32 wg__elevation_at(WG_Params* params, U64 seed, I32 x, I32 y) {
-  F32 e = wg__fbm(seed, (F32)x / params->elevation_scale,
-                  (F32)y / params->elevation_scale, params->elevation_octaves,
-                  params->elevation_persistence);
+#define WG__RIDGE_SALT 0x9e2f8c1b5a7d3e41ull
+#define WG__RIDGE_SAMPLES 64
+
+// tectonic ridge skeletons: jittered polylines between distant points,
+// sampled into out_points (WG__RIDGE_SAMPLES per ridge). Endpoints land
+// anywhere on the map: the rim drowns whatever crosses it, so a ridge can
+// run out to sea and surface as island arcs.
+internal I32 wg__build_ridges(WG_Params* params, U64 seed, V2* out_points) {
+  I32 count = 0;
+  F32 w = (F32)params->width;
+  F32 h = (F32)params->height;
+  for(I32 ridge = 0; ridge < params->ridge_count; ridge += 1) {
+    U64 salt = seed ^ WG__RIDGE_SALT;
+    V2 a = {0};
+    V2 b = {0};
+    // keep the longest pair seen: an unachievable minimum degrades to "as
+    // long as the map allows"
+    F32 best_d2 = -1.0f;
+    F32 min_len = params->ridge_min_length * Min(w, h);
+    for(I32 attempt = 0; attempt < 16; attempt += 1) {
+      V2 ca, cb;
+      ca.x = w * wg__noise01(salt + 1, ridge, attempt);
+      ca.y = h * wg__noise01(salt + 2, ridge, attempt);
+      cb.x = w * wg__noise01(salt + 3, ridge, attempt);
+      cb.y = h * wg__noise01(salt + 4, ridge, attempt);
+      F32 dx = cb.x - ca.x;
+      F32 dy = cb.y - ca.y;
+      F32 d2 = dx * dx + dy * dy;
+      if(d2 > best_d2) {
+        best_d2 = d2;
+        a = ca;
+        b = cb;
+      }
+      if(d2 >= min_len * min_len) { break; }
+    }
+    F32 dx = b.x - a.x;
+    F32 dy = b.y - a.y;
+    F32 len = sqrtf(dx * dx + dy * dy);
+    F32 px = -dy / Max(len, 0.001f); // unit perpendicular carries the wander
+    F32 py = dx / Max(len, 0.001f);
+    for(I32 s = 0; s < WG__RIDGE_SAMPLES; s += 1) {
+      F32 t = (F32)s / (F32)(WG__RIDGE_SAMPLES - 1);
+      // smooth 1d noise along the spine; the sine pins wander at the ends
+      F32 wander = params->ridge_wander * sinf(3.14159265f * t) *
+                   (2.0f * wg__value_noise(salt + 5, t * 6.0f, (F32)ridge * 17.0f) - 1.0f);
+      out_points[count].x = a.x + dx * t + px * wander;
+      out_points[count].y = a.y + dy * t + py * wander;
+      count += 1;
+    }
+  }
+  return count;
+}
+
+internal F32 wg__elevation_at(WG_Params* params, U64 seed, V2* ridge_points,
+                              I32 ridge_point_count, I32 x, I32 y) {
+  F32 noise = wg__fbm(seed, (F32)x / params->elevation_scale,
+                      (F32)y / params->elevation_scale, params->elevation_octaves,
+                      params->elevation_persistence);
+  // noise deviates around the midline by elevation_amplitude, leaving the
+  // ridges as the mountain-maker while noise shapes flanks and passes
+  F32 e = 0.5f + (noise - 0.5f) * params->elevation_amplitude;
+  if(ridge_point_count > 0) {
+    F32 best = 1e9f;
+    for(I32 i = 0; i < ridge_point_count; i += 1) {
+      F32 dx = (F32)x - ridge_points[i].x;
+      F32 dy = (F32)y - ridge_points[i].y;
+      F32 d2 = dx * dx + dy * dy;
+      if(d2 < best) { best = d2; }
+    }
+    F32 u = sqrtf(best) / Max(params->ridge_width, 0.5f);
+    if(u < 1.0f) {
+      F32 bell = 1.0f - u * u;
+      e += params->ridge_height * bell * bell;
+    }
+  }
   F32 nx = 2.0f * (F32)x / (F32)Max(params->width - 1, 1) - 1.0f; // [-1,1] across the map
   F32 ny = 2.0f * (F32)y / (F32)Max(params->height - 1, 1) - 1.0f;
   // the continental rim: inside continent_edge the heightmap stands as
@@ -300,7 +382,10 @@ internal F32 wg__temperature_at(WG_Params* params, U64 seed, F32 e, I32 x, I32 y
                        (F32)y / params->temperature_scale, params->temperature_octaves,
                        params->temperature_persistence);
   t += params->temperature_variation * (wobble - 0.5f);
-  t -= params->temperature_lapse * Max(e - params->sea_level, 0.0f);
+  // altitude cooling curves with height: the exponent spares mid ground and
+  // freezes ridgelines sharply, so snow pins to spines even in warm latitudes
+  F32 above = Max(e - params->sea_level, 0.0f) / Max(1.0f - params->sea_level, 0.01f);
+  t -= params->temperature_lapse * powf(above, params->temperature_lapse_exponent);
   return Clamp(0.0f, t, 1.0f);
 }
 
@@ -317,9 +402,7 @@ internal F32 wg__drainage_at(WG_Params* params, F32* elevation, I32 x, I32 y) {
   F32 dx = (elevation[(U64)y * w + xr] - elevation[(U64)y * w + xl]) / (F32)Max(xr - xl, 1);
   F32 dy = (elevation[(U64)yd * w + x] - elevation[(U64)yu * w + x]) / (F32)Max(yd - yu, 1);
   F32 slope = sqrtf(dx * dx + dy * dy);
-  // typical fBm slopes here run ~0.002..0.03 elevation per tile; call a 1.2%
-  // grade fully drained so the range spreads across [0,1] instead of pooling
-  F32 slope_drain = ClampTop(slope * (1.0f / 0.012f), 1.0f);
+  F32 slope_drain = ClampTop(slope / Max(params->drainage_full_slope, 0.001f), 1.0f);
   F32 e = elevation[(U64)y * w + x];
   F32 height_drain = Clamp(0.0f, (e - params->sea_level) / Max(params->drainage_ceiling - params->sea_level, 0.01f), 1.0f);
   return 0.6f * slope_drain + 0.4f * height_drain;
@@ -480,11 +563,16 @@ internal BD_Board* wg_generate(Arena* arena, WG_Params* params, U64 seed) {
   I32 h = params->height;
 
   //- fp: elevation field, kept for the whole generation -- classification
-  //  and rivers must agree on where downhill is
+  //  and rivers must agree on where downhill is. Tectonic ridges come first:
+  //  every later system (rivers, snowlines, foothills) hangs off elevation.
+  V2* ridge_points = push_array_no_zero(scratch.arena, V2,
+                                        (U64)Max(params->ridge_count, 1) * WG__RIDGE_SAMPLES);
+  I32 ridge_point_count = wg__build_ridges(params, seed, ridge_points);
   F32* elevation = push_array_no_zero(scratch.arena, F32, (U64)w * h);
   for(I32 y = 0; y < h; y += 1) {
     for(I32 x = 0; x < w; x += 1) {
-      elevation[(U64)y * w + x] = wg__elevation_at(params, seed, x, y);
+      elevation[(U64)y * w + x] =
+          wg__elevation_at(params, seed, ridge_points, ridge_point_count, x, y);
     }
   }
 
@@ -520,6 +608,57 @@ internal BD_Board* wg_generate(Arena* arena, WG_Params* params, U64 seed) {
 
       bd_tile_at(board, p)->terrain =
           (BD_Terrain)wg__classify(params, e, moisture, drainage, temperature, coast);
+    }
+  }
+
+  //- fp: despeckle: terrain regions smaller than min_region_size dissolve
+  //  into their most common neighbor, repeated until the map is stable
+  if(params->min_region_size > 1) {
+    U8* visited = push_array_no_zero(scratch.arena, U8, (U64)w * h);
+    V2I* queue = push_array_no_zero(scratch.arena, V2I, (U64)w * h);
+    for(I32 pass = 0; pass < 8; pass += 1) {
+      B32 merged = 0;
+      MemoryZero(visited, (U64)w * h);
+      for(I32 y = 0; y < h; y += 1) {
+        for(I32 x = 0; x < w; x += 1) {
+          if(visited[(U64)y * w + x]) { continue; }
+          BD_Terrain terrain = bd_tile_at(board, (V2I){x, y})->terrain;
+          visited[(U64)y * w + x] = 1;
+          queue[0] = (V2I){x, y};
+          I32 size = 1;
+          for(I32 head = 0; head < size; head += 1) {
+            for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += 1) {
+              V2I n = v2i_add(queue[head], bd_dir_delta(dir));
+              if(!bd_in_bounds(board, n) || visited[(U64)n.y * w + n.x]) { continue; }
+              if(bd_tile_at(board, n)->terrain != terrain) { continue; }
+              visited[(U64)n.y * w + n.x] = 1;
+              queue[size] = n;
+              size += 1;
+            }
+          }
+          if(size >= params->min_region_size) { continue; }
+          U32 votes[WG_TERRAIN_CAP] = {0};
+          for(I32 i = 0; i < size; i += 1) {
+            for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += 1) {
+              V2I n = v2i_add(queue[i], bd_dir_delta(dir));
+              if(!bd_in_bounds(board, n)) { continue; }
+              BD_Terrain nt = bd_tile_at(board, n)->terrain;
+              if(nt != terrain) { votes[nt] += 1; }
+            }
+          }
+          U32 best = terrain;
+          U32 best_votes = 0;
+          for(U32 i = 0; i < params->terrain_count; i += 1) {
+            if(votes[i] > best_votes) { best = i; best_votes = votes[i]; }
+          }
+          if(best_votes == 0) { continue; } // the whole map is one small region
+          for(I32 i = 0; i < size; i += 1) {
+            bd_tile_at(board, queue[i])->terrain = (BD_Terrain)best;
+          }
+          merged = 1;
+        }
+      }
+      if(!merged) { break; }
     }
   }
 

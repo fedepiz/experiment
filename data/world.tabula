@@ -11,22 +11,26 @@ world = {
   # the large forms)
   elevation_scale = 30
   elevation_octaves = 6
-  elevation_persistence = 0.8
+  elevation_persistence = 0.6
   moisture_scale = 20
   moisture_octaves = 5
   moisture_persistence = 0.7
 
   # temperature: piecewise-linear latitude gradient through three points
   # (equator = the map's middle row), wobbled by its own noise field, cooled
-  # by temperature_lapse per unit of elevation above the sea
-  temperature_north = 0.10
+  # by altitude. The lapse is curved: normalized height above the sea raised
+  # to temperature_lapse_exponent, times temperature_lapse -- exponent > 1
+  # spares mid ground and freezes ridgelines sharply, so snow pins to the
+  # spines even in warm latitudes.
+  temperature_north = 0.12
   temperature_equator = 0.8
-  temperature_south = 0.10
+  temperature_south = 0.12
   temperature_variation = 0.15
   temperature_scale = 40
   temperature_octaves = 3
   temperature_persistence = 0.5
-  temperature_lapse = 0.6
+  temperature_lapse = 0.9
+  temperature_lapse_exponent = 2.5
 
   # field anchors: sea_level says where water sits (rivers trace to it,
   # coasts test against it), drainage_ceiling is the elevation where the
@@ -34,14 +38,32 @@ world = {
   # wets river banks before matching
   sea_level = 0.32
   drainage_ceiling = 0.62
+  drainage_full_slope = 0.045 # slope (elevation per tile) that counts as fully drained
   river_moisture = 0.10
 
   # continental rim: the border is always deep water. Inside continent_edge
   # (distance from the border, in half-map units) the heightmap stands as
   # tuned; from there elevation blends to 0 over continent_smoothness of
   # that distance, so land can rise anywhere inland and never at the border.
-  continent_edge = 0.4
+  continent_edge = 0.2
   continent_smoothness = 0.85
+
+  # tectonic ridges: jittered polylines between distant points add
+  # elevation, so mountains form ranges instead of noise blobs. Ridges may
+  # run out to sea -- the rim drowns what crosses it, surfacing as island
+  # arcs. elevation_amplitude scales the noise's deviation around 0.5,
+  # leaving the ridges as the mountain-maker; noise supplies flanks and
+  # passes.
+  ridge_count = 2
+  ridge_height = 0.3
+  ridge_width = 4        # tiles from spine to the foot of the falloff
+  ridge_wander = 6       # perpendicular meander amplitude, tiles
+  ridge_min_length = 0.45 # endpoints at least this fraction of min(w,h) apart
+  elevation_amplitude = 0.7
+
+  # terrain regions smaller than this dissolve into their most common
+  # neighbor after classification (0 = off): kills single-tile speck noise
+  min_region_size = 4
 
   river_count = 12
   river_max_tries = 100  # maximum numbers of attempts at generating rivers
@@ -123,16 +145,16 @@ world = {
     rank = 8
     move_cost = 2.0
     moisture = [0.0 0.35]
-    drainage = [0.65 1.0]
-    temperature = [0.45 1.0]
+    drainage = [0.55 1.0]
+    temperature = [0.4 1.0]
   }
   terrain_type = {
     name = desert
     color = [0.78 0.70 0.48]
     rank = 9
     move_cost = 1.5
-    moisture = [0.0 0.35]
-    temperature = [0.45 1.0]
+    moisture = [0.0 0.38]
+    temperature = [0.4 1.0]
   }
   terrain_type = {
     name = taiga
@@ -157,7 +179,7 @@ world = {
     move_cost = 3.0
     overlay_density = 85
     moisture = [0.55 1.0]
-    temperature = [0.75 1.0]
+    temperature = [0.65 1.0]
   }
   terrain_type = {
     name = savanna
@@ -166,15 +188,15 @@ world = {
     move_cost = 1.0
     overlay_density = 35
     moisture = [0.35 0.55]
-    temperature = [0.7 1.0]
+    temperature = [0.6 1.0]
   }
   terrain_type = {
     name = swamp
     color = [0.30 0.42 0.36]
     rank = 12
     move_cost = 3.0
-    moisture = [0.60 1.0]
-    drainage = [0.0 0.35]
+    moisture = [0.6 1.0]
+    drainage = [0.0 0.45]
   }
   terrain_type = {
     name = forest

@@ -92,7 +92,9 @@ typedef struct {
   F32 temperature_scale;
   I32 temperature_octaves;
   F32 temperature_persistence;
-  F32 temperature_lapse;
+  F32 temperature_lapse;          // drop at the world's elevation ceiling...
+  F32 temperature_lapse_exponent; // ...curved: >1 spares mid ground and
+                                  // freezes ridgelines sharply
 
   //- fp: field semantics. Classification itself lives in the terrain rows;
   //  these anchor the fields the rows read: sea_level says where water sits
@@ -101,7 +103,14 @@ typedef struct {
   //  saturates, river_moisture wets river banks before matching
   F32 sea_level;
   F32 drainage_ceiling;
+  F32 drainage_full_slope; // slope, in elevation per tile, that counts as fully drained
   F32 river_moisture;
+
+  // terrain regions smaller than this dissolve into their most common
+  // neighbor after classification; 0 disables. Band classification flips
+  // single tiles wherever a field grazes a threshold, and those specks
+  // read as noise, not terrain.
+  I32 min_region_size;
 
   //- fp: terrain rows, in file order (see WG_TerrainDef); [0] is baked nil
   WG_TerrainDef terrains[WG_TERRAIN_CAP];
@@ -114,6 +123,19 @@ typedef struct {
   //  distance it takes to reach full water
   F32 continent_edge;
   F32 continent_smoothness;
+
+  //- fp: tectonic ridges: jittered polylines between distant points; their
+  //  distance field adds to elevation, so mountains come out as ranges, not
+  //  noise blobs. Ridges may run out to sea -- the rim drowns what crosses
+  //  it, surfacing as island arcs. elevation_amplitude scales the noise's
+  //  deviation around 0.5, making room for the ridges to be the mountain-
+  //  maker while noise supplies flanks and passes.
+  I32 ridge_count;       // ranges per world; 0 = pure noise elevation
+  F32 ridge_height;      // elevation added at the ridgeline
+  F32 ridge_width;       // tiles from spine to foot of the falloff
+  F32 ridge_wander;      // perpendicular meander amplitude, tiles
+  F32 ridge_min_length;  // endpoints at least this fraction of min(w,h) apart
+  F32 elevation_amplitude;
 
   I32 river_count;      // rivers actually carved (the quota)...
   I32 river_max_tries;  // ...and the source attempts spent chasing it
