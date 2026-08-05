@@ -19,9 +19,9 @@ world = {
   # temperature: piecewise-linear latitude gradient through three points
   # (equator = the map's middle row), wobbled by its own noise field, cooled
   # by temperature_lapse per unit of elevation above the sea
-  temperature_north = 0.15
+  temperature_north = 0.10
   temperature_equator = 0.8
-  temperature_south = 0.45
+  temperature_south = 0.10
   temperature_variation = 0.15
   temperature_scale = 40
   temperature_octaves = 3
