@@ -143,10 +143,18 @@ typedef struct {
   V2 size;  // texels; == src dims, for convenience
 } D_Sprite;
 
+// how a sheet's texels sample on screen; fixed at sheet creation
+typedef U32 D_Sampling;
+enum {
+  D_Sampling_Smooth = 0, // linear; the zero default
+  D_Sampling_Pixel,      // nearest: pixel art stays hard at any zoom
+  D_Sampling_COUNT,
+};
+
 // w/h are the sheet's texel dimensions -- capacity is the caller's call,
 // since eager packing must allocate before the content arrives. 0 reads as
 // a 2048 default (ZII).
-internal void          d_spritesheet_begin(I32 w, I32 h);
+internal void          d_spritesheet_begin(I32 w, I32 h, D_Sampling sampling);
 internal D_Sprite      d_spritesheet_push(D_Image image); // ZII: zero image or full sheet = nil sprite
 internal D_SpriteSheet d_spritesheet_end(void);
 

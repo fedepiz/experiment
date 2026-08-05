@@ -130,7 +130,7 @@ internal MapAssets map_assets_load(void) {
   MapAssets assets = {0};
   assets.sprite_count = 1; // id 0 = nil
   ArenaTemp scratch = arena_get_scratch(0, 0);
-  d_spritesheet_begin(512, 512);
+  d_spritesheet_begin(512, 512, D_Sampling_Pixel);
 
   for(WG_TerrainType type = 0; type < WG_TerrainType_COUNT; type += 1) {
     String8 name = WG_TERRAIN_DATA[type].name;
@@ -349,7 +349,7 @@ internal void test_render(D_Camera camera) {
         d_image_set_px(stripes_img, x, y, s_on ? (V4){0.24f, 0.82f, 0.75f, 1} : (V4){0.08f, 0.24f, 0.24f, 1});
       }
     }
-    d_spritesheet_begin(512, 256);
+    d_spritesheet_begin(512, 256, D_Sampling_Smooth);
     checker = d_spritesheet_push(checker_img);
     stripes = d_spritesheet_push(stripes_img);
     d_spritesheet_end();

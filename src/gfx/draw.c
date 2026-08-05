@@ -305,7 +305,7 @@ internal D_Sheet* d__sheet_from_id(U64 id) {
 // (perfectly-sized one-image sheets); with no data the texture is zeroed --
 // packed regions whose pusher does not fill the gutter ring (glyphs) rely on
 // linear sampling finding transparent black there, not stale memory.
-internal U64 d__sheet_create(I32 w, I32 h, R_TexFormat format, void* opt_data) {
+internal U64 d__sheet_create(I32 w, I32 h, R_TexFormat format, D_Sampling sampling, void* opt_data) {
   U64 result = 0;
   U64 slot = D_SHEET_CAP;
   for(U64 i = 0; i < D_SHEET_CAP; i += 1) {
@@ -315,14 +315,16 @@ internal U64 d__sheet_create(I32 w, I32 h, R_TexFormat format, void* opt_data) {
     }
   }
   if(slot < D_SHEET_CAP && w > 0 && h > 0) {
+    R_TexSampling tex_sampling = (sampling == D_Sampling_Pixel) ? R_TexSampling_Nearest
+                                                                : R_TexSampling_Linear;
     R_Handle tex = {0};
     if(opt_data != 0) {
-      tex = r_tex_alloc(w, h, format, R_TexSampling_Linear, opt_data);
+      tex = r_tex_alloc(w, h, format, tex_sampling, opt_data);
     } else {
       U64 texel_size = (format == R_TexFormat_R8) ? 1 : 4;
       ArenaTemp scratch = arena_get_scratch(0, 0);
       U8* zeroes = push_array(scratch.arena, U8, (U64)w * (U64)h * texel_size);
-      tex = r_tex_alloc(w, h, format, R_TexSampling_Linear, zeroes);
+      tex = r_tex_alloc(w, h, format, tex_sampling, zeroes);
       arena_release_scratch(scratch);
     }
     if(tex.u64 != 0) {
@@ -366,11 +368,11 @@ internal B32 d__sheet_pack(D_Sheet* sheet, I32 w, I32 h, I32* out_x, I32* out_y)
   return result;
 }
 
-internal void d_spritesheet_begin(I32 w, I32 h) {
+internal void d_spritesheet_begin(I32 w, I32 h, D_Sampling sampling) {
   Assert(d_state.open_sheet == 0);        // one sheet under construction at a time
   if(w == 0) { w = D_SHEET_DEFAULT_DIM; } // ZII: 0 reads as the default
   if(h == 0) { h = D_SHEET_DEFAULT_DIM; }
-  d_state.open_sheet = d__sheet_create(w, h, R_TexFormat_RGBA8, 0);
+  d_state.open_sheet = d__sheet_create(w, h, R_TexFormat_RGBA8, sampling, 0);
   if(d_state.open_sheet != 0) {
     d__sheet_from_id(d_state.open_sheet)->open = 1;
   }
@@ -472,7 +474,7 @@ internal D_Sprite d_sprite_from_image(D_Image image) {
   D_Sprite result = {0};
   if(image.pixels != 0 && image.w > 0 && image.h > 0) {
     // a sheet of exactly this image: no packing, the texture is the sprite
-    U64 id = d__sheet_create(image.w, image.h, R_TexFormat_RGBA8, image.pixels);
+    U64 id = d__sheet_create(image.w, image.h, R_TexFormat_RGBA8, D_Sampling_Smooth, image.pixels);
     if(id != 0) {
       result.sheet.u64 = id;
       result.src = (Rect){{0, 0}, {(F32)image.w, (F32)image.h}};
@@ -743,7 +745,7 @@ internal D_Glyph* d__glyph(D_FontSlot* font, U32 codepoint, I32 size_px) {
     I32 h = y1 - y0;
     if(w > 0 && h > 0) {
       if(d_state.glyph_sheet == 0) {
-        d_state.glyph_sheet = d__sheet_create(D_SHEET_DEFAULT_DIM, D_SHEET_DEFAULT_DIM, R_TexFormat_R8, 0);
+        d_state.glyph_sheet = d__sheet_create(D_SHEET_DEFAULT_DIM, D_SHEET_DEFAULT_DIM, R_TexFormat_R8, D_Sampling_Smooth, 0);
         if(d_state.glyph_sheet != 0) { d__sheet_from_id(d_state.glyph_sheet)->open = 1; }
       }
       D_Sheet* sheet = d__sheet_from_id(d_state.glyph_sheet);

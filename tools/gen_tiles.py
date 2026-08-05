@@ -585,7 +585,7 @@ def main():
     # network pieces: rivers and roads by connection case
     for name, fill, bank, width, sparkle in (
         ("river", [(46, 82, 140), (54, 92, 152), (64, 104, 164)], (28, 52, 94), 5.0, (150, 190, 225)),
-        ("road", [(168, 140, 96), (178, 150, 106)], (112, 88, 60), 3.6, None),
+        ("road", [(168, 140, 96), (178, 150, 106)], (112, 88, 60), 4.2, None),
     ):
         net_row = []
         for code in range(1, 16):
