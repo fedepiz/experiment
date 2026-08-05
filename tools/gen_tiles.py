@@ -388,27 +388,61 @@ def _canopy_mass(px, rng, blobs, palette=CANOPY_TEMPERATE):
             px[y][x] = light if lit > 0.5 else dark if lit < -0.6 else mid
 
 
+def _broadleaf_trees(px, rng, trees):
+    """Round-crowned broadleaf silhouettes -- trunk under a lumpy crown --
+    side-on like the conifers and umbrella trees, lit from the top-left.
+    Trees sort by crown height so nearer (lower) ones overlap farther."""
+    trunk = (86, 64, 40)
+    dark, mid, light = CANOPY_TEMPERATE
+    for cx, cy, r in sorted(trees, key=lambda t: t[1]):
+        tx = int(round(cx))
+        for ty in range(int(cy), min(int(cy + r + 3.0), SIZE - 1) + 1):
+            put(px, tx, ty, trunk)
+        # crown: the main disc plus a couple of offset lobes, so the outline
+        # scallops like foliage instead of reading as a lollipop
+        lobes = [(cx, cy, r)]
+        for _ in range(rng.randrange(2, 4)):
+            a = rng.uniform(0.0, TAU)
+            lobes.append((cx + math.cos(a) * r * 0.6, cy + math.sin(a) * r * 0.4,
+                          r * rng.uniform(0.45, 0.7)))
+        for y in range(SIZE):
+            for x in range(SIZE):
+                best = None
+                for lx, ly, lr in lobes:
+                    d2 = (x - lx) ** 2 + (y - ly) ** 2
+                    if d2 <= lr * lr and (best is None or d2 / (lr * lr) < best[0]):
+                        best = (d2 / (lr * lr), lx, ly, lr)
+                if best is None:
+                    continue
+                _, lx, ly, lr = best
+                lit = (-(x - lx) - (y - ly)) / max(lr, 1e-3)
+                lit += rng.uniform(-0.3, 0.3)
+                px[y][x] = light if lit > 0.5 else dark if lit < -0.6 else mid
+
+
 def paint_forest_mass(rng, decorated):
-    """Dense scalloped canopy covering most of the tile."""
+    """A clustered stand of broadleaf trees covering most of the tile."""
     del decorated
     px = new_canvas()
-    blobs = []
-    for _ in range(rng.randrange(5, 8)):
-        r = rng.uniform(2.6, 4.0)
-        blobs.append((rng.uniform(r - 0.5, SIZE - r + 0.5), rng.uniform(r - 0.5, SIZE - r + 0.5), r))
-    _canopy_mass(px, rng, blobs)
+    trees = []
+    for _ in range(rng.randrange(3, 6)):
+        r = rng.uniform(2.2, 3.2)
+        trees.append((rng.uniform(r + 0.5, SIZE - r - 0.5),
+                      rng.uniform(r + 1.0, SIZE - r - 4.0), r))
+    _broadleaf_trees(px, rng, trees)
     return outline_silhouette(px, (38, 70, 42), (30, 56, 34))
 
 
 def paint_forest_fringe(rng, decorated):
-    """Sparser broken mass for region borders: the woodland thins out."""
+    """Sparser lone trees for region borders: the woodland thins out."""
     del decorated
     px = new_canvas()
-    blobs = []
-    for _ in range(rng.randrange(2, 4)):
-        r = rng.uniform(1.8, 2.8)
-        blobs.append((rng.uniform(r + 0.5, SIZE - r - 0.5), rng.uniform(r + 0.5, SIZE - r - 0.5), r))
-    _canopy_mass(px, rng, blobs)
+    trees = []
+    for _ in range(rng.randrange(1, 3)):
+        r = rng.uniform(1.8, 2.6)
+        trees.append((rng.uniform(r + 0.5, SIZE - r - 0.5),
+                      rng.uniform(r + 1.0, SIZE - r - 4.0), r))
+    _broadleaf_trees(px, rng, trees)
     return outline_silhouette(px, (38, 70, 42), (30, 56, 34))
 
 
@@ -563,25 +597,51 @@ def paint_taiga_sparse(rng, decorated):
     return outline_silhouette(px, (22, 44, 38), (16, 34, 30))
 
 
+def _jungle_canopy(px, rng, crowns):
+    """Tiered tropical canopy: flattened crowns stacked at varying heights,
+    nearer layers overlapping farther ones so trunks show only in glimpses.
+    Denser and darker than the broadleaf stands; lit from the top-left."""
+    trunk = (66, 50, 32)
+    dark, mid, light = CANOPY_JUNGLE
+    for cx, cy, rx, ry in sorted(crowns, key=lambda c: c[1]):
+        tx = int(round(cx))
+        for ty in range(int(cy), min(int(cy + ry + 4.0), SIZE - 1) + 1):
+            put(px, tx, ty, trunk)
+        for y in range(SIZE):
+            for x in range(SIZE):
+                dx = (x - cx) / rx
+                dy = (y - cy) / ry
+                if dx * dx + dy * dy > 1.0:
+                    continue
+                lit = (-dx - dy) * 0.7 + rng.uniform(-0.25, 0.25)
+                px[y][x] = light if lit > 0.4 else dark if lit < -0.5 else mid
+
+
 def paint_jungle_mass(rng, decorated):
+    """Layered crowns filling most of the tile: canopy with emergents."""
     del decorated
     px = new_canvas()
-    blobs = []
-    for _ in range(rng.randrange(6, 9)):
-        r = rng.uniform(2.4, 3.8)
-        blobs.append((rng.uniform(r - 0.5, SIZE - r + 0.5), rng.uniform(r - 0.5, SIZE - r + 0.5), r))
-    _canopy_mass(px, rng, blobs, CANOPY_JUNGLE)
+    crowns = []
+    for _ in range(rng.randrange(4, 7)):
+        rx = rng.uniform(2.6, 3.6)
+        ry = rx * rng.uniform(0.55, 0.8)
+        crowns.append((rng.uniform(rx + 0.5, SIZE - rx - 0.5),
+                       rng.uniform(ry + 1.0, SIZE - ry - 5.0), rx, ry))
+    _jungle_canopy(px, rng, crowns)
     return outline_silhouette(px, (16, 60, 28), (12, 46, 22))
 
 
 def paint_jungle_sparse(rng, decorated):
+    """A lone crown or two for region borders: the jungle opens up."""
     del decorated
     px = new_canvas()
-    blobs = []
-    for _ in range(rng.randrange(2, 4)):
-        r = rng.uniform(1.8, 2.8)
-        blobs.append((rng.uniform(r + 0.5, SIZE - r - 0.5), rng.uniform(r + 0.5, SIZE - r - 0.5), r))
-    _canopy_mass(px, rng, blobs, CANOPY_JUNGLE)
+    crowns = []
+    for _ in range(rng.randrange(1, 3)):
+        rx = rng.uniform(2.0, 2.8)
+        ry = rx * rng.uniform(0.55, 0.8)
+        crowns.append((rng.uniform(rx + 0.5, SIZE - rx - 0.5),
+                       rng.uniform(ry + 1.0, SIZE - ry - 5.0), rx, ry))
+    _jungle_canopy(px, rng, crowns)
     return outline_silhouette(px, (16, 60, 28), (12, 46, 22))
 
 
