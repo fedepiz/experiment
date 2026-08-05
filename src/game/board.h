@@ -175,8 +175,8 @@ typedef struct {
 // nil (ZII), so these need no initialization. Read-only by convention --
 // nothing may ever write through a nil.
 
-global BD_Tile bd_nil_tile;
-global BD_Pawn bd_nil_pawn;
+global BD_Tile BD_NIL_TILE;
+global BD_Pawn BD_NIL_PAWN;
 
 ////////////////////////////////
 //~ fp: Grid

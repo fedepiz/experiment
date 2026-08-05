@@ -206,6 +206,51 @@ def paint_swamp(rng, decorated, w=SIZE, h=SIZE):
     return px
 
 
+def paint_ocean(rng, decorated, w=SIZE, h=SIZE):
+    del decorated
+    ramp = [(24, 48, 96), (30, 56, 108), (36, 64, 118)]
+    px = blotch_field(rng, ramp, (0.35, 0.50, 0.15), w, h)
+    dashes(rng, px, int(2 * area(px)), (50, 80, 134), length=(3, 5))  # long, sparse swell
+    return px
+
+
+def paint_hills(rng, decorated, w=SIZE, h=SIZE):
+    ramp = [(118, 124, 82), (132, 138, 92), (146, 152, 104)]
+    px = blotch_field(rng, ramp, (0.30, 0.45, 0.25), w, h)
+    dashes(rng, px, int(3 * area(px)), (106, 110, 72), length=(2, 4))  # slope shadows
+    speckles(rng, px, int(3 * area(px)), (158, 160, 118))
+    if decorated:
+        for _ in range(max(1, int(0.3 * area(px)))):  # outcrop flecks
+            x = rng.randrange(w)
+            y = rng.randrange(h)
+            put_wrap(px, x, y, (152, 148, 138))
+            put_wrap(px, x + 1, y, (128, 124, 114))
+    return px
+
+
+def paint_badlands(rng, decorated, w=SIZE, h=SIZE):
+    del decorated
+    ramp = [(142, 88, 58), (160, 104, 68), (176, 120, 80)]
+    px = blotch_field(rng, ramp, (0.30, 0.45, 0.25), w, h)
+    # strata: broken horizontal terrace lines
+    for row in range(rng.randrange(3), h, rng.randrange(3, 5)):
+        for x in range(w):
+            if rng.random() < 0.7:
+                put_wrap(px, x, row, (118, 70, 46))
+    speckles(rng, px, int(3 * area(px)), (196, 142, 100))
+    return px
+
+
+def paint_beach(rng, decorated, w=SIZE, h=SIZE):
+    ramp = [(206, 190, 146), (218, 202, 158), (228, 214, 172)]
+    px = blotch_field(rng, ramp, (0.20, 0.55, 0.25), w, h)
+    speckles(rng, px, int(5 * area(px)), (190, 172, 128))
+    if decorated:
+        for _ in range(max(1, int(0.2 * area(px)))):  # shell flecks
+            put_wrap(px, rng.randrange(w), rng.randrange(h), (240, 234, 216))
+    return px
+
+
 TERRAINS = {
     "water": paint_water,
     "plains": paint_plains,
@@ -213,6 +258,10 @@ TERRAINS = {
     "mountain": paint_mountain,
     "desert": paint_desert,
     "swamp": paint_swamp,
+    "ocean": paint_ocean,
+    "hills": paint_hills,
+    "badlands": paint_badlands,
+    "beach": paint_beach,
 }
 
 
@@ -246,51 +295,47 @@ def outline_silhouette(px, edge_color, bottom_color):
     return out
 
 
-def _draw_canopies(px, rng, canopies):
+def _canopy_mass(px, rng, blobs):
+    """A lumpy connected canopy: the union of overlapping discs, shaded as
+    one mass by a top-left light with a dithered boundary. Aggregate, not
+    tree portraits -- at world scale a tile is a whole woodland."""
     dark, mid, light = (44, 82, 48), (58, 106, 60), (88, 136, 74)
-    trunk = (82, 62, 42)
-    canopies = sorted(canopies, key=lambda c: c[1])  # back (high) to front (low)
-    for cx, cy, r in canopies:
-        tx = int(round(cx))
-        for ty in range(int(cy), min(int(cy + r) + 3, SIZE - 1)):
-            put(px, tx, ty, trunk)  # trunk first; canopy overwrites its top
-        for y in range(SIZE):
-            for x in range(SIZE):
-                dx, dy = x - cx, y - cy
-                if dx * dx + dy * dy > r * r:
-                    continue
-                lit = (-dx - dy) / max(r, 1e-3)  # top-left light
-                lit += rng.uniform(-0.25, 0.25)  # dithered shade boundary
-                if lit > 0.45:
-                    px[y][x] = light
-                elif lit < -0.55:
-                    px[y][x] = dark
-                else:
-                    px[y][x] = mid
+    for y in range(SIZE):
+        for x in range(SIZE):
+            best = None
+            for cx, cy, r in blobs:
+                d2 = (x - cx) ** 2 + (y - cy) ** 2
+                if d2 <= r * r and (best is None or d2 / (r * r) < best[0]):
+                    best = (d2 / (r * r), cx, cy, r)
+            if best is None:
+                continue
+            _, cx, cy, r = best
+            lit = (-(x - cx) - (y - cy)) / max(r, 1e-3)
+            lit += rng.uniform(-0.3, 0.3)
+            px[y][x] = light if lit > 0.5 else dark if lit < -0.6 else mid
 
 
-def paint_tree_cluster(rng, decorated):
-    """2-4 round canopies with trunks, back row first so the front overlaps."""
+def paint_forest_mass(rng, decorated):
+    """Dense scalloped canopy covering most of the tile."""
     del decorated
     px = new_canvas()
-    canopies = []
-    for _ in range(rng.randrange(2, 5)):
-        r = rng.uniform(2.6, 3.6)
-        canopies.append((rng.uniform(r + 0.5, SIZE - r - 0.5), rng.uniform(4.0, 9.5), r))
-    _draw_canopies(px, rng, canopies)
+    blobs = []
+    for _ in range(rng.randrange(5, 8)):
+        r = rng.uniform(2.6, 4.0)
+        blobs.append((rng.uniform(r - 0.5, SIZE - r + 0.5), rng.uniform(r - 0.5, SIZE - r + 0.5), r))
+    _canopy_mass(px, rng, blobs)
     return outline_silhouette(px, (38, 70, 42), (30, 56, 34))
 
 
-def paint_tree_sparse(rng, decorated):
-    """1-2 smaller trees for region edges: forests thin out at their border
-    instead of stopping like a wall."""
+def paint_forest_fringe(rng, decorated):
+    """Sparser broken mass for region borders: the woodland thins out."""
     del decorated
     px = new_canvas()
-    canopies = []
-    for _ in range(rng.randrange(1, 3)):
-        r = rng.uniform(2.0, 2.8)
-        canopies.append((rng.uniform(r + 0.5, SIZE - r - 0.5), rng.uniform(5.0, 10.0), r))
-    _draw_canopies(px, rng, canopies)
+    blobs = []
+    for _ in range(rng.randrange(2, 4)):
+        r = rng.uniform(1.8, 2.8)
+        blobs.append((rng.uniform(r + 0.5, SIZE - r - 0.5), rng.uniform(r + 0.5, SIZE - r - 0.5), r))
+    _canopy_mass(px, rng, blobs)
     return outline_silhouette(px, (38, 70, 42), (30, 56, 34))
 
 
@@ -365,16 +410,57 @@ def paint_rock_scatter(rng, decorated):
     return outline_silhouette(px, (84, 81, 74), (66, 63, 57))
 
 
+def paint_hill_mounds(rng, decorated):
+    """Rounded flat-bottomed domes: foothills as a mass, like the canopy."""
+    del decorated
+    px = new_canvas()
+    dark, mid, light = (104, 106, 72), (126, 128, 88), (152, 152, 108)
+    mounds = []
+    for _ in range(rng.randrange(2, 4)):
+        r = rng.uniform(2.8, 4.2)
+        mounds.append((rng.uniform(r, SIZE - r), rng.uniform(5.0, SIZE - 3.0), r))
+    for cx, cy, r in sorted(mounds, key=lambda m: m[1]):
+        for y in range(SIZE):
+            for x in range(SIZE):
+                dx, dy = x - cx, y - cy
+                if dx * dx + dy * dy > r * r or y > cy + r * 0.55:
+                    continue
+                lit = (-dx - dy) / max(r, 1e-3) + rng.uniform(-0.25, 0.25)
+                px[y][x] = light if lit > 0.45 else dark if lit < -0.55 else mid
+    return outline_silhouette(px, (92, 94, 64), (76, 78, 52))
+
+
+def paint_hill_knolls(rng, decorated):
+    """1-2 small domes for region borders: the foothills flatten out."""
+    del decorated
+    px = new_canvas()
+    dark, mid, light = (104, 106, 72), (126, 128, 88), (152, 152, 108)
+    for _ in range(rng.randrange(1, 3)):
+        r = rng.uniform(1.8, 2.6)
+        cx = rng.uniform(r, SIZE - r)
+        cy = rng.uniform(6.0, SIZE - 3.0)
+        for y in range(SIZE):
+            for x in range(SIZE):
+                dx, dy = x - cx, y - cy
+                if dx * dx + dy * dy > r * r or y > cy + r * 0.55:
+                    continue
+                lit = (-dx - dy) / max(r, 1e-3) + rng.uniform(-0.25, 0.25)
+                px[y][x] = light if lit > 0.45 else dark if lit < -0.55 else mid
+    return outline_silhouette(px, (92, 94, 64), (76, 78, 52))
+
+
 OVERLAYS = {
-    "forest": paint_tree_cluster,
+    "forest": paint_forest_mass,
     "mountain": paint_rock_mass,
+    "hills": paint_hill_mounds,
 }
 
 # sparser art for tiles on a region's border, so forests thin out and
 # massifs crumble into foothills the way the reference map reads
 EDGE_OVERLAYS = {
-    "forest": paint_tree_sparse,
+    "forest": paint_forest_fringe,
     "mountain": paint_rock_scatter,
+    "hills": paint_hill_knolls,
 }
 
 

@@ -10,49 +10,53 @@
 ////////////////////////////////
 //~ fp: Worldgen
 //
-// Procedural world generation: turns generation knobs -- loaded from a tabula
-// file -- into a populated board. This is where board terrain ids get their
-// meaning: they are WG_TerrainType values, described by the WG_TERRAIN_DATA
-// table below.
+// Procedural world generation: turns generation knobs and terrain rows --
+// both loaded from a tabula file -- into a populated board. This is where
+// board terrain ids get their meaning: they index the terrain rows below.
 //
 // Generation is deterministic: same params, same seed, same world. All
 // randomness is integer-hash noise keyed on the seed passed to wg_generate --
 // there is no rng state anywhere.
 
 ////////////////////////////////
-//~ fp: Terrain Types
+//~ fp: Terrain Definitions
 //
-// The closed set of terrain kinds, with a data table indexed by type. Nil is
-// zero (ZII: a tile never painted reads as Nil -- impassable and rendered in
-// the loud bad-id color).
+// Terrain is data: each `terrain_type = { ... }` entry in the world file
+// becomes one row here, in file order, and the row index is the terrain id
+// everywhere (board tiles, tiling classes, art prefixes). One fat row per
+// terrain carries what every consumer reads: identity and art naming, map
+// fallback color, boundary rank, overlay density, travel cost, and the
+// classification bands.
+//
+// Classification is ordered FIRST MATCH: a tile takes the first row whose
+// declared bands all contain the tile's field values. Bands are closed
+// intervals; a zero band reads as "don't care" (ZII), so an all-zero row is
+// a catch-all -- the file's last row should be one. Row 0 is the reserved
+// nil terrain (ZII: an unpainted tile reads as nil -- impassable, loud
+// magenta); the classifier starts at row 1, and a tile no row claims stays
+// nil (wg_params_load reports any such gap in the band data).
 
-typedef U16 WG_TerrainType; // width-compatible with BD_Terrain
-enum {
-  WG_TerrainType_Nil,
-  WG_TerrainType_Water,
-  WG_TerrainType_Plains,
-  WG_TerrainType_Forest,
-  WG_TerrainType_Mountain,
-  WG_TerrainType_Desert,
-  WG_TerrainType_Swamp,
-  WG_TerrainType_COUNT,
-};
+#define WG_TERRAIN_CAP 16
 
 typedef struct {
-  String8 name;
-  V4 color;      // map render color
-  F32 move_cost; // cost to enter, <= 0 impassable (BD_TravelRules semantics)
-} WG_TerrainData;
+  F32 min;
+  F32 max;
+} WG_Band; // zero band = don't care
 
-global WG_TerrainData WG_TERRAIN_DATA[WG_TerrainType_COUNT] = {
-  {str8_lit_comp("nil"),      {1.00f, 0.00f, 1.00f, 1}, 0},    // loud magenta
-  {str8_lit_comp("water"),    {0.18f, 0.32f, 0.55f, 1}, 0},
-  {str8_lit_comp("plains"),   {0.47f, 0.62f, 0.33f, 1}, 1.0f},
-  {str8_lit_comp("forest"),   {0.23f, 0.42f, 0.24f, 1}, 2.0f},
-  {str8_lit_comp("mountain"), {0.54f, 0.52f, 0.50f, 1}, 0},
-  {str8_lit_comp("desert"),   {0.78f, 0.70f, 0.48f, 1}, 1.5f},
-  {str8_lit_comp("swamp"),    {0.30f, 0.42f, 0.36f, 1}, 3.0f},
-};
+typedef struct {
+  String8 name;        // asset prefix and display name; lives on the load arena
+  V4 color;            // flat map color when a terrain has no ground art
+  U8 rank;             // boundary covering order; higher spills over lower
+  U32 overlay_density; // percent of interior cells carrying an overlay
+  F32 move_cost;       // cost to enter, <= 0 impassable (BD_TravelRules semantics)
+
+  //- classification bands
+  WG_Band elevation;
+  WG_Band moisture;
+  WG_Band drainage;
+  B32 needs_coast;     // only matches with the sea one step away
+} WG_TerrainDef;
+
 
 ////////////////////////////////
 //~ fp: Generation Parameters
@@ -66,30 +70,39 @@ typedef struct {
   I32 width;
   I32 height;
 
-  //- fp: noise fields; scale is tiles per noise-lattice cell
+  //- fp: noise fields; scale is tiles per noise-lattice cell, persistence
+  //  is the per-octave amplitude falloff (higher = rougher, more variation
+  //  inside the large forms)
   F32 elevation_scale;
   I32 elevation_octaves;
+  F32 elevation_persistence;
   F32 moisture_scale;
   I32 moisture_octaves;
+  F32 moisture_persistence;
 
-  //- fp: classification thresholds. Elevation splits water / land / mountain;
-  //  the land in between is a biome matrix of moisture (rain arriving, its
-  //  own noise field) against drainage (water leaving -- not a field of its
-  //  own, but read off the elevation landscape: slope sheds water, height
-  //  stands above the water table)
-  F32 sea_level;       // elevation below -> water
-  F32 mountain_level;  // elevation above -> mountain
-  F32 desert_moisture; // moisture below -> desert
-  F32 forest_moisture; // moisture above -> forest
-  F32 swamp_moisture;  // moisture above, and...
-  F32 swamp_drainage;  // ...drainage below -> swamp (beats forest)
-  F32 river_moisture;  // extra moisture on and beside river tiles
+  //- fp: field semantics. Classification itself lives in the terrain rows;
+  //  these anchor the fields the rows read: sea_level says where water sits
+  //  (rivers trace to it, coasts test against it), drainage_ceiling is the
+  //  elevation where the height-above-the-water-table drainage term
+  //  saturates, river_moisture wets river banks before matching
+  F32 sea_level;
+  F32 drainage_ceiling;
+  F32 river_moisture;
 
-  // how strongly elevation sinks toward the map edge (0 = none); pulls the
-  // coastline inward until the land becomes one continent
-  F32 continent_falloff;
+  //- fp: terrain rows, in file order (see WG_TerrainDef); [0] is baked nil
+  WG_TerrainDef terrains[WG_TERRAIN_CAP];
+  U32 terrain_count;
 
-  I32 river_count;
+  //- fp: continental rim: the border is always deep water. Elevation
+  //  interpolates from the untouched heightmap to 0 across a band inside
+  //  the map edge: continent_edge is where the blend begins (distance from
+  //  the border, in half-map units), continent_smoothness how much of that
+  //  distance it takes to reach full water
+  F32 continent_edge;
+  F32 continent_smoothness;
+
+  I32 river_count;      // rivers actually carved (the quota)...
+  I32 river_max_tries;  // ...and the source attempts spent chasing it
   I32 river_min_length; // steps; rivers that trace shorter than this are culled
   F32 river_meander;    // jitter on candidate elevations during descent, in
                         // elevation units; 0 = pure steepest descent
@@ -102,14 +115,15 @@ typedef struct {
   F32 river_cross_cost;
 } WG_Params;
 
-internal WG_Params wg_params_load(String8 path);
+// terrain names are pushed onto `arena`; everything else is by value
+internal WG_Params wg_params_load(Arena* arena, String8 path);
 
 ////////////////////////////////
 //~ fp: Generation
 //
 // Allocates a board on `arena`, carves rivers downhill from high ground,
 // classifies terrain from the fields (rivers first, so their valleys read as
-// wetter land), and installs travel rules from WG_TERRAIN_DATA. The params
+// wetter land), and installs travel rules from the terrain rows. The params
 // describe a family of worlds; `seed` picks the member.
 
 internal BD_Board* wg_generate(Arena* arena, WG_Params* params, U64 seed);

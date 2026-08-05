@@ -52,21 +52,9 @@ typedef struct {
   D_Sprite sprites[MAP_SPRITE_CAP]; // id 0 reserved: "no art"
   U32 sprite_count;
   TL_Config tiling;
+  V4 fallback_colors[TL_CLASS_CAP]; // flat color for terrains with no ground art
+  U32 class_count;
 } MapAssets;
-
-// who spills over whom where grounds meet: higher rank spills onto lower, so
-// every boundary blends exactly once, in one direction. Zero never spills
-// onto anyone; water only receives, which is exactly what makes coastlines
-// read as ragged land-over-water.
-global U8 MAP_CLASS_RANKS[WG_TerrainType_COUNT] = {
-    0, // nil
-    0, // water
-    5, // plains
-    4, // forest
-    1, // mountain
-    2, // desert
-    3, // swamp
-};
 
 internal U32 map__register(MapAssets* assets, D_Sprite sprite) {
   U32 result = 0;
@@ -126,15 +114,18 @@ internal TL_Cell* map_cache_cell(MapCache* cache, BD_Board* board, V2I p) {
   return cell;
 }
 
-internal MapAssets map_assets_load(void) {
+internal MapAssets map_assets_load(WG_Params* params) {
   MapAssets assets = {0};
   assets.sprite_count = 1; // id 0 = nil
+  assets.class_count = params->terrain_count;
   ArenaTemp scratch = arena_get_scratch(0, 0);
-  d_spritesheet_begin(512, 512, D_Sampling_Pixel);
+  d_spritesheet_begin(512, 512, D_Sampling_Smooth);
 
-  for(WG_TerrainType type = 0; type < WG_TerrainType_COUNT; type += 1) {
-    String8 name = WG_TERRAIN_DATA[type].name;
-    tl_class_set(&assets.tiling, type, MAP_CLASS_RANKS[type], 80);
+  for(U32 type = 0; type < params->terrain_count; type += 1) {
+    WG_TerrainDef* def = &params->terrains[type];
+    String8 name = def->name;
+    assets.fallback_colors[type] = def->color;
+    tl_class_set(&assets.tiling, type, def->rank, def->overlay_density);
 
     // ground: one torus painting per terrain, cut into 4x4 windows on the
     // OFFSET grid -- each half a tile past the painting's own grid, since
@@ -233,7 +224,7 @@ internal V2I map_snap_passable(BD_Board* board, V2I want) {
 }
 
 internal BD_Board* map_create(Arena* arena, U64 seed) {
-  WG_Params params = wg_params_load(str8_lit("data/world.tabula"));
+  WG_Params params = wg_params_load(arena, str8_lit("data/world.tabula"));
   BD_Board* board = wg_generate(arena, &params, seed);
 
   // a road between two would-be settlements on opposite sides of the
@@ -241,7 +232,7 @@ internal BD_Board* map_create(Arena* arena, U64 seed) {
   {
     V2I west = map_snap_passable(board, (V2I){board->width / 6, board->height / 2});
     V2I east = map_snap_passable(board, (V2I){board->width * 5 / 6, board->height / 2});
-    ArenaTemp scratch = arena_get_scratch(0, 0);
+    ArenaTemp scratch = arena_get_scratch(&arena, 1);
     BD_Path path = bd_path_find(scratch.arena, board, west, east);
     for(U64 idx = 0; idx + 1 < path.count; idx += 1) {
       BD_Dir dir = bd_dir_from_delta(v2i_sub(path.points[idx + 1], path.points[idx]));
@@ -293,10 +284,10 @@ internal void map_draw(BD_Board* board, MapAssets* assets, MapCache* cache, D_Ca
               } else {
                 d_sprite(assets->sprites[piece->id], r, (V4){0}); // zero tint = as-is
               }
-            } else if(piece->klass != WG_TerrainType_Nil && on_board) {
-              // artless terrain draws its flat color; nil is the void and
-              // draws nothing (also keeps the sheet batch unbroken)
-              d_rect(r, WG_TERRAIN_DATA[piece->klass].color);
+            } else if(piece->klass != 0 && on_board) {
+              // artless terrain draws its flat color; nil (class 0) is the
+              // void and draws nothing (also keeps the sheet batch unbroken)
+              d_rect(r, assets->fallback_colors[piece->klass]);
             }
           }
         }
@@ -600,7 +591,15 @@ int main(void) {
   Game game = {0};
   U64 game_next_seed = 2704;
 
-  MapAssets map_assets = map_assets_load();
+  MapAssets map_assets = {0};
+  {
+    // the terrain rows drive asset naming and tiling registration; parsed
+    // into scratch, since everything the assets keep is copied out
+    ArenaTemp scratch = arena_get_scratch(0, 0);
+    WG_Params world_params = wg_params_load(scratch.arena, str8_lit("data/world.tabula"));
+    map_assets = map_assets_load(&world_params);
+    arena_release_scratch(scratch);
+  }
 
   //- fp: temp: fps overlay
   FPS_Counter fps_counter = {0};
@@ -635,7 +634,7 @@ int main(void) {
       game.map_cache = map_cache_make(game_arena, game.board->width, game.board->height, map_assets.tiling);
       // Reset the camera
       camera.center = (V2){game.board->width * MAP_TILE / 2, game.board->height * MAP_TILE / 2};
-      camera.zoom = 0.5f; // whole map in view; scroll to zoom in
+      camera.zoom = 1.0f; // whole map in view; scroll to zoom in
     }
 
     game_update(&game);

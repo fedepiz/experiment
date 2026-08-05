@@ -13,8 +13,86 @@
 ////////////////////////////////
 //~ fp: Parameters
 
-internal WG_Params wg_params_load(String8 path) {
-  ArenaTemp scratch = arena_get_scratch(0, 0);
+internal WG_Band wg__band_from_key(TB_Value* object, String8 key) {
+  WG_Band band = {0};
+  TB_Value* list = tb_get(object, key);
+  if(list->kind == TB_ValueKind_List && list->first != 0) {
+    band.min = tb_num_from_value(list->first, 0);
+    band.max = tb_num_from_value(list->first->next, 0);
+  }
+  return band;
+}
+
+internal V4 wg__color_from_key(TB_Value* object, String8 key, V4 fallback) {
+  V4 color = fallback;
+  TB_Value* list = tb_get(object, key);
+  if(list->kind == TB_ValueKind_List && list->count >= 3) {
+    color.x = tb_num_from_value(list->first, 0);
+    color.y = tb_num_from_value(list->first->next, 0);
+    color.z = tb_num_from_value(list->first->next->next, 0);
+    color.w = 1;
+  }
+  return color;
+}
+
+internal B32 wg__band_contains(WG_Band band, F32 v) {
+  if(band.min == 0 && band.max == 0) { return 1; } // zero band = don't care
+  return band.min <= v && v <= band.max;
+}
+
+// first row (past nil) whose bands all contain the fields; 0 = no row claims it
+internal U32 wg__classify(WG_Params* params, F32 e, F32 moisture, F32 drainage, B32 coast) {
+  for(U32 i = 1; i < params->terrain_count; i += 1) {
+    WG_TerrainDef* def = &params->terrains[i];
+    if(!wg__band_contains(def->elevation, e)) { continue; }
+    if(!wg__band_contains(def->moisture, moisture)) { continue; }
+    if(!wg__band_contains(def->drainage, drainage)) { continue; }
+    if(def->needs_coast && !coast) { continue; }
+    return i;
+  }
+  return 0;
+}
+
+// Bands are axis-aligned boxes, so any coverage gap contains the midpoint of
+// some cell in the grid of all band boundaries: testing those midpoints is an
+// exact check. Gaps report to stderr and classify as nil (loud magenta).
+internal void wg__report_band_gaps(String8 path, WG_Params* params) {
+  F32 cuts[3][2 * WG_TERRAIN_CAP + 2];
+  U32 cut_counts[3];
+  for(U32 dim = 0; dim < 3; dim += 1) {
+    cuts[dim][0] = 0;
+    cuts[dim][1] = 1;
+    cut_counts[dim] = 2;
+  }
+  for(U32 i = 1; i < params->terrain_count; i += 1) {
+    WG_TerrainDef* def = &params->terrains[i];
+    WG_Band bands[3] = {def->elevation, def->moisture, def->drainage};
+    for(U32 dim = 0; dim < 3; dim += 1) {
+      if(bands[dim].min == 0 && bands[dim].max == 0) { continue; }
+      cuts[dim][cut_counts[dim]] = bands[dim].min;
+      cuts[dim][cut_counts[dim] + 1] = bands[dim].max;
+      cut_counts[dim] += 2;
+    }
+  }
+  U32 gaps = 0;
+  for(U32 ei = 0; ei + 1 < cut_counts[0] && gaps < 4; ei += 1) {
+    for(U32 mi = 0; mi + 1 < cut_counts[1] && gaps < 4; mi += 1) {
+      for(U32 di = 0; di + 1 < cut_counts[2] && gaps < 4; di += 1) {
+        F32 e = 0.5f * (cuts[0][ei] + cuts[0][ei + 1]);
+        F32 m = 0.5f * (cuts[1][mi] + cuts[1][mi + 1]);
+        F32 d = 0.5f * (cuts[2][di] + cuts[2][di + 1]);
+        if(wg__classify(params, e, m, d, 0) == 0) {
+          eprintf_str8("%S: no terrain matches elevation %.2f moisture %.2f drainage %.2f\n",
+                       path, e, m, d);
+          gaps += 1;
+        }
+      }
+    }
+  }
+}
+
+internal WG_Params wg_params_load(Arena* arena, String8 path) {
+  ArenaTemp scratch = arena_get_scratch(&arena, 1); // names push onto `arena`; keep it out of scratch
   TB_Value* root = tb_parse_file_and_report(scratch.arena, path);
   TB_Value* world = tb_get(root, str8_lit("world"));
 
@@ -24,19 +102,49 @@ internal WG_Params wg_params_load(String8 path) {
 
   params.elevation_scale = tb_get_num(world, str8_lit("elevation_scale"), 48);
   params.elevation_octaves = (I32)tb_get_num(world, str8_lit("elevation_octaves"), 4);
+  params.elevation_persistence = tb_get_num(world, str8_lit("elevation_persistence"), 0.5f);
   params.moisture_scale = tb_get_num(world, str8_lit("moisture_scale"), 32);
   params.moisture_octaves = (I32)tb_get_num(world, str8_lit("moisture_octaves"), 3);
+  params.moisture_persistence = tb_get_num(world, str8_lit("moisture_persistence"), 0.5f);
 
   params.sea_level = tb_get_num(world, str8_lit("sea_level"), 0.32f);
-  params.mountain_level = tb_get_num(world, str8_lit("mountain_level"), 0.62f);
-  params.desert_moisture = tb_get_num(world, str8_lit("desert_moisture"), 0.35f);
-  params.forest_moisture = tb_get_num(world, str8_lit("forest_moisture"), 0.55f);
-  params.swamp_moisture = tb_get_num(world, str8_lit("swamp_moisture"), 0.60f);
-  params.swamp_drainage = tb_get_num(world, str8_lit("swamp_drainage"), 0.35f);
+  params.drainage_ceiling = tb_get_num(world, str8_lit("drainage_ceiling"), 0.62f);
   params.river_moisture = tb_get_num(world, str8_lit("river_moisture"), 0.10f);
-  params.continent_falloff = tb_get_num(world, str8_lit("continent_falloff"), 0.35f);
+  params.continent_edge = tb_get_num(world, str8_lit("continent_edge"), 0.35f);
+  params.continent_smoothness = tb_get_num(world, str8_lit("continent_smoothness"), 0.25f);
+
+  //- fp: terrain rows, in file order; row 0 is the baked nil
+  {
+    WG_TerrainDef* nil_def = &params.terrains[0];
+    nil_def->name = str8_lit("nil");
+    nil_def->color = (V4){1, 0, 1, 1}; // loud magenta
+    params.terrain_count = 1;
+  }
+  for(TB_Node* node = world->first_member; node != 0; node = node->next) {
+    if(!str8_match(node->key, str8_lit("terrain_type"), 0)) { continue; }
+    if(params.terrain_count >= WG_TERRAIN_CAP) {
+      eprintf_str8("%S: more than %d terrain_type entries; extras ignored\n",
+                   path, WG_TERRAIN_CAP - 1);
+      break;
+    }
+    TB_Value* src = &node->value;
+    WG_TerrainDef* def = &params.terrains[params.terrain_count];
+    params.terrain_count += 1;
+
+    def->name = push_str8_copy(arena, tb_get_str8(src, str8_lit("name"), str8_lit("unnamed")));
+    def->color = wg__color_from_key(src, str8_lit("color"), (V4){1, 0, 1, 1});
+    def->rank = (U8)tb_get_num(src, str8_lit("rank"), 0);
+    def->overlay_density = (U32)tb_get_num(src, str8_lit("overlay_density"), 80);
+    def->move_cost = tb_get_num(src, str8_lit("move_cost"), 1.0f);
+    def->elevation = wg__band_from_key(src, str8_lit("elevation"));
+    def->moisture = wg__band_from_key(src, str8_lit("moisture"));
+    def->drainage = wg__band_from_key(src, str8_lit("drainage"));
+    def->needs_coast = tb_get_num(src, str8_lit("needs_coast"), 0) != 0;
+  }
+  wg__report_band_gaps(path, &params);
 
   params.river_count = (I32)tb_get_num(world, str8_lit("river_count"), 8);
+  params.river_max_tries = (I32)tb_get_num(world, str8_lit("river_max_tries"), (F32)params.river_count);
   params.river_min_length = (I32)tb_get_num(world, str8_lit("river_min_length"), 6);
   params.river_meander = tb_get_num(world, str8_lit("river_meander"), 0.015f);
   params.pond_epsilon = tb_get_num(world, str8_lit("pond_epsilon"), 0.02f);
@@ -56,7 +164,14 @@ internal WG_Params wg_params_load(String8 path) {
   params.moisture_scale = ClampBot(params.moisture_scale, 1.0f);
   params.elevation_octaves = Clamp(1, params.elevation_octaves, 16);
   params.moisture_octaves = Clamp(1, params.moisture_octaves, 16);
+  params.elevation_persistence = Clamp(0.05f, params.elevation_persistence, 1.0f);
+  params.moisture_persistence = Clamp(0.05f, params.moisture_persistence, 1.0f);
+  params.continent_edge = Clamp(0.0f, params.continent_edge, 1.0f);
+  // the blend must complete before the border, or the border isn't water
+  params.continent_smoothness = Clamp(0.001f, params.continent_smoothness,
+                                      Max(params.continent_edge, 0.001f));
   params.river_min_length = ClampBot(params.river_min_length, 0);
+  params.river_max_tries = ClampBot(params.river_max_tries, 0);
   params.pond_max_tiles = ClampBot(params.pond_max_tiles, 1);
   arena_release_scratch(scratch);
   return params;
@@ -103,14 +218,14 @@ internal F32 wg__value_noise(U64 seed, F32 x, F32 y) {
   return nx0 + (nx1 - nx0) * ty;
 }
 
-internal F32 wg__fbm(U64 seed, F32 x, F32 y, I32 octaves) {
+internal F32 wg__fbm(U64 seed, F32 x, F32 y, I32 octaves, F32 persistence) {
   F32 sum = 0;
   F32 total = 0;
   F32 amplitude = 1.0f;
   for(I32 octave = 0; octave < octaves; octave += 1) {
     sum += amplitude * wg__value_noise(seed + (U64)octave * 0x9E3779B97F4A7C15ull, x, y);
     total += amplitude;
-    amplitude *= 0.5f;
+    amplitude *= persistence;
     x *= 2.0f;
     y *= 2.0f;
   }
@@ -125,10 +240,19 @@ internal F32 wg__fbm(U64 seed, F32 x, F32 y, I32 octaves) {
 
 internal F32 wg__elevation_at(WG_Params* params, U64 seed, I32 x, I32 y) {
   F32 e = wg__fbm(seed, (F32)x / params->elevation_scale,
-                  (F32)y / params->elevation_scale, params->elevation_octaves);
+                  (F32)y / params->elevation_scale, params->elevation_octaves,
+                  params->elevation_persistence);
   F32 nx = 2.0f * (F32)x / (F32)Max(params->width - 1, 1) - 1.0f; // [-1,1] across the map
   F32 ny = 2.0f * (F32)y / (F32)Max(params->height - 1, 1) - 1.0f;
-  e -= params->continent_falloff * (nx * nx + ny * ny);
+  // the continental rim: inside continent_edge the heightmap stands as
+  // tuned; from there elevation interpolates to 0 (deep water) over
+  // continent_smoothness of border distance, so the border is always ocean
+  F32 edge_dist = 1.0f - Max(Max(nx, -nx), Max(ny, -ny)); // 0 border, 1 center
+  if(edge_dist < params->continent_edge) {
+    F32 t = Clamp(0.0f, (params->continent_edge - edge_dist) / params->continent_smoothness, 1.0f);
+    t = t * t * (3.0f - 2.0f * t);
+    e *= 1.0f - t;
+  }
   return e;
 }
 
@@ -137,7 +261,8 @@ internal F32 wg__elevation_at(WG_Params* params, U64 seed, I32 x, I32 y) {
 
 internal F32 wg__moisture_at(WG_Params* params, U64 seed, I32 x, I32 y) {
   return wg__fbm(seed ^ WG__MOISTURE_SALT, (F32)x / params->moisture_scale,
-                 (F32)y / params->moisture_scale, params->moisture_octaves);
+                 (F32)y / params->moisture_scale, params->moisture_octaves,
+                 params->moisture_persistence);
 }
 
 // How readily water leaves a tile, in [0,1]. Not a noise field of its own:
@@ -157,7 +282,7 @@ internal F32 wg__drainage_at(WG_Params* params, F32* elevation, I32 x, I32 y) {
   // grade fully drained so the range spreads across [0,1] instead of pooling
   F32 slope_drain = ClampTop(slope * (1.0f / 0.012f), 1.0f);
   F32 e = elevation[(U64)y * w + x];
-  F32 height_drain = Clamp(0.0f, (e - params->sea_level) / Max(params->mountain_level - params->sea_level, 0.01f), 1.0f);
+  F32 height_drain = Clamp(0.0f, (e - params->sea_level) / Max(params->drainage_ceiling - params->sea_level, 0.01f), 1.0f);
   return 0.6f * slope_drain + 0.4f * height_drain;
 }
 
@@ -189,16 +314,20 @@ internal void wg__carve_rivers(BD_Board* board, WG_Params* params, U64 seed, F32
   V2I* trace_pos = push_array_no_zero(scratch.arena, V2I, max_steps);
   BD_Dir* trace_dir = push_array_no_zero(scratch.arena, BD_Dir, max_steps);
   V2I* pond_queue = push_array_no_zero(scratch.arena, V2I, (U64)params->pond_max_tiles);
-  for(I32 river = 0; river < params->river_count; river += 1) {
+  //- fp: attempts chase a quota: a culled stub or dead source costs a try,
+  //  not a river, so maps reach river_count unless the terrain truly runs
+  //  out within river_max_tries
+  I32 carved = 0;
+  for(I32 attempt = 0; attempt < params->river_max_tries && carved < params->river_count; attempt += 1) {
     //- fp: source: highest of 32 hashed samples on dry land; samples already
-    //  carrying a river are rejected, so every slot buys a new tributary
+    //  carrying a river are rejected, so every attempt buys a new tributary
     //  instead of retracing an existing channel
     V2I source = {0};
     F32 source_elevation = WG__ELEVATION_OFF_MAP;
-    for(I32 attempt = 0; attempt < 32; attempt += 1) {
+    for(I32 sample = 0; sample < 32; sample += 1) {
       U64 salt = seed ^ WG__RIVER_SALT;
-      V2I p = {(I32)(wg__hash(salt, river, attempt) % (U32)w),
-               (I32)(wg__hash(salt + 1, river, attempt) % (U32)h)};
+      V2I p = {(I32)(wg__hash(salt, attempt, sample) % (U32)w),
+               (I32)(wg__hash(salt + 1, attempt, sample) % (U32)h)};
       F32 e = elevation[(U64)p.y * w + p.x];
       if(e > source_elevation && e >= params->sea_level &&
          bd_feature_mask(board, p, BD_Feature_River) == 0) {
@@ -244,6 +373,7 @@ internal void wg__carve_rivers(BD_Board* board, WG_Params* params, U64 seed, F32
     }
 
     if(length < params->river_min_length) { continue; } // stubby spring: cull it
+    carved += 1;
     for(I32 idx = 0; idx < length; idx += 1) {
       bd_feature_connect(board, trace_pos[idx], trace_dir[idx], BD_Feature_River);
     }
@@ -297,12 +427,12 @@ internal BD_Board* wg_generate(Arena* arena, WG_Params* params, U64 seed) {
 
   //- fp: travel rules from the terrain table; the cost array shares the
   //  board's arena, so their lifetimes cannot drift apart
-  F32* terrain_cost = push_array(arena, F32, WG_TerrainType_COUNT);
-  for(WG_TerrainType type = 0; type < WG_TerrainType_COUNT; type += 1) {
-    terrain_cost[type] = WG_TERRAIN_DATA[type].move_cost;
+  F32* terrain_cost = push_array(arena, F32, params->terrain_count);
+  for(U32 type = 0; type < params->terrain_count; type += 1) {
+    terrain_cost[type] = params->terrains[type].move_cost;
   }
   board->rules.terrain_cost = terrain_cost;
-  board->rules.terrain_cost_count = WG_TerrainType_COUNT;
+  board->rules.terrain_cost_count = params->terrain_count;
   board->rules.road_cost = params->road_cost;
   board->rules.river_cross_cost = params->river_cross_cost;
 
@@ -323,39 +453,32 @@ internal BD_Board* wg_generate(Arena* arena, WG_Params* params, U64 seed) {
   //  come out wetter than the rain alone would make them
   wg__carve_rivers(board, params, seed, elevation);
 
-  //- fp: classify tiles. Elevation settles water / land / mountain; the land
-  //  between is a biome matrix of moisture against drainage: too dry ->
-  //  desert, wet but waterlogged -> swamp, wet and drained -> forest,
-  //  everything else -> plains
+  //- fp: classify tiles: prepare the fields, then first-match the terrain
+  //  rows (see WG_TerrainDef). River banks read wetter than their moisture
+  //  field says, so valleys go green or boggy.
   for(I32 y = 0; y < h; y += 1) {
     for(I32 x = 0; x < w; x += 1) {
       V2I p = {x, y};
       F32 e = elevation[(U64)y * w + x];
-      WG_TerrainType type = WG_TerrainType_Plains;
-      if(e < params->sea_level) {
-        type = WG_TerrainType_Water;
-      } else if(e > params->mountain_level) {
-        type = WG_TerrainType_Mountain;
-      } else {
-        F32 moisture = wg__moisture_at(params, seed, x, y);
+      F32 moisture = wg__moisture_at(params, seed, x, y);
+      F32 drainage = wg__drainage_at(params, elevation, x, y);
 
-        // a river on or beside the tile wets it: banks go green or boggy
-        B32 river_nearby = bd_feature_mask(board, p, BD_Feature_River) != 0;
-        for(BD_Dir dir = 0; !river_nearby && dir < BD_Dir_COUNT; dir += 1) {
-          river_nearby = bd_feature_mask(board, v2i_add(p, bd_dir_delta(dir)), BD_Feature_River) != 0;
-        }
-        if(river_nearby) { moisture += params->river_moisture; }
+      B32 river_nearby = bd_feature_mask(board, p, BD_Feature_River) != 0;
+      for(BD_Dir dir = 0; !river_nearby && dir < BD_Dir_COUNT; dir += 1) {
+        river_nearby = bd_feature_mask(board, v2i_add(p, bd_dir_delta(dir)), BD_Feature_River) != 0;
+      }
+      if(river_nearby) { moisture = ClampTop(moisture + params->river_moisture, 1.0f); }
 
-        if(moisture < params->desert_moisture) {
-          type = WG_TerrainType_Desert;
-        } else if(moisture > params->swamp_moisture &&
-                  wg__drainage_at(params, elevation, x, y) < params->swamp_drainage) {
-          type = WG_TerrainType_Swamp;
-        } else if(moisture > params->forest_moisture) {
-          type = WG_TerrainType_Forest;
+      B32 coast = 0;
+      for(I32 dy = -1; !coast && dy <= 1; dy += 1) {
+        for(I32 dx = -1; !coast && dx <= 1; dx += 1) {
+          I32 nx = Clamp(0, x + dx, w - 1);
+          I32 ny = Clamp(0, y + dy, h - 1);
+          coast = elevation[(U64)ny * w + nx] < params->sea_level;
         }
       }
-      bd_tile_at(board, p)->terrain = type;
+
+      bd_tile_at(board, p)->terrain = (BD_Terrain)wg__classify(params, e, moisture, drainage, coast);
     }
   }
 

@@ -10,7 +10,10 @@
 //~ fp: Directions
 
 global V2I bd__dir_deltas[BD_Dir_COUNT] = {
-  {0, -1}, {1, 0}, {0, 1}, {-1, 0},
+    {0, -1},
+    {1, 0},
+    {0, 1},
+    {-1, 0},
 };
 
 internal V2I bd_dir_delta(BD_Dir dir) {
@@ -57,7 +60,7 @@ internal B32 bd_in_bounds(BD_Board* board, V2I p) {
 }
 
 internal BD_Tile* bd_tile_at(BD_Board* board, V2I p) {
-  BD_Tile* result = &bd_nil_tile;
+  BD_Tile* result = &BD_NIL_TILE;
   if(bd_in_bounds(board, p)) {
     result = &board->tiles[(U64)p.y * board->width + p.x];
   }
@@ -90,10 +93,10 @@ internal U8 bd_feature_mask(BD_Board* board, V2I p, BD_Feature feature) {
 internal void bd_feature_connect(BD_Board* board, V2I p, BD_Dir dir, BD_Feature feature) {
   if(feature >= BD_Feature_COUNT || dir >= BD_Dir_COUNT) { return; }
   BD_Tile* tile = bd_tile_at(board, p);
-  if(tile == &bd_nil_tile) { return; }
+  if(tile == &BD_NIL_TILE) { return; }
   tile->features[feature] |= (U8)(1u << dir);
   BD_Tile* neighbor = bd_tile_at(board, v2i_add(p, bd__dir_deltas[dir]));
-  if(neighbor != &bd_nil_tile) {
+  if(neighbor != &BD_NIL_TILE) {
     neighbor->features[feature] |= (U8)(1u << bd_dir_opposite(dir));
   }
   bd_path_cache_clear(board);
@@ -102,11 +105,11 @@ internal void bd_feature_connect(BD_Board* board, V2I p, BD_Dir dir, BD_Feature 
 internal void bd_feature_disconnect(BD_Board* board, V2I p, BD_Dir dir, BD_Feature feature) {
   if(feature >= BD_Feature_COUNT || dir >= BD_Dir_COUNT) { return; }
   BD_Tile* tile = bd_tile_at(board, p);
-  if(tile == &bd_nil_tile) { return; }
-  tile->features[feature] &= (U8)~(1u << dir);
+  if(tile == &BD_NIL_TILE) { return; }
+  tile->features[feature] &= (U8) ~(1u << dir);
   BD_Tile* neighbor = bd_tile_at(board, v2i_add(p, bd__dir_deltas[dir]));
-  if(neighbor != &bd_nil_tile) {
-    neighbor->features[feature] &= (U8)~(1u << bd_dir_opposite(dir));
+  if(neighbor != &BD_NIL_TILE) {
+    neighbor->features[feature] &= (U8) ~(1u << bd_dir_opposite(dir));
   }
   bd_path_cache_clear(board);
 }
@@ -115,7 +118,7 @@ internal void bd_feature_disconnect(BD_Board* board, V2I p, BD_Dir dir, BD_Featu
 //~ fp: Pawns
 
 internal BD_Pawn* bd_pawn_from_id(BD_PawnID id) {
-  BD_Pawn* result = &bd_nil_pawn;
+  BD_Pawn* result = &BD_NIL_PAWN;
   if(id.ptr != 0 && id.ptr->gen == id.gen) {
     result = id.ptr;
   }
@@ -125,7 +128,7 @@ internal BD_Pawn* bd_pawn_from_id(BD_PawnID id) {
 internal BD_PawnID bd_pawn_create(BD_Board* board, V2I pos, U32 kind, U64 user) {
   BD_PawnID result = {0};
   BD_Tile* tile = bd_tile_at(board, pos);
-  if(tile != &bd_nil_tile) {
+  if(tile != &BD_NIL_TILE) {
     BD_Pawn* pawn = board->first_free_pawn;
     if(pawn != 0) {
       SLLStackPop(board->first_free_pawn);
@@ -148,7 +151,7 @@ internal BD_PawnID bd_pawn_create(BD_Board* board, V2I pos, U32 kind, U64 user) 
 
 internal void bd_pawn_destroy(BD_Board* board, BD_PawnID id) {
   BD_Pawn* pawn = bd_pawn_from_id(id);
-  if(pawn == &bd_nil_pawn) { return; }
+  if(pawn == &BD_NIL_PAWN) { return; }
   BD_Tile* tile = bd_tile_at(board, pawn->pos); // alive pawns are always in bounds
   DLLRemove(tile->first_pawn, tile->last_pawn, pawn);
   pawn->gen += 1; // outstanding ids die here
@@ -158,9 +161,9 @@ internal void bd_pawn_destroy(BD_Board* board, BD_PawnID id) {
 
 internal void bd_pawn_move(BD_Board* board, BD_PawnID id, V2I to) {
   BD_Pawn* pawn = bd_pawn_from_id(id);
-  if(pawn == &bd_nil_pawn) { return; }
+  if(pawn == &BD_NIL_PAWN) { return; }
   BD_Tile* dst = bd_tile_at(board, to);
-  if(dst == &bd_nil_tile) { return; }
+  if(dst == &BD_NIL_TILE) { return; }
   BD_Tile* src = bd_tile_at(board, pawn->pos);
   DLLRemove(src->first_pawn, src->last_pawn, pawn);
   DLLPushBack(dst->first_pawn, dst->last_pawn, pawn);
@@ -213,7 +216,7 @@ internal BD_TerrainPatch bd_terrain_in_rect(Arena* arena, BD_Board* board, V2I m
   for(I32 y = y0; y <= y1; y += 1) {
     for(I32 x = x0; x <= x1; x += 1) {
       result.v[(U64)(y - y0) * result.width + (x - x0)] =
-        board->tiles[(U64)y * board->width + x].terrain;
+          board->tiles[(U64)y * board->width + x].terrain;
     }
   }
   return result;
@@ -339,7 +342,10 @@ internal BD_Path bd__path_compute(Arena* arena, BD_Board* board, V2I from, V2I t
     BD__PathNode node = bd__heap_pop(heap, &heap_count);
     if(state[node.idx] == 2 || node.g != best_g[node.idx]) { continue; } // stale duplicate
     state[node.idx] = 2;
-    if(node.idx == goal) { found = 1; break; }
+    if(node.idx == goal) {
+      found = 1;
+      break;
+    }
 
     V2I p = {(I32)(node.idx % w), (I32)(node.idx / w)};
     BD_Tile* tile = &board->tiles[node.idx];
