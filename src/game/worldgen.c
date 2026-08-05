@@ -1,4 +1,4 @@
-#include "base/core.h"
+﻿#include "base/core.h"
 #include "base/math.h"
 #include "base/arena.h"
 #include "base/strings.h"
@@ -111,6 +111,7 @@ internal WG_Params wg_params_load(Arena* arena, String8 path) {
   params.elevation_scale = tb_get_num(world, str8_lit("elevation_scale"), 0);
   params.elevation_octaves = (I32)tb_get_num(world, str8_lit("elevation_octaves"), 0);
   params.elevation_persistence = tb_get_num(world, str8_lit("elevation_persistence"), 0);
+  params.elevation_amplitude = tb_get_num(world, str8_lit("elevation_amplitude"), 0);
   params.moisture_scale = tb_get_num(world, str8_lit("moisture_scale"), 0);
   params.moisture_octaves = (I32)tb_get_num(world, str8_lit("moisture_octaves"), 0);
   params.moisture_persistence = tb_get_num(world, str8_lit("moisture_persistence"), 0);
@@ -129,8 +130,6 @@ internal WG_Params wg_params_load(Arena* arena, String8 path) {
   params.drainage_ceiling = tb_get_num(world, str8_lit("drainage_ceiling"), 0);
   params.drainage_full_slope = tb_get_num(world, str8_lit("drainage_full_slope"), 0);
   params.river_moisture = tb_get_num(world, str8_lit("river_moisture"), 0);
-  params.continent_edge = tb_get_num(world, str8_lit("continent_edge"), 0);
-  params.continent_smoothness = tb_get_num(world, str8_lit("continent_smoothness"), 0);
   params.plate_spacing = tb_get_num(world, str8_lit("plate_spacing"), 0);
   params.plate_fuzz = tb_get_num(world, str8_lit("plate_fuzz"), 0);
   params.plate_fuzz_scale = tb_get_num(world, str8_lit("plate_fuzz_scale"), 0);
@@ -140,6 +139,8 @@ internal WG_Params wg_params_load(Arena* arena, String8 path) {
   params.uplift_noise_scale = tb_get_num(world, str8_lit("uplift_noise_scale"), 0);
   params.uplift_ridged = tb_get_num(world, str8_lit("uplift_ridged"), 0);
   params.uplift_ridged_scale = tb_get_num(world, str8_lit("uplift_ridged_scale"), 0);
+  params.continent_blend = tb_get_num(world, str8_lit("continent_blend"), 0);
+  params.continent_height = tb_get_num(world, str8_lit("continent_height"), 0);
   params.min_region_size = (I32)tb_get_num(world, str8_lit("min_region_size"), 0);
 
   //- fp: terrain rows, in file order; row 0 is the baked nil
@@ -196,15 +197,12 @@ internal WG_Params wg_params_load(Arena* arena, String8 path) {
   params.elevation_octaves = Clamp(1, params.elevation_octaves, 16);
   params.moisture_octaves = Clamp(1, params.moisture_octaves, 16);
   params.elevation_persistence = Clamp(0.05f, params.elevation_persistence, 1.0f);
+  params.elevation_amplitude = Clamp(0.0f, params.elevation_amplitude, 1.0f);
   params.moisture_persistence = Clamp(0.05f, params.moisture_persistence, 1.0f);
   params.temperature_scale = ClampBot(params.temperature_scale, 1.0f);
   params.temperature_octaves = Clamp(1, params.temperature_octaves, 16);
   params.temperature_persistence = Clamp(0.05f, params.temperature_persistence, 1.0f);
   params.temperature_lapse_exponent = ClampBot(params.temperature_lapse_exponent, 0.1f);
-  params.continent_edge = Clamp(0.0f, params.continent_edge, 1.0f);
-  // the blend must complete before the border, or the border isn't water
-  params.continent_smoothness = Clamp(0.001f, params.continent_smoothness,
-                                      Max(params.continent_edge, 0.001f));
   params.plate_spacing = ClampBot(params.plate_spacing, 2.0f);
   params.plate_fuzz = ClampBot(params.plate_fuzz, 0.0f);
   params.plate_fuzz_scale = ClampBot(params.plate_fuzz_scale, 1.0f);
@@ -214,6 +212,8 @@ internal WG_Params wg_params_load(Arena* arena, String8 path) {
   params.uplift_noise_scale = ClampBot(params.uplift_noise_scale, 1.0f);
   params.uplift_ridged = Clamp(0.0f, params.uplift_ridged, 1.0f);
   params.uplift_ridged_scale = ClampBot(params.uplift_ridged_scale, 1.0f);
+  params.continent_blend = ClampBot(params.continent_blend, 1.0f);
+  params.continent_height = Clamp(0.0f, params.continent_height, 1.0f);
   params.river_min_length = ClampBot(params.river_min_length, 0);
   params.river_max_tries = ClampBot(params.river_max_tries, 0);
   params.pond_max_tiles = ClampBot(params.pond_max_tiles, 1);
@@ -307,6 +307,8 @@ internal F32 wg__ridged_fbm(U64 seed, F32 x, F32 y, I32 octaves, F32 persistence
 // ridge tile (chamfer-propagated, near-euclidean), the distance warped by
 // noise so ranges pinch and wander, and the result shaped by ridged noise so
 // crests break into peaks and saddles instead of running as smooth walls.
+// Plates also shape the sea: every plate touching the map border drowns into
+// the continental rim, so coastlines follow plate borders (see wg__plate_fields).
 
 #define WG__PLATE_SALT 0x6a09e667f3bcc909ull
 
@@ -371,8 +373,52 @@ internal F32 wg__plate_compression(WG_Params* params, U64 seed, I32 gx, I32 a, I
   return ClampBot(conv, 0.0f) * 0.5f;
 }
 
-// the whole plate pipeline, one uplift value per tile into out_uplift
-internal void wg__uplift_field(WG_Params* params, U64 seed, F32* out_uplift) {
+// two-pass chamfer distance transform (1 / sqrt2 step costs), in place:
+// dist starts at 0 on source cells and 1e9 elsewhere, and ends near-
+// euclidean distance to the closest source. carry, if given, rides along,
+// so each cell also ends holding its nearest source's payload.
+internal void wg__distance_transform(F32* dist, F32* carry, I32 w, I32 h) {
+  for(I32 y = 0; y < h; y += 1) {
+    for(I32 x = 0; x < w; x += 1) {
+      U64 i = (U64)y * w + x;
+      I32 ox[4] = {-1, -1, 0, 1};
+      I32 oy[4] = {0, -1, -1, -1};
+      F32 oc[4] = {1.0f, 1.41421356f, 1.0f, 1.41421356f};
+      for(I32 k = 0; k < 4; k += 1) {
+        I32 nx = x + ox[k];
+        I32 ny = y + oy[k];
+        if(nx < 0 || nx >= w || ny < 0 || ny >= h) { continue; }
+        U64 j = (U64)ny * w + nx;
+        if(dist[j] + oc[k] < dist[i]) {
+          dist[i] = dist[j] + oc[k];
+          if(carry != 0) { carry[i] = carry[j]; }
+        }
+      }
+    }
+  }
+  for(I32 y = h - 1; y >= 0; y -= 1) {
+    for(I32 x = w - 1; x >= 0; x -= 1) {
+      U64 i = (U64)y * w + x;
+      I32 ox[4] = {1, 1, 0, -1};
+      I32 oy[4] = {0, 1, 1, 1};
+      F32 oc[4] = {1.0f, 1.41421356f, 1.0f, 1.41421356f};
+      for(I32 k = 0; k < 4; k += 1) {
+        I32 nx = x + ox[k];
+        I32 ny = y + oy[k];
+        if(nx < 0 || nx >= w || ny < 0 || ny >= h) { continue; }
+        U64 j = (U64)ny * w + nx;
+        if(dist[j] + oc[k] < dist[i]) {
+          dist[i] = dist[j] + oc[k];
+          if(carry != 0) { carry[i] = carry[j]; }
+        }
+      }
+    }
+  }
+}
+
+// the whole plate pipeline: one uplift value per tile into out_uplift, and
+// the continental rim factor (0 drowned .. 1 full ground) into out_rim
+internal void wg__plate_fields(WG_Params* params, U64 seed, F32* out_uplift, F32* out_rim) {
   I32 w = params->width;
   I32 h = params->height;
   I32 gx = (I32)ceilf((F32)w / params->plate_spacing);
@@ -416,44 +462,31 @@ internal void wg__uplift_field(WG_Params* params, U64 seed, F32* out_uplift) {
     }
   }
 
-  //- fp: chamfer distance transform, two passes: dist becomes near-euclidean
-  //  distance to the closest ridge tile, and force rides along with it, so
-  //  every tile knows how hard its nearest ridge presses
-  for(I32 y = 0; y < h; y += 1) {
-    for(I32 x = 0; x < w; x += 1) {
-      U64 i = (U64)y * w + x;
-      I32 ox[4] = {-1, -1, 0, 1};
-      I32 oy[4] = {0, -1, -1, -1};
-      F32 oc[4] = {1.0f, 1.41421356f, 1.0f, 1.41421356f};
-      for(I32 k = 0; k < 4; k += 1) {
-        I32 nx = x + ox[k];
-        I32 ny = y + oy[k];
-        if(nx < 0 || nx >= w || ny < 0 || ny >= h) { continue; }
-        U64 j = (U64)ny * w + nx;
-        if(dist[j] + oc[k] < dist[i]) {
-          dist[i] = dist[j] + oc[k];
-          force[i] = force[j];
-        }
-      }
-    }
+  wg__distance_transform(dist, force, w, h);
+
+  //- fp: continental rim, plate-shaped: any plate owning a border tile is
+  //  ocean floor -- its whole cell reads rim 0 -- and land climbs back to
+  //  full ground over continent_blend tiles inland of the drowned region,
+  //  so the coastline follows the fuzzy plate borders, not the map
+  //  rectangle. Every border tile belongs to some plate, so the map edge
+  //  itself is always water.
+  U8* edge = push_array(scratch.arena, U8, (U64)gx * gy);
+  for(I32 x = 0; x < w; x += 1) {
+    edge[plate[x]] = 1;
+    edge[plate[(U64)(h - 1) * w + x]] = 1;
   }
-  for(I32 y = h - 1; y >= 0; y -= 1) {
-    for(I32 x = w - 1; x >= 0; x -= 1) {
-      U64 i = (U64)y * w + x;
-      I32 ox[4] = {1, 1, 0, -1};
-      I32 oy[4] = {0, 1, 1, 1};
-      F32 oc[4] = {1.0f, 1.41421356f, 1.0f, 1.41421356f};
-      for(I32 k = 0; k < 4; k += 1) {
-        I32 nx = x + ox[k];
-        I32 ny = y + oy[k];
-        if(nx < 0 || nx >= w || ny < 0 || ny >= h) { continue; }
-        U64 j = (U64)ny * w + nx;
-        if(dist[j] + oc[k] < dist[i]) {
-          dist[i] = dist[j] + oc[k];
-          force[i] = force[j];
-        }
-      }
-    }
+  for(I32 y = 0; y < h; y += 1) {
+    edge[plate[(U64)y * w]] = 1;
+    edge[plate[(U64)y * w + (w - 1)]] = 1;
+  }
+  F32* rim_dist = push_array_no_zero(scratch.arena, F32, (U64)w * h);
+  for(U64 i = 0; i < (U64)w * h; i += 1) {
+    rim_dist[i] = edge[plate[i]] ? 0.0f : 1e9f;
+  }
+  wg__distance_transform(rim_dist, 0, w, h);
+  for(U64 i = 0; i < (U64)w * h; i += 1) {
+    F32 t = ClampTop(rim_dist[i] / params->continent_blend, 1.0f);
+    out_rim[i] = t * t * (3.0f - 2.0f * t);
   }
 
   //- fp: uplift: a quadratic falloff of the noise-warped distance, scaled by
@@ -487,29 +520,21 @@ internal void wg__uplift_field(WG_Params* params, U64 seed, F32* out_uplift) {
 ////////////////////////////////
 //~ fp: Fields
 //
-// Elevation is fBm plus tectonic uplift, drowned toward the map edge, so the
-// border tends to ocean and the land reads as a continent rather than
-// wallpaper.
+// Elevation is fBm plus tectonic uplift, drowned across the plate-shaped
+// continental rim (see Tectonics), so the land reads as a continent with
+// organic coastlines rather than wallpaper.
 
-internal F32 wg__elevation_at(WG_Params* params, U64 seed, F32 uplift, I32 x, I32 y) {
-  F32 e = wg__fbm(seed, (F32)x / params->elevation_scale,
-                  (F32)y / params->elevation_scale, params->elevation_octaves,
-                  params->elevation_persistence);
-  // uplift stacks on the noise base; the clamp keeps peaks inside the [0,1]
-  // domain the classification bands speak
-  e = ClampTop(e + uplift, 1.0f);
-  F32 nx = 2.0f * (F32)x / (F32)Max(params->width - 1, 1) - 1.0f; // [-1,1] across the map
-  F32 ny = 2.0f * (F32)y / (F32)Max(params->height - 1, 1) - 1.0f;
-  // the continental rim: inside continent_edge the heightmap stands as
-  // tuned; from there elevation interpolates to 0 (deep water) over
-  // continent_smoothness of border distance, so the border is always ocean
-  F32 edge_dist = 1.0f - Max(Max(nx, -nx), Max(ny, -ny)); // 0 border, 1 center
-  if(edge_dist < params->continent_edge) {
-    F32 t = Clamp(0.0f, (params->continent_edge - edge_dist) / params->continent_smoothness, 1.0f);
-    t = t * t * (3.0f - 2.0f * t);
-    e *= 1.0f - t;
-  }
-  return e;
+internal F32 wg__elevation_at(WG_Params* params, U64 seed, F32 uplift, F32 rim, I32 x, I32 y) {
+  F32 noise = wg__fbm(seed, (F32)x / params->elevation_scale,
+                      (F32)y / params->elevation_scale, params->elevation_octaves,
+                      params->elevation_persistence);
+  // three stacked terms: the continental shelf interior plates stand on,
+  // noise spanning [0, elevation_amplitude] carving relief, and plate
+  // uplift raising ranges -- all scaled by the rim, which sinks the whole
+  // stack to the ocean floor across the drowned border plates. The clamp
+  // keeps peaks inside the [0,1] domain the classification bands speak.
+  F32 e = params->continent_height + noise * params->elevation_amplitude + uplift;
+  return ClampTop(e, 1.0f) * rim;
 }
 
 // moisture decorrelates from elevation by salting the seed
@@ -718,18 +743,49 @@ internal BD_Board* wg_generate(Arena* arena, WG_Params* params, U64 seed) {
   //  and rivers must agree on where downhill is. Tectonic uplift comes
   //  first: every later system (rivers, snowlines) hangs off elevation.
   F32* uplift = push_array_no_zero(scratch.arena, F32, (U64)w * h);
-  wg__uplift_field(params, seed, uplift);
+  F32* rim = push_array_no_zero(scratch.arena, F32, (U64)w * h);
+  wg__plate_fields(params, seed, uplift, rim);
   F32* elevation = push_array_no_zero(scratch.arena, F32, (U64)w * h);
   for(I32 y = 0; y < h; y += 1) {
     for(I32 x = 0; x < w; x += 1) {
-      elevation[(U64)y * w + x] =
-          wg__elevation_at(params, seed, uplift[(U64)y * w + x], x, y);
+      U64 i = (U64)y * w + x;
+      elevation[i] = wg__elevation_at(params, seed, uplift[i], rim[i], x, y);
     }
   }
 
   //- fp: rivers first: classification reads their presence, so river valleys
   //  come out wetter than the rain alone would make them
   wg__carve_rivers(board, params, seed, elevation);
+
+  //- fp: the sea is the border-connected body of sub-sea_level water (the
+  //  rim guarantees the border is ocean). Lakes and ponds are below sea
+  //  level too but not border-connected, so their shores never read as
+  //  coast -- beaches belong to the ocean.
+  U8* sea = push_array(scratch.arena, U8, (U64)w * h);
+  {
+    V2I* queue = push_array_no_zero(scratch.arena, V2I, (U64)w * h);
+    I32 count = 0;
+    for(I32 y = 0; y < h; y += 1) {
+      for(I32 x = 0; x < w; x += 1) {
+        if(x != 0 && y != 0 && x != w - 1 && y != h - 1) { continue; }
+        if(elevation[(U64)y * w + x] >= params->sea_level) { continue; }
+        if(sea[(U64)y * w + x]) { continue; }
+        sea[(U64)y * w + x] = 1;
+        queue[count] = (V2I){x, y};
+        count += 1;
+      }
+    }
+    for(I32 head = 0; head < count; head += 1) {
+      for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += 1) {
+        V2I n = v2i_add(queue[head], bd_dir_delta(dir));
+        if(!bd_in_bounds(board, n) || sea[(U64)n.y * w + n.x]) { continue; }
+        if(elevation[(U64)n.y * w + n.x] >= params->sea_level) { continue; }
+        sea[(U64)n.y * w + n.x] = 1;
+        queue[count] = n;
+        count += 1;
+      }
+    }
+  }
 
   //- fp: classify tiles: prepare the fields, then first-match the terrain
   //  rows (see WG_TerrainDef). River banks read wetter than their moisture
@@ -753,7 +809,7 @@ internal BD_Board* wg_generate(Arena* arena, WG_Params* params, U64 seed) {
         for(I32 dx = -1; !coast && dx <= 1; dx += 1) {
           I32 nx = Clamp(0, x + dx, w - 1);
           I32 ny = Clamp(0, y + dy, h - 1);
-          coast = elevation[(U64)ny * w + nx] < params->sea_level;
+          coast = sea[(U64)ny * w + nx] != 0;
         }
       }
 

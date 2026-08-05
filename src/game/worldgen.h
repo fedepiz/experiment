@@ -78,6 +78,9 @@ typedef struct {
   F32 elevation_scale;
   I32 elevation_octaves;
   F32 elevation_persistence;
+  F32 elevation_amplitude; // base noise ceiling, 0..1: noise spans
+                           // [0, amplitude] the way uplift spans
+                           // [0, uplift_height]; the two stack
   F32 moisture_scale;
   I32 moisture_octaves;
   F32 moisture_persistence;
@@ -116,14 +119,6 @@ typedef struct {
   WG_TerrainDef terrains[WG_TERRAIN_CAP];
   U32 terrain_count;
 
-  //- fp: continental rim: the border is always deep water. Elevation
-  //  interpolates from the untouched heightmap to 0 across a band inside
-  //  the map edge: continent_edge is where the blend begins (distance from
-  //  the border, in half-map units), continent_smoothness how much of that
-  //  distance it takes to reach full water
-  F32 continent_edge;
-  F32 continent_smoothness;
-
   //- fp: tectonic plates: the map splits into fuzzy voronoi cells around
   //  blue-noise seed points (one per plate_spacing-sized grid cell, so plate
   //  size is map-scale independent). Each plate drifts with a hashed
@@ -140,6 +135,16 @@ typedef struct {
   F32 uplift_noise_scale;  // tiles per distance-warp-noise cell
   F32 uplift_ridged;       // ridged-noise shaping blend, 0..1
   F32 uplift_ridged_scale; // tiles per ridged-noise cell
+
+  //- fp: continental rim, plate-shaped: every plate owning a border tile
+  //  drowns to zero elevation, and land climbs back to the full heightmap
+  //  over continent_blend tiles inland of the drowned region, so coastlines
+  //  follow the fuzzy plate borders instead of the map rectangle.
+  //  continent_height is the floor interior plates stand on -- the
+  //  continental shelf above the abyss -- so land-vs-sea comes from plate
+  //  structure while noise and uplift carve relief on top.
+  F32 continent_blend;
+  F32 continent_height;
 
   I32 river_count;      // rivers actually carved (the quota)...
   I32 river_max_tries;  // ...and the source attempts spent chasing it

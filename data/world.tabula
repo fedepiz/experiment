@@ -3,15 +3,19 @@
 # missing or misspelled key produces an obviously broken world.
 
 world = {
-  width = 128
-  height = 128
+  width = 160
+  height = 160
 
   # noise fields: scale is tiles per noise-lattice cell; persistence is the
   # per-octave amplitude falloff (higher = rougher, more variation inside
   # the large forms)
-  elevation_scale = 30
+  elevation_scale = 20
   elevation_octaves = 6
-  elevation_persistence = 0.6
+  elevation_persistence = 0.4
+  elevation_amplitude = 0.4 # base noise ceiling: noise spans [0, amplitude]
+                            # like uplift spans [0, uplift_height], so noise
+                            # alone hovers near amplitude/2 and land mostly
+                            # exists where tectonics raised it
   moisture_scale = 20
   moisture_octaves = 5
   moisture_persistence = 0.7
@@ -22,9 +26,9 @@ world = {
   # to temperature_lapse_exponent, times temperature_lapse -- exponent > 1
   # spares mid ground and freezes ridgelines sharply, so snow pins to the
   # spines even in warm latitudes.
-  temperature_north = 0.12
-  temperature_equator = 0.8
-  temperature_south = 0.12
+  temperature_north = 0.10
+  temperature_equator = 0.75
+  temperature_south = 0.10
   temperature_variation = 0.15
   temperature_scale = 40
   temperature_octaves = 3
@@ -41,13 +45,6 @@ world = {
   drainage_full_slope = 0.045 # slope (elevation per tile) that counts as fully drained
   river_moisture = 0.10
 
-  # continental rim: the border is always deep water. Inside continent_edge
-  # (distance from the border, in half-map units) the heightmap stands as
-  # tuned; from there elevation blends to 0 over continent_smoothness of
-  # that distance, so land can rise anywhere inland and never at the border.
-  continent_edge = 0.2
-  continent_smoothness = 0.85
-
   # tectonic plates: the map splits into fuzzy voronoi cells around blue-
   # noise seed points (one per plate_spacing-sized grid cell, so plate size
   # is map-scale independent). Each plate drifts with a random velocity;
@@ -55,22 +52,32 @@ world = {
   # off with distance to the nearest ridge -- warped by noise so ranges
   # pinch and wander -- and is shaped by ridged noise so crests break into
   # peaks and saddles instead of smooth walls.
-  plate_spacing = 40      # mean tiles between plate seeds
+  plate_spacing = 20      # mean tiles between plate seeds
   plate_fuzz = 5          # border warp amplitude, tiles; 0 = exact voronoi
   plate_fuzz_scale = 8    # tiles per warp-noise cell
-  uplift_height = 0.8     # elevation added at a full-force ridge
-  uplift_width = 12       # tiles from ridge spine to the foot of the falloff
-  uplift_noise = 0.5      # distance warp strength, 0..1
+  uplift_height = 1.0     # elevation added at a full-force ridge
+  uplift_width = 15       # tiles from ridge spine to the foot of the falloff
+  uplift_noise = 0.2      # distance warp strength, 0..1
   uplift_noise_scale = 16 # tiles per distance-warp-noise cell
   uplift_ridged = 0.6     # ridged-noise shaping blend, 0..1
   uplift_ridged_scale = 8 # tiles per ridged-noise cell
+
+  # continental rim, plate-shaped: every plate touching the map border
+  # drowns to open ocean, and land climbs back to the full heightmap over
+  # continent_blend tiles inland, so coastlines follow the fuzzy plate
+  # borders instead of the map rectangle. plate_spacing therefore also sets
+  # how much of the map the continent covers. continent_height is the shelf
+  # interior plates stand on: land-vs-sea comes from plate structure, while
+  # noise and uplift carve relief on top of the shelf.
+  continent_blend = 8
+  continent_height = 0.25
 
   # terrain regions smaller than this dissolve into their most common
   # neighbor after classification (0 = off): kills single-tile speck noise
   min_region_size = 4
 
-  river_count = 12
-  river_max_tries = 100  # maximum numbers of attempts at generating rivers
+  river_count = 27       # scales with area: 12 at 128x128 density
+  river_max_tries = 220  # maximum numbers of attempts at generating rivers
   river_min_length = 6   # steps; rivers that trace shorter than this are culled
   river_meander = 0.008  # descent jitter in elevation units; 0 = pure steepest descent
   pond_epsilon = 0.01  # a basin floods its connected bowl up to this height above it
@@ -112,12 +119,20 @@ world = {
     elevation = [0.22 0.32]
   }
   terrain_type = {
+    name = beach
+    color = [0.85 0.79 0.60]
+    rank = 4
+    move_cost = 1.0
+    elevation = [0.32 0.37]
+    needs_coast = 1
+  }
+  terrain_type = {
     name = snowcap
     color = [0.88 0.90 0.95]
     rank = 6
     move_cost = 0
     elevation = [0.62 1.0]
-    temperature = [0.0 0.22]
+    temperature = [0.0 0.20]
   }
   terrain_type = {
     name = mountain
@@ -133,23 +148,15 @@ world = {
     rank = 7
     move_cost = 2.0
     overlay_density = 80
-    elevation = [0.55 0.62]
-  }
-  terrain_type = {
-    name = beach
-    color = [0.85 0.79 0.60]
-    rank = 4
-    move_cost = 1.0
-    elevation = [0.32 0.34]
-    needs_coast = 1
+    elevation = [0.58 0.62]
   }
   terrain_type = {
     name = badlands
     color = [0.62 0.44 0.30]
     rank = 8
     move_cost = 2.0
-    moisture = [0.0 0.35]
-    drainage = [0.55 1.0]
+    moisture = [0.0 0.38]
+    drainage = [0.4 1.0]
     temperature = [0.4 1.0]
   }
   terrain_type = {
@@ -167,14 +174,14 @@ world = {
     move_cost = 2.0
     overlay_density = 80
     moisture = [0.45 1.0]
-    temperature = [0.0 0.3]
+    temperature = [0.0 0.35]
   }
   terrain_type = {
     name = tundra
     color = [0.62 0.65 0.55]
     rank = 10
     move_cost = 1.5
-    temperature = [0.0 0.25]
+    temperature = [0.0 0.30]
   }
   terrain_type = {
     name = jungle
@@ -208,7 +215,7 @@ world = {
     rank = 14
     move_cost = 2.0
     overlay_density = 80
-    moisture = [0.55 1.0]
+    moisture = [0.5 1.0]
   }
   terrain_type = {
     name = plains
