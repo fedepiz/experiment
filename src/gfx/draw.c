@@ -409,6 +409,46 @@ internal D_Sprite d_spritesheet_push(D_Image image) {
   return result;
 }
 
+internal D_Sprite d_spritesheet_push_window(D_Image canvas, Rect window) {
+  D_Sprite result = {0};
+  D_Sheet* sheet = d__sheet_from_id(d_state.open_sheet);
+  I32 x0 = (I32)window.min.x;
+  I32 y0 = (I32)window.min.y;
+  I32 w = (I32)window.max.x - x0;
+  I32 h = (I32)window.max.y - y0;
+  if(sheet != 0 && canvas.pixels != 0 && w > 0 && h > 0) {
+    I32 x = 0, y = 0;
+    if(d__sheet_pack(sheet, w, h, &x, &y)) {
+      // upload the window plus its gutter ring, filled with the canvas
+      // texels just past the window, wrapping toroidally at the canvas
+      // edges: linear sampling at the sprite's border then blends into the
+      // window's true neighbor, so slices of one wrapping texture butt
+      // seamlessly on screen -- a clamped ring (d_spritesheet_push) would
+      // harden every butt joint into a faint grid instead. A window covering
+      // the whole canvas yields a single self-tiling sprite.
+      ArenaTemp scratch = arena_get_scratch(0, 0);
+      I32 fw = w + 2 * D__SHEET_GUTTER;
+      I32 fh = h + 2 * D__SHEET_GUTTER;
+      U8* staging = push_array_no_zero(scratch.arena, U8, (U64)fw * fh * 4);
+      for(I32 sy = 0; sy < fh; sy += 1) {
+        I32 cy = (y0 + sy - D__SHEET_GUTTER + canvas.h) % canvas.h;
+        for(I32 sx = 0; sx < fw; sx += 1) {
+          I32 cx = (x0 + sx - D__SHEET_GUTTER + canvas.w) % canvas.w;
+          MemoryCopy(staging + ((U64)sy * fw + sx) * 4,
+                     canvas.pixels + ((U64)cy * canvas.w + cx) * 4, 4);
+        }
+      }
+      r_tex_update(sheet->tex, x - D__SHEET_GUTTER, y - D__SHEET_GUTTER, fw, fh, staging);
+      arena_release_scratch(scratch);
+
+      result.sheet.u64 = d_state.open_sheet;
+      result.src = (Rect){{(F32)x, (F32)y}, {(F32)(x + w), (F32)(y + h)}};
+      result.size = (V2){(F32)w, (F32)h};
+    }
+  }
+  return result;
+}
+
 internal D_SpriteSheet d_spritesheet_end(void) {
   D_SpriteSheet result = {0};
   D_Sheet* sheet = d__sheet_from_id(d_state.open_sheet);
@@ -509,6 +549,21 @@ internal void d_image_set_px(D_Image image, I32 x, I32 y, V4 color) {
     px[1] = d__u8_from_unit(color.y);
     px[2] = d__u8_from_unit(color.z);
     px[3] = d__u8_from_unit(color.w);
+  }
+}
+
+internal void d_image_blit(D_Image dst, I32 x, I32 y, D_Image src) {
+  if(dst.pixels != 0 && src.pixels != 0) {
+    // clip src against dst; the surviving rows copy whole
+    I32 x0 = Max(x, 0);
+    I32 y0 = Max(y, 0);
+    I32 x1 = Min(x + src.w, dst.w);
+    I32 y1 = Min(y + src.h, dst.h);
+    for(I32 dy = y0; dy < y1 && x0 < x1; dy += 1) {
+      MemoryCopy(dst.pixels + ((U64)dy * dst.w + x0) * 4,
+                 src.pixels + ((U64)(dy - y) * src.w + (x0 - x)) * 4,
+                 (U64)(x1 - x0) * 4);
+    }
   }
 }
 

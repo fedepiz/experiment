@@ -96,14 +96,39 @@ internal MapAssets map_assets_load(void) {
   ArenaTemp scratch = arena_get_scratch(0, 0);
   d_spritesheet_begin(512, 512);
   for(WG_TerrainType type = 0; type < WG_TerrainType_COUNT; type += 1) {
-    for(U32 variant = 0; variant < MAP_GROUND_VARIANTS; variant += 1) {
+    // ground slices all load before any is pushed: a complete uniform 4x4 set
+    // reassembles into the torus canvas gen_tiles.py cut it from, and each
+    // slice pushes as a window of that canvas -- push_window then guards the
+    // slice with true neighbor texels, so slices butt seamlessly on screen
+    D_Image slices[MAP_GROUND_VARIANTS] = {0};
+    U32 slice_count = 0;
+    for(; slice_count < MAP_GROUND_VARIANTS; slice_count += 1) {
       String8 path = push_str8f(scratch.arena, "assets/tiles/%S_%u.png",
-                                WG_TERRAIN_DATA[type].name, variant);
-      D_Image image = d_image_load(scratch.arena, path);
-      if(image.w == 0) { break; } // ZII: missing/broken file is the zero image
-      assets.terrain_sprites[type][variant] = d_spritesheet_push(image);
-      assets.terrain_variant_counts[type] += 1;
+                                WG_TERRAIN_DATA[type].name, slice_count);
+      slices[slice_count] = d_image_load(scratch.arena, path);
+      if(slices[slice_count].w == 0) { break; } // ZII: missing/broken file is the zero image
     }
+    if(slice_count == MAP_GROUND_VARIANTS) {
+      I32 tw = slices[0].w;
+      I32 th = slices[0].h;
+      D_Image canvas = d_image_create(scratch.arena, MAP_GROUND_GRID * tw, MAP_GROUND_GRID * th, (V4){0});
+      for(U32 variant = 0; variant < MAP_GROUND_VARIANTS; variant += 1) {
+        d_image_blit(canvas, (I32)(variant % MAP_GROUND_GRID) * tw,
+                     (I32)(variant / MAP_GROUND_GRID) * th, slices[variant]);
+      }
+      for(U32 variant = 0; variant < MAP_GROUND_VARIANTS; variant += 1) {
+        I32 ox = (I32)(variant % MAP_GROUND_GRID) * tw;
+        I32 oy = (I32)(variant / MAP_GROUND_GRID) * th;
+        Rect window = {{(F32)ox, (F32)oy}, {(F32)(ox + tw), (F32)(oy + th)}};
+        assets.terrain_sprites[type][variant] = d_spritesheet_push_window(canvas, window);
+      }
+    } else {
+      // partial set: independent art, the clamped gutter is right
+      for(U32 variant = 0; variant < slice_count; variant += 1) {
+        assets.terrain_sprites[type][variant] = d_spritesheet_push(slices[variant]);
+      }
+    }
+    assets.terrain_variant_counts[type] = slice_count;
     for(U32 variant = 0; variant < MAP_TILE_VARIANTS; variant += 1) {
       String8 path = push_str8f(scratch.arena, "assets/tiles/%S_overlay_%u.png",
                                 WG_TERRAIN_DATA[type].name, variant);

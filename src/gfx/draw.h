@@ -126,6 +126,7 @@ internal D_Image d_image_create(Arena* arena, I32 w, I32 h, V4 color);
 
 internal V4   d_image_get_px(D_Image image, I32 x, I32 y);           // out of bounds / nil image: {0}
 internal void d_image_set_px(D_Image image, I32 x, I32 y, V4 color); // out of bounds / nil image: no-op
+internal void d_image_blit(D_Image dst, I32 x, I32 y, D_Image src);  // copy src into dst at (x, y), clipped; nil either: no-op
 
 //- fp: sprite sheets
 
@@ -148,6 +149,15 @@ typedef struct {
 internal void          d_spritesheet_begin(I32 w, I32 h);
 internal D_Sprite      d_spritesheet_push(D_Image image); // ZII: zero image or full sheet = nil sprite
 internal D_SpriteSheet d_spritesheet_end(void);
+
+// pushes one rectangular window of a toroidally-wrapping canvas (texel
+// coords). Unlike d_spritesheet_push, the sprite's gutter ring is filled
+// with the canvas texels just past the window -- wrapping at the canvas
+// edges -- so windows of one continuous texture butt seamlessly under
+// linear sampling instead of hardening every joint into a faint grid.
+// A window covering the whole canvas yields a single self-tiling sprite.
+// ZII: a nil canvas or empty window = nil sprite.
+internal D_Sprite d_spritesheet_push_window(D_Image canvas, Rect window);
 internal void          d_spritesheet_release(D_SpriteSheet sheet); // its sprites draw nothing afterwards
 
 // a one-image sheet in one call, sized exactly to the image, for standalone
