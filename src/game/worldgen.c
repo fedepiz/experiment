@@ -1,4 +1,4 @@
-﻿#include "base/core.h"
+#include "base/core.h"
 #include "base/math.h"
 #include "base/arena.h"
 #include "base/strings.h"
@@ -139,6 +139,9 @@ internal WG_Params wg_params_load(Arena* arena, String8 path) {
   params.uplift_noise_scale = tb_get_num(world, str8_lit("uplift_noise_scale"), 0);
   params.uplift_ridged = tb_get_num(world, str8_lit("uplift_ridged"), 0);
   params.uplift_ridged_scale = tb_get_num(world, str8_lit("uplift_ridged_scale"), 0);
+  params.rift_depth = tb_get_num(world, str8_lit("rift_depth"), 0);
+  params.rift_width = tb_get_num(world, str8_lit("rift_width"), 0);
+  params.arc_height = tb_get_num(world, str8_lit("arc_height"), 0);
   params.continent_blend = tb_get_num(world, str8_lit("continent_blend"), 0);
   params.continent_height = tb_get_num(world, str8_lit("continent_height"), 0);
   params.min_region_size = (I32)tb_get_num(world, str8_lit("min_region_size"), 0);
@@ -212,6 +215,9 @@ internal WG_Params wg_params_load(Arena* arena, String8 path) {
   params.uplift_noise_scale = ClampBot(params.uplift_noise_scale, 1.0f);
   params.uplift_ridged = Clamp(0.0f, params.uplift_ridged, 1.0f);
   params.uplift_ridged_scale = ClampBot(params.uplift_ridged_scale, 1.0f);
+  params.rift_depth = ClampBot(params.rift_depth, 0.0f);
+  params.rift_width = ClampBot(params.rift_width, 0.5f);
+  params.arc_height = ClampBot(params.arc_height, 0.0f);
   params.continent_blend = ClampBot(params.continent_blend, 1.0f);
   params.continent_height = Clamp(0.0f, params.continent_height, 1.0f);
   params.river_min_length = ClampBot(params.river_min_length, 0);
@@ -359,18 +365,40 @@ internal I32 wg__plate_at(WG_Params* params, U64 seed, I32 gx, I32 gy, I32 x, I3
   return best;
 }
 
-// compression across the border between plates a and b: relative velocity
-// projected on the a->b axis. Positive presses the plates together; unit-
-// capped velocities bound it to [-2,2], so *0.5 normalizes into [0,1].
-// Divergent and shearing borders score 0 -- rifts and trenches, later.
-internal F32 wg__plate_compression(WG_Params* params, U64 seed, I32 gx, I32 a, I32 b) {
+// signed convergence across the border between plates a and b: relative
+// velocity projected on the a->b axis, normalized into [-1,1] (unit-capped
+// velocities bound the dot to [-2,2]). Positive presses the plates together
+// (ridges); negative pulls them apart (rifts, ocean ridges); shear scores
+// near zero and leaves no relief.
+internal F32 wg__plate_convergence(WG_Params* params, U64 seed, I32 gx, I32 a, I32 b) {
   V2 pa = wg__plate_seed(params, seed, a % gx, a / gx);
   V2 pb = wg__plate_seed(params, seed, b % gx, b / gx);
   V2 va = wg__plate_velocity(seed, a % gx, a / gx);
   V2 vb = wg__plate_velocity(seed, b % gx, b / gx);
   V2 axis = v2_norm(v2_sub(pb, pa), (V2){1, 0});
   F32 conv = (va.x - vb.x) * axis.x + (va.y - vb.y) * axis.y;
-  return ClampBot(conv, 0.0f) * 0.5f;
+  return conv * 0.5f;
+}
+
+// the shared flank shaping for ridges and rifts: warp the measured distance
+// by noise so the features pinch and wander, fall off quadratically over
+// `width`, and texture the result with ridged noise
+internal F32 wg__flank_shape(WG_Params* params, U64 salt, F32 d, F32 width, I32 x, I32 y) {
+  if(params->uplift_noise > 0) {
+    F32 s = params->uplift_noise_scale;
+    F32 wobble = wg__fbm(salt + 7, (F32)x / s, (F32)y / s, 2, 0.5f);
+    d *= 1.0f + params->uplift_noise * (2.0f * wobble - 1.0f);
+  }
+  F32 t = Clamp(0.0f, d / width, 1.0f);
+  F32 bell = (1.0f - t) * (1.0f - t);
+  if(bell <= 0) { return 0; }
+  F32 shape = 1.0f;
+  if(params->uplift_ridged > 0) {
+    F32 s = params->uplift_ridged_scale;
+    F32 ridged = wg__ridged_fbm(salt + 8, (F32)x / s, (F32)y / s, 3, 0.5f);
+    shape += params->uplift_ridged * (ridged - 1.0f); // lerp(1 .. ridged)
+  }
+  return bell * shape;
 }
 
 // two-pass chamfer distance transform (1 / sqrt2 step costs), in place:
@@ -416,9 +444,11 @@ internal void wg__distance_transform(F32* dist, F32* carry, I32 w, I32 h) {
   }
 }
 
-// the whole plate pipeline: one uplift value per tile into out_uplift, and
+// the whole plate pipeline: one uplift value per tile into out_uplift, the
+// divergence magnitude (unscaled 0..1 rift/arc strength) into out_rift, and
 // the continental rim factor (0 drowned .. 1 full ground) into out_rim
-internal void wg__plate_fields(WG_Params* params, U64 seed, F32* out_uplift, F32* out_rim) {
+internal void wg__plate_fields(WG_Params* params, U64 seed, F32* out_uplift,
+                               F32* out_rift, F32* out_rim) {
   I32 w = params->width;
   I32 h = params->height;
   I32 gx = (I32)ceilf((F32)w / params->plate_spacing);
@@ -434,14 +464,18 @@ internal void wg__plate_fields(WG_Params* params, U64 seed, F32* out_uplift, F32
     }
   }
 
-  //- fp: seed ridges: checking right and down covers every interior border
-  //  edge exactly once; both sides join the ridge, and a tile touching two
-  //  borders keeps the strongest press
+  //- fp: seed ridges and rifts: checking right and down covers every
+  //  interior border edge exactly once; both sides join the feature, and a
+  //  tile touching two borders keeps the strongest pull or press
   F32* dist = push_array_no_zero(scratch.arena, F32, (U64)w * h);
   F32* force = push_array_no_zero(scratch.arena, F32, (U64)w * h);
+  F32* rdist = push_array_no_zero(scratch.arena, F32, (U64)w * h);
+  F32* rforce = push_array_no_zero(scratch.arena, F32, (U64)w * h);
   for(U64 i = 0; i < (U64)w * h; i += 1) {
     dist[i] = 1e9f;
     force[i] = 0;
+    rdist[i] = 1e9f;
+    rforce[i] = 0;
   }
   for(I32 y = 0; y < h; y += 1) {
     for(I32 x = 0; x < w; x += 1) {
@@ -452,17 +486,25 @@ internal void wg__plate_fields(WG_Params* params, U64 seed, F32* out_uplift, F32
         if(nx >= w || ny >= h) { continue; }
         U64 j = (U64)ny * w + nx;
         if(plate[i] == plate[j]) { continue; }
-        F32 compression = wg__plate_compression(params, seed, gx, plate[i], plate[j]);
-        if(compression <= 0) { continue; }
-        dist[i] = 0;
-        dist[j] = 0;
-        force[i] = Max(force[i], compression);
-        force[j] = Max(force[j], compression);
+        F32 conv = wg__plate_convergence(params, seed, gx, plate[i], plate[j]);
+        if(conv > 0) {
+          dist[i] = 0;
+          dist[j] = 0;
+          force[i] = Max(force[i], conv);
+          force[j] = Max(force[j], conv);
+        }
+        if(conv < 0) {
+          rdist[i] = 0;
+          rdist[j] = 0;
+          rforce[i] = Max(rforce[i], -conv);
+          rforce[j] = Max(rforce[j], -conv);
+        }
       }
     }
   }
 
   wg__distance_transform(dist, force, w, h);
+  wg__distance_transform(rdist, rforce, w, h);
 
   //- fp: continental rim, plate-shaped: any plate owning a border tile is
   //  ocean floor -- its whole cell reads rim 0 -- and land climbs back to
@@ -489,29 +531,22 @@ internal void wg__plate_fields(WG_Params* params, U64 seed, F32* out_uplift, F32
     out_rim[i] = t * t * (3.0f - 2.0f * t);
   }
 
-  //- fp: uplift: a quadratic falloff of the noise-warped distance, scaled by
-  //  the ridge's force, shaped by ridged noise
+  //- fp: uplift and rift magnitudes: force-scaled shaped falloffs. Uplift
+  //  is final elevation-to-add; rift stays an unscaled 0..1 magnitude --
+  //  wg__elevation_at expresses it by crust (rift_depth vs arc_height).
   for(I32 y = 0; y < h; y += 1) {
     for(I32 x = 0; x < w; x += 1) {
       U64 i = (U64)y * w + x;
       out_uplift[i] = 0;
-      if(force[i] <= 0) { continue; }
-      F32 d = dist[i];
-      if(params->uplift_noise > 0) {
-        F32 s = params->uplift_noise_scale;
-        F32 wobble = wg__fbm(salt + 7, (F32)x / s, (F32)y / s, 2, 0.5f);
-        d *= 1.0f + params->uplift_noise * (2.0f * wobble - 1.0f);
+      out_rift[i] = 0;
+      if(force[i] > 0) {
+        F32 m = wg__flank_shape(params, salt, dist[i], params->uplift_width, x, y);
+        out_uplift[i] = params->uplift_height * force[i] * m;
       }
-      F32 t = Clamp(0.0f, d / params->uplift_width, 1.0f);
-      F32 bell = (1.0f - t) * (1.0f - t);
-      if(bell <= 0) { continue; }
-      F32 shape = 1.0f;
-      if(params->uplift_ridged > 0) {
-        F32 s = params->uplift_ridged_scale;
-        F32 ridged = wg__ridged_fbm(salt + 8, (F32)x / s, (F32)y / s, 3, 0.5f);
-        shape += params->uplift_ridged * (ridged - 1.0f); // lerp(1 .. ridged)
+      if(rforce[i] > 0) {
+        F32 m = wg__flank_shape(params, salt, rdist[i], params->rift_width, x, y);
+        out_rift[i] = rforce[i] * m;
       }
-      out_uplift[i] = params->uplift_height * force[i] * bell * shape;
     }
   }
   arena_release_scratch(scratch);
@@ -524,17 +559,22 @@ internal void wg__plate_fields(WG_Params* params, U64 seed, F32* out_uplift, F32
 // continental rim (see Tectonics), so the land reads as a continent with
 // organic coastlines rather than wallpaper.
 
-internal F32 wg__elevation_at(WG_Params* params, U64 seed, F32 uplift, F32 rim, I32 x, I32 y) {
+internal F32 wg__elevation_at(WG_Params* params, U64 seed, F32 uplift, F32 rift,
+                              F32 rim, I32 x, I32 y) {
   F32 noise = wg__fbm(seed, (F32)x / params->elevation_scale,
                       (F32)y / params->elevation_scale, params->elevation_octaves,
                       params->elevation_persistence);
   // three stacked terms: the continental shelf interior plates stand on,
   // noise spanning [0, elevation_amplitude] carving relief, and plate
   // uplift raising ranges -- all scaled by the rim, which sinks the whole
-  // stack to the ocean floor across the drowned border plates. The clamp
-  // keeps peaks inside the [0,1] domain the classification bands speak.
+  // stack to the ocean floor across the drowned border plates
   F32 e = params->continent_height + noise * params->elevation_amplitude + uplift;
-  return ClampTop(e, 1.0f) * rim;
+  e = ClampTop(e, 1.0f) * rim;
+  // divergence expresses by crust, blended by the rim: it sinks a rift
+  // valley into land (lake chains where the floor drops below the sea) and
+  // raises a mid-ocean ridge out of drowned ocean, surfacing as island arcs
+  e += rift * (params->arc_height * (1.0f - rim) - params->rift_depth * rim);
+  return Clamp(0.0f, e, 1.0f);
 }
 
 // moisture decorrelates from elevation by salting the seed
@@ -743,13 +783,14 @@ internal BD_Board* wg_generate(Arena* arena, WG_Params* params, U64 seed) {
   //  and rivers must agree on where downhill is. Tectonic uplift comes
   //  first: every later system (rivers, snowlines) hangs off elevation.
   F32* uplift = push_array_no_zero(scratch.arena, F32, (U64)w * h);
+  F32* rift = push_array_no_zero(scratch.arena, F32, (U64)w * h);
   F32* rim = push_array_no_zero(scratch.arena, F32, (U64)w * h);
-  wg__plate_fields(params, seed, uplift, rim);
+  wg__plate_fields(params, seed, uplift, rift, rim);
   F32* elevation = push_array_no_zero(scratch.arena, F32, (U64)w * h);
   for(I32 y = 0; y < h; y += 1) {
     for(I32 x = 0; x < w; x += 1) {
       U64 i = (U64)y * w + x;
-      elevation[i] = wg__elevation_at(params, seed, uplift[i], rim[i], x, y);
+      elevation[i] = wg__elevation_at(params, seed, uplift[i], rift[i], rim[i], x, y);
     }
   }
 

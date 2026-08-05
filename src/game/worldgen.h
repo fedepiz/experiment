@@ -136,6 +136,15 @@ typedef struct {
   F32 uplift_ridged;       // ridged-noise shaping blend, 0..1
   F32 uplift_ridged_scale; // tiles per ridged-noise cell
 
+  //- fp: divergent borders -- plates pulling apart -- express by crust:
+  //  on land they sink a rift valley (long linear lake chains where the
+  //  floor drops below sea level), in drowned ocean they raise a mid-ocean
+  //  ridge that can breach the surface as volcanic island arcs. One field,
+  //  blended by the rim.
+  F32 rift_depth;  // elevation removed at a full-force rift on land
+  F32 rift_width;  // tiles from rift axis to the foot of the falloff
+  F32 arc_height;  // elevation added at a full-force ocean ridge
+
   //- fp: continental rim, plate-shaped: every plate owning a border tile
   //  drowns to zero elevation, and land climbs back to the full heightmap
   //  over continent_blend tiles inland of the drowned region, so coastlines

@@ -62,6 +62,14 @@ world = {
   uplift_ridged = 0.6     # ridged-noise shaping blend, 0..1
   uplift_ridged_scale = 8 # tiles per ridged-noise cell
 
+  # divergent borders express by crust: on land they sink a rift valley
+  # (long linear lake chains where the floor drops below the sea), in
+  # drowned ocean they raise a mid-ocean ridge that can breach the surface
+  # as volcanic island arcs. Shares the uplift warp and ridged shaping.
+  rift_depth = 0.4        # elevation removed at a full-force rift on land
+  rift_width = 10         # tiles from rift axis to the foot of the falloff
+  arc_height = 0.9        # elevation added at a full-force ocean ridge
+
   # continental rim, plate-shaped: every plate touching the map border
   # drowns to open ocean, and land climbs back to the full heightmap over
   # continent_blend tiles inland, so coastlines follow the fuzzy plate
