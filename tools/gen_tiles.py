@@ -7,21 +7,26 @@ packs a spritesheet at startup (main.c, map_assets_load), falling back to
 flat colors for terrains with no art. Fully deterministic: every image is
 seeded by its name, so re-running reproduces identical pixels.
 
-Ground tiles are WORLD-SPACE SLICES: each terrain paints one 64x64 canvas
+Ground is ONE PAINTING per terrain, <terrain>_ground.png: a 64x64 canvas
 whose texture wraps toroidally (blotch clumps, wave dashes, dune lines all
-continue across the wrap), which is then cut into a 4x4 grid of 16x16 tiles,
-<terrain>_0..15.png. The renderer indexes them by map position (x%4, y%4),
-so neighboring tiles are windows into one continuous texture -- no seams
-inside a terrain region, and the 4-tile repeat hides in the noise.
+continue across the wrap). The game cuts it into a 4x4 grid of windows and
+shows window (x%4, y%4) at map position (x, y), so neighboring tiles
+continue one texture -- no seams inside a terrain region, and the 4-tile
+repeat hides in the noise.
 
 On top of the ground live:
 - overlays  <terrain>_overlay_<n>.png  pictographic art (tree clusters, rock
   masses): composed drawings with a silhouette, top-left light, and a seated
   dark bottom edge
 - edges     <terrain>_edge_<n>.png     sparse art for region-border tiles
-- fringes   <terrain>_fringe_<dir>_<n>.png  the terrain's ground cut by a
-  ragged mask (modeled on the reference edge-shapes kit), drawn spilling
-  over boundaries onto lower-ranked neighbors
+- masks     mask_<case>_<n>.png        terrain-AGNOSTIC boundary masks
+  (white, alpha = keep): the game renders the spilling terrain's own ground
+  through them at draw time on dual cells (points where four map tiles
+  meet), so transitions are never baked into art. <case> is the 4-bit
+  corner code from game/tiling.h (NW=1, NE=2, SW=4, SE=8); the 14
+  non-trivial cases are rotations of 4 canonical shapes (corner, half,
+  saddle, inner). Contours enter and exit at edge midpoints -- the wander is
+  free in between -- so contours of neighboring dual cells connect.
 """
 
 import math
@@ -33,8 +38,7 @@ SIZE = 16          # one tile
 GROUND_GRID = 4    # ground torus is GROUND_GRID x GROUND_GRID tiles
 GROUND = SIZE * GROUND_GRID
 VARIANTS = 8       # overlay / edge variant count
-FRINGE_VARIANTS = 4
-FRINGE_DIRS = ("n", "e", "s", "w")  # matches BD_Dir order in the game
+MS_VARIANTS = 4    # boundary variants per marching-squares case
 OUT_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets", "tiles"))
 PREVIEW_SCALE = 6
 TAU = 6.28318530718
@@ -374,47 +378,96 @@ EDGE_OVERLAYS = {
 }
 
 
-# ------------------------------------------------------------- fringes
+# ------------------------------------------------------------- boundaries
 #
-# Ground-boundary softening, modeled on the reference's edge-shapes kit
-# (world_map_edge_shapes.png): binary alpha masks with a lazily wandering
-# edge line plus an occasional detached blob past it. A fringe sprite is one
-# terrain's ground texture cut by such a mask; the renderer draws the
-# dominant neighbor's fringe over the boundary tile, so ground tones wander
-# across the tile grid instead of snapping to it.
+# Dual-grid marching-squares masks (see game/tiling.h for the taxonomy): a
+# boundary sprite is one terrain's ground cut by the contour mask of a 4-bit
+# corner case, drawn on dual cells -- the points where four map tiles meet.
+# The 14 non-trivial cases compose from 4 canonical shapes: corner arcs,
+# half planes, a connected saddle, and inner corners (arc complements).
+# Contours are pinned to the edge MIDPOINTS and wander freely in between,
+# which is what makes contours of neighboring dual cells connect.
 
-def fringe_mask(rng, direction):
-    """True where the fringe keeps its pixels. `direction` is the tile edge
-    the fringe clings to (the side the owning neighbor lies on)."""
-    keep = [[False] * SIZE for _ in range(SIZE)]
+CORNER_XY = ((0.0, 0.0), (SIZE, 0.0), (0.0, SIZE), (SIZE, SIZE))  # NW NE SW SE, tiling.h bit order
 
-    def put_depth(lat, d):
-        if not (0 <= lat < SIZE and 0 <= d < SIZE):
-            return
-        if direction == "n":
-            keep[d][lat] = True
-        elif direction == "s":
-            keep[SIZE - 1 - d][lat] = True
-        elif direction == "w":
-            keep[lat][d] = True
-        else:
-            keep[lat][SIZE - 1 - d] = True
 
-    # one lazy wave across the tile, gentle jitter: the boundary should
-    # wander, not vibrate
-    depth = rng.uniform(3.4, 4.6)
-    phase = rng.uniform(0.0, TAU)
-    for lat in range(SIZE):
-        edge = depth + 1.6 * math.sin(phase + lat * 0.35) + rng.uniform(-0.25, 0.25)
-        for d in range(int(edge) + 1):
-            if d < edge:
-                put_depth(lat, d)
-    if rng.random() < 0.55:  # the occasional detached blob past the line
-        lat0 = rng.randrange(2, SIZE - 2)
-        d0 = rng.uniform(depth + 1.0, depth + 2.5)
-        for _ in range(rng.randrange(3, 6)):
-            put_depth(lat0 + rng.randrange(-1, 2), int(d0 + rng.uniform(-1.0, 1.5)))
-    return keep
+def wander(rng, amp=1.7):
+    """Wavy offset over t in [-SIZE/2, SIZE/2], pinned to zero at both ends
+    (the edge midpoints), free in between."""
+    k = rng.randrange(1, 3)
+    j_amp = rng.uniform(0.4, 0.9)
+    j_phase = rng.uniform(0.0, TAU)
+
+    def f(t):
+        s = (t + SIZE / 2.0) / SIZE  # 0..1 along the contour
+        pin = math.sin(math.pi * s)
+        return pin * (amp * math.sin(math.pi * s * k) + j_amp * math.sin(j_phase + s * 11.0))
+    return f
+
+
+def corner_arc(rng, ci):
+    """Quarter arc around one corner, midpoint to midpoint of its two edges."""
+    cx0, cy0 = CORNER_XY[ci]
+    w = wander(rng)
+
+    def f(x, y):
+        dx = abs(x + 0.5 - cx0)
+        dy = abs(y + 0.5 - cy0)
+        return dx + dy < SIZE / 2.0 + w(dx - dy)
+    return f
+
+
+def half_plane(rng, side):
+    """One half of the cell, split midpoint to midpoint."""
+    w = wander(rng)
+    half = SIZE / 2.0
+
+    def f(x, y):
+        px, py = x + 0.5, y + 0.5
+        if side == "n":
+            return py < half + w(px - half)
+        if side == "s":
+            return py > half + w(px - half)
+        if side == "w":
+            return px < half + w(py - half)
+        return px > half + w(py - half)
+    return f
+
+
+def saddle_neck(rng, main_diag):
+    """The band joining two opposite corner arcs through the cell center."""
+    width = rng.uniform(1.6, 2.4)
+    j_amp = rng.uniform(0.0, 0.8)
+    j_phase = rng.uniform(0.0, TAU)
+
+    def f(x, y):
+        px, py = x + 0.5, y + 0.5
+        d = (px - py) if main_diag else (px + py - SIZE)
+        t = (px + py - SIZE) if main_diag else (px - py)  # along the neck
+        return abs(d) < width + j_amp * math.sin(j_phase + t * 0.5)
+    return f
+
+
+def ms_mask(rng, code):
+    """True where the case's covered region keeps its pixels. `code` is the
+    4-bit corner code (NW=1, NE=2, SW=4, SE=8)."""
+    on = [i for i in range(4) if (code >> i) & 1]
+    if len(on) == 1:
+        pred = corner_arc(rng, on[0])
+    elif len(on) == 3:
+        off = [i for i in range(4) if i not in on][0]
+        arc = corner_arc(rng, off)
+        pred = lambda x, y: not arc(x, y)
+    elif set(on) in ({0, 3}, {1, 2}):  # opposite corners: connected saddle
+        a = corner_arc(rng, on[0])
+        b = corner_arc(rng, on[1])
+        neck = saddle_neck(rng, set(on) == {0, 3})
+        pred = lambda x, y: a(x, y) or b(x, y) or neck(x, y)
+    else:  # adjacent corners: half plane
+        side = {frozenset({0, 1}): "n", frozenset({2, 3}): "s",
+                frozenset({0, 2}): "w", frozenset({1, 3}): "e"}[frozenset(on)]
+        pred = half_plane(rng, side)
+    return [[pred(x, y) for x in range(SIZE)] for y in range(SIZE)]
 
 
 # ------------------------------------------------------------------ output
@@ -432,34 +485,36 @@ def main():
     sheet_rows = []
     grounds = {}
 
-    # ground: one seamless torus per terrain, sliced into position tiles
+    # ground: one seamless torus painting per terrain, saved whole; the game
+    # cuts the windows. The contact sheet shows it sliced, since its rows
+    # are tile-sized.
     for name, painter in TERRAINS.items():
         rng = random.Random(f"{name}-ground")
         torus = to_image(painter(rng, True, GROUND, GROUND))
+        torus.save(os.path.join(OUT_DIR, f"{name}_ground.png"))
         row = []
         for gy in range(GROUND_GRID):
             for gx in range(GROUND_GRID):
-                tile = torus.crop((gx * SIZE, gy * SIZE, (gx + 1) * SIZE, (gy + 1) * SIZE))
-                tile.save(os.path.join(OUT_DIR, f"{name}_{gy * GROUND_GRID + gx}.png"))
-                row.append(tile)
+                row.append(torus.crop((gx * SIZE, gy * SIZE, (gx + 1) * SIZE, (gy + 1) * SIZE)))
         grounds[name] = row[0]
         sheet_rows.append((name, row))
-        print(f"{name}: {GROUND_GRID}x{GROUND_GRID} world-space slices")
+        print(f"{name}: {GROUND}x{GROUND} ground painting")
 
-    # fringe sprites: every land terrain's ground through the edge masks
-    for name in ("plains", "forest", "desert", "swamp", "mountain"):
-        painter = TERRAINS[name]
-        for direction in FRINGE_DIRS:
-            for variant in range(FRINGE_VARIANTS):
-                rng = random.Random(f"{name}-fringe-{direction}:{variant}")
-                px = painter(rng, False)
-                keep = fringe_mask(rng, direction)
-                for y in range(SIZE):
-                    for x in range(SIZE):
-                        if not keep[y][x]:
-                            px[y][x] = None
-                to_image(px).save(os.path.join(OUT_DIR, f"{name}_fringe_{direction}_{variant}.png"))
-        print(f"{name} fringe: {len(FRINGE_DIRS)} dirs x {FRINGE_VARIANTS} variants")
+    # boundary masks: terrain-agnostic white-with-alpha shapes; the game
+    # draws any spilling terrain's ground through them at draw time
+    mask_row = []
+    for code in range(1, 15):
+        for variant in range(MS_VARIANTS):
+            rng = random.Random(f"mask-{code}:{variant}")
+            keep = ms_mask(rng, code)
+            img = Image.new("RGBA", (SIZE, SIZE))
+            img.putdata([(255, 255, 255, 255) if keep[y][x] else (0, 0, 0, 0)
+                         for y in range(SIZE) for x in range(SIZE)])
+            img.save(os.path.join(OUT_DIR, f"mask_{code}_{variant}.png"))
+            if variant == 0:
+                mask_row.append(img)
+    sheet_rows.append(("masks", mask_row))
+    print(f"masks: 14 cases x {MS_VARIANTS} variants")
 
     for suffix, painters in (("overlay", OVERLAYS), ("edge", EDGE_OVERLAYS)):
         for name, painter in painters.items():

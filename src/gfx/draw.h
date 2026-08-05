@@ -168,14 +168,22 @@ internal D_Sprite d_sprite_from_image(D_Image image);
 
 typedef struct {
   D_Sprite sprite;
-  Rect dst;     // points
-  Rect src;     // texels, in the sprite's own space; zero rect = whole sprite
-  V4 tint;      // multiplies sprite color; white = as-is
-  F32 rotation; // radians, counter-clockwise, about the center of dst
+  Rect dst;      // points
+  Rect src;      // texels, in the sprite's own space; zero rect = whole sprite
+  V4 tint;       // multiplies sprite color; white = as-is
+  F32 rotation;  // radians, counter-clockwise, about the center of dst
+  D_Sprite mask; // alpha mask stretched over dst: the sprite's alpha
+                 // multiplies by the mask's alpha at each pixel. Must live in
+                 // the same sheet as sprite; nil = unmasked.
 } D_SpriteParams;
 
 internal void d_sprite_ex(D_SpriteParams* params);
 internal void d_sprite(D_Sprite sprite, Rect dst, V4 tint);
+
+// sprite drawn through an alpha mask; the workhorse of terrain boundary
+// spill. Precondition (asserted): mask lives in the same sheet as sprite --
+// one texture per quad, so masking never breaks a render batch.
+internal void d_sprite_masked(D_Sprite sprite, D_Sprite mask, Rect dst, V4 tint);
 
 ////////////////////////////////
 //~ fp: Fonts / Text

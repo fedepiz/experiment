@@ -50,8 +50,9 @@ typedef struct {
   F32 softness;
   F32 rotation;
   F32 pad;
+  F32 mask_src[4];  // texel rect; all zeros = no mask
 } R_GL_Inst;
-StaticAssert(sizeof(R_GL_Inst) == 9 * 16, r_gl_inst_matches_attrib_layout);
+StaticAssert(sizeof(R_GL_Inst) == 10 * 16, r_gl_inst_matches_attrib_layout);
 
 #define R_GL_INST_CHUNK_CAP 256
 typedef struct R_GL_InstChunk R_GL_InstChunk;
@@ -121,11 +122,14 @@ global const char* r_gl__vs_src =
   "layout(location = 6) in vec4 a_color_br;\n"
   "layout(location = 7) in vec4 a_radii;\n"
   "layout(location = 8) in vec4 a_misc;\n" // border, softness, rotation, pad
+  "layout(location = 9) in vec4 a_mask_src;\n"
   "uniform vec2 u_viewport;\n"             // points
   "out vec2 v_local;\n"                    // position relative to quad center, unrotated
   "out vec2 v_pos;\n"                      // screen position, points (for clip)
   "out vec2 v_uv;\n"                       // texels
+  "out vec2 v_mask_uv;\n"                  // texels; meaningful when v_mask_on
   "out vec4 v_color;\n"
+  "flat out float v_mask_on;\n"
   "flat out vec2 v_half_size;\n"
   "flat out vec4 v_clip;\n"
   "flat out vec4 v_radii;\n"
@@ -161,6 +165,8 @@ global const char* r_gl__vs_src =
   // at pad 0 this reduces to exactly t (0.5 +- 0.5 is exact in fp)
   "  vec2 t_uv = 0.5 + (t - 0.5) * (half_size + vec2(pad)) / max(half_size, vec2(1e-6));\n"
   "  v_uv = mix(a_src.xy, a_src.zw, t_uv);\n"
+  "  v_mask_uv = mix(a_mask_src.xy, a_mask_src.zw, t_uv);\n"
+  "  v_mask_on = (a_mask_src.z > a_mask_src.x) ? 1.0 : 0.0;\n" // zero rect = no mask
   "  v_color = mix(mix(a_color_tl, a_color_tr, t.x), mix(a_color_bl, a_color_br, t.x), t.y);\n"
   "  v_half_size = half_size;\n"
   "  v_clip = a_clip;\n"
@@ -173,7 +179,9 @@ global const char* r_gl__fs_src =
   "in vec2 v_local;\n"
   "in vec2 v_pos;\n"
   "in vec2 v_uv;\n"
+  "in vec2 v_mask_uv;\n"
   "in vec4 v_color;\n"
+  "flat in float v_mask_on;\n"
   "flat in vec2 v_half_size;\n"
   "flat in vec4 v_clip;\n"
   "flat in vec4 v_radii;\n"
@@ -206,6 +214,9 @@ global const char* r_gl__fs_src =
   "  vec4 texel = texture(u_tex, v_uv / u_tex_size);\n"
   "  if (u_tex_r8 == 1) {\n"
   "    texel = vec4(1.0, 1.0, 1.0, texel.r);\n" // R8 is coverage (glyphs)
+  "  }\n"
+  "  if (v_mask_on > 0.5) {\n"
+  "    coverage *= texture(u_tex, v_mask_uv / u_tex_size).a;\n"
   "  }\n"
   "  f_color = vec4(v_color.rgb * texel.rgb, v_color.a * texel.a * coverage);\n"
   "}\n";
@@ -259,13 +270,13 @@ internal void r_init(void) {
   r_gl_state.u_tex_size = glGetUniformLocation(program, "u_tex_size");
   r_gl_state.u_tex_r8   = glGetUniformLocation(program, "u_tex_r8");
 
-  //- vao + instance buffer: 9 vec4 attributes, all per-instance; the
+  //- vao + instance buffer: 10 vec4 attributes, all per-instance; the
   //  vertex corner comes from gl_VertexID, so there is no per-vertex data
   glGenVertexArrays(1, &r_gl_state.vao);
   glBindVertexArray(r_gl_state.vao);
   glGenBuffers(1, &r_gl_state.instance_vbo);
   glBindBuffer(GL_ARRAY_BUFFER, r_gl_state.instance_vbo);
-  for(U32 i = 0; i < 9; i += 1) {
+  for(U32 i = 0; i < 10; i += 1) {
     glEnableVertexAttribArray(i);
     glVertexAttribPointer(i, 4, GL_FLOAT, GL_FALSE, sizeof(R_GL_Inst), (void*)(U64)(i * 16));
     glVertexAttribDivisor(i, 1);
@@ -414,6 +425,10 @@ internal void r_push_quad(R_Quad* quad) {
   inst->softness = quad->edge_softness;
   inst->rotation = quad->rotation;
   inst->pad = 0;
+  inst->mask_src[0] = quad->mask_src.min.x;
+  inst->mask_src[1] = quad->mask_src.min.y;
+  inst->mask_src[2] = quad->mask_src.max.x;
+  inst->mask_src[3] = quad->mask_src.max.y;
 }
 
 internal void r_frame_end(void) {

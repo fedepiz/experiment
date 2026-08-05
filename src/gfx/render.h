@@ -76,6 +76,9 @@ internal void     r_tex_update(R_Handle tex, I32 x, I32 y, I32 w, I32 h, void* d
 typedef struct {
   Rect dst;      // where, in points / window space
   Rect src;      // which texels of tex; ignored when tex is nil
+  Rect mask_src; // texels of tex whose alpha multiplies the quad's alpha,
+                 // stretched over dst; zero rect = no mask. Rides the same
+                 // texture as src, so masking never breaks a batch.
   R_Handle tex;  // nil = solid color (an internal 1x1 white texture)
 
   V4  colors[Corner_COUNT];       // per-corner RGBA, 0..1; same in all four = flat

@@ -588,6 +588,12 @@ internal void d_sprite_ex(D_SpriteParams* params) {
     quad.src.max.x = params->sprite.src.min.x + src.max.x;
     quad.src.max.y = params->sprite.src.min.y + src.max.y;
 
+    // the mask rides the same sheet texture (d_sprite_masked asserts it), so
+    // its atlas rect passes straight through
+    if(params->mask.sheet.u64 != 0) {
+      quad.mask_src = params->mask.src;
+    }
+
     // ZII: the zero tint reads as white (draw as-is), like zoom 0 reads as 1
     V4 tint = params->tint;
     if(tint.x == 0 && tint.y == 0 && tint.z == 0 && tint.w == 0) {
@@ -603,6 +609,19 @@ internal void d_sprite(D_Sprite sprite, Rect dst, V4 tint) {
   params.sprite = sprite;
   params.dst = dst;
   params.tint = tint;
+  d_sprite_ex(&params);
+}
+
+internal void d_sprite_masked(D_Sprite sprite, D_Sprite mask, Rect dst, V4 tint) {
+  // precondition: one texture per quad -- a (non-nil) mask must share the
+  // sprite's sheet, or the shader would sample the mask rect out of the
+  // wrong atlas. The nil mask is fine, and draws unmasked (ZII).
+  Assert(mask.sheet.u64 == 0 || mask.sheet.u64 == sprite.sheet.u64);
+  D_SpriteParams params = {0};
+  params.sprite = sprite;
+  params.dst = dst;
+  params.tint = tint;
+  params.mask = mask;
   d_sprite_ex(&params);
 }
 
