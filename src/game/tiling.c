@@ -50,6 +50,14 @@ internal void tl_push_mask(TL_Config* config, U32 code, U32 id) {
   }
 }
 
+internal void tl_push_network(TL_Config* config, U32 network, U32 code, U32 id) {
+  if(network < TL_NETWORK_CAP && code < 16 &&
+     config->network_counts[network][code] < TL_VARIANT_CAP) {
+    config->network_ids[network][code][config->network_counts[network][code]] = id;
+    config->network_counts[network][code] += 1;
+  }
+}
+
 ////////////////////////////////
 //~ fp: Cell Query
 
@@ -72,7 +80,8 @@ internal U32 tl__order(TL_Config* config, U32 klass) {
   return ((U32)config->classes[klass].rank << 16) | klass;
 }
 
-internal TL_Cell tl_cell(TL_Config* config, U32 neighborhood[9], V2I p) {
+internal TL_Cell tl_cell(TL_Config* config, U32 neighborhood[9],
+                         U8 networks[TL_NETWORK_CAP], V2I p) {
   TL_Cell result = {0};
 
   // bad ids read as class 0 -- the caller's diagnostic path (loud nil color)
@@ -138,10 +147,25 @@ internal TL_Cell tl_cell(TL_Config* config, U32 neighborhood[9], V2I p) {
     }
   }
 
+  //- networks, in id order; carrying any suppresses the cell's overlays
+  B32 networked = 0;
+  for(U32 n = 0; n < TL_NETWORK_CAP; n += 1) {
+    U32 code = networks[n];
+    if(code == 0) { continue; }
+    networked = 1;
+    U32 count = config->network_counts[n][code];
+    if(count == 0) { continue; }
+    TL_Piece* piece = &result.pieces[result.count];
+    result.count += 1;
+    piece->id = config->network_ids[n][code][tl__noise(config->seed, p, 8 + n) % count];
+    piece->klass = klass;
+    piece->layer = TL_Layer_Network;
+  }
+
   //- overlay art tapers at the region border: sparse edge art there, full
   // art inside -- with bare gaps so a massif or forest reads as scattered
   // shapes, not a carpet of one tile art per cell
-  {
+  if(!networked) {
     B32 on_border = 0;
     for(U32 i = 0; i < 9; i += 1) { on_border |= nb[i] != klass; }
     U32* ids = 0;

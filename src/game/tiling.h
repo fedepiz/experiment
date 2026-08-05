@@ -59,13 +59,21 @@
 // EDGE MIDPOINTS (wander is free in between), which is what makes contours
 // of neighboring dual cells meet.
 //
+//- NETWORKS (rivers, roads) are line features autotiled by their 4-bit
+// connection mask -- bit d = toward BD_Dir d, relayed from the board as-is.
+// Art is finished pieces per connection case, entering and exiting at edge
+// midpoints so pieces connect across cells. Networks draw in id order
+// (road over river reads as a bridge), and a cell carrying any network
+// suppresses its overlays: nothing stands on a river or a road.
+//
 //- Draw contract: pieces overlap across cells (boundary pieces straddle
 // four map cells), so the caller draws the viewport once per TL_Layer, in
-// layer order: every Surface piece of every cell, then every Object piece.
-// Within a layer, cell scanline order is correct by construction.
+// layer order. Within a layer, cell scanline order is correct by
+// construction.
 
 #define TL_TORUS_GRID  4
 #define TL_CLASS_CAP   16
+#define TL_NETWORK_CAP 4
 #define TL_VARIANT_CAP 8
 
 // corner bits of a boundary case, named for where the corner sits in the
@@ -98,6 +106,8 @@ typedef struct {
   TL_Class classes[TL_CLASS_CAP];
   U32 mask_ids[16][TL_VARIANT_CAP]; // by case code; global, class-agnostic
   U32 mask_counts[16];
+  U32 network_ids[TL_NETWORK_CAP][16][TL_VARIANT_CAP]; // by connection case
+  U32 network_counts[TL_NETWORK_CAP][16];
 } TL_Config;
 
 internal void tl_class_set(TL_Config* config, U32 klass, U8 rank, U32 overlay_density);
@@ -105,10 +115,12 @@ internal void tl_push_ground(TL_Config* config, U32 klass, U32 gx, U32 gy, U32 i
 internal void tl_push_overlay(TL_Config* config, U32 klass, U32 id);
 internal void tl_push_edge_overlay(TL_Config* config, U32 klass, U32 id);
 internal void tl_push_mask(TL_Config* config, U32 code, U32 id);
+internal void tl_push_network(TL_Config* config, U32 network, U32 code, U32 id);
 
 typedef U32 TL_Layer;
 enum {
   TL_Layer_Surface, // ground and boundary spill; drawn first
+  TL_Layer_Network, // rivers, roads: over the ground, under standing art
   TL_Layer_Object,  // standing art (overlays); drawn over every surface
   TL_Layer_COUNT,
 };
@@ -122,11 +134,13 @@ typedef struct {
 } TL_Piece;
 
 typedef struct {
-  TL_Piece pieces[6]; // in-cell draw order; across cells, draw layer by layer
+  TL_Piece pieces[8]; // in-cell draw order; across cells, draw layer by layer
   U32 count;
 } TL_Cell;
 
 // neighborhood: the cell's 3x3 class window, row-major (index 4 = the cell
 // itself). Class ids at-or-past class_count read as class 0 -- the caller's
-// bad-id diagnostic path. p is the cell's world position.
-internal TL_Cell tl_cell(TL_Config* config, U32 neighborhood[9], V2I p);
+// bad-id diagnostic path. networks: the cell's connection mask per network
+// id (ZII: zeros = none). p is the cell's world position.
+internal TL_Cell tl_cell(TL_Config* config, U32 neighborhood[9],
+                         U8 networks[TL_NETWORK_CAP], V2I p);

@@ -117,7 +117,11 @@ internal TL_Cell* map_cache_cell(MapCache* cache, BD_Board* board, V2I p) {
         nb[(dy + 1) * 3 + (dx + 1)] = bd_tile_at(board, v2i_add(p, (V2I){dx, dy}))->terrain;
       }
     }
-    *cell = tl_cell(&cache->tiling, nb, p);
+    U8 networks[TL_NETWORK_CAP] = {0};
+    for(BD_Feature feature = 0; feature < BD_Feature_COUNT; feature += 1) {
+      networks[feature] = bd_tile_at(board, p)->features[feature];
+    }
+    *cell = tl_cell(&cache->tiling, nb, networks, p);
   }
   return cell;
 }
@@ -181,6 +185,23 @@ internal MapAssets map_assets_load(void) {
       U32 id = map__load(&assets, scratch.arena, path);
       if(id == 0) { break; }
       tl_push_mask(&assets.tiling, code, id);
+    }
+  }
+
+  // network art, by BD_Feature id; finished pieces per connection case
+  struct { U32 network; char* name; } NETWORK_ART[] = {
+      {BD_Feature_River, "river"},
+      {BD_Feature_Road, "road"},
+  };
+  for(U32 i = 0; i < ArrayCount(NETWORK_ART); i += 1) {
+    for(U32 code = 1; code < 16; code += 1) {
+      for(U32 variant = 0;; variant += 1) {
+        String8 path = push_str8f(scratch.arena, "assets/tiles/%s_%u_%u.png",
+                                  NETWORK_ART[i].name, code, variant);
+        U32 id = map__load(&assets, scratch.arena, path);
+        if(id == 0) { break; }
+        tl_push_network(&assets.tiling, NETWORK_ART[i].network, code, id);
+      }
     }
   }
 
@@ -277,36 +298,6 @@ internal void map_draw(BD_Board* board, MapAssets* assets, MapCache* cache, D_Ca
               // draws nothing (also keeps the sheet batch unbroken)
               d_rect(r, WG_TERRAIN_DATA[piece->klass].color);
             }
-          }
-        }
-      }
-    }
-
-    // features as half-segments, tile center toward each connected neighbor;
-    // the neighbor draws the matching half, so connections read as one line
-    // (an edge tile's off-map half sends rivers visibly off the world).
-    // Rivers under roads: where both run, the road is the bridge.
-    struct {
-      BD_Feature feature;
-      F32 thickness;
-      V4 color;
-    } FEATURE_STYLES[] = {
-        {BD_Feature_River, MAP_TILE * 0.25f, {0.25f, 0.45f, 0.75f, 1}},
-        {BD_Feature_Road, MAP_TILE * 0.18f, {0.42f, 0.31f, 0.20f, 1}},
-    };
-    for(U32 style_idx = 0; style_idx < ArrayCount(FEATURE_STYLES); style_idx += 1) {
-      for(I32 y = y0; y <= y1; y += 1) {
-        for(I32 x = x0; x <= x1; x += 1) {
-          U8 mask = bd_tile_at(board, (V2I){x, y})->features[FEATURE_STYLES[style_idx].feature];
-          if(mask == 0) { continue; }
-          V2 center = {(x + 0.5f) * MAP_TILE, (y + 0.5f) * MAP_TILE};
-          for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += 1) {
-            if(((mask >> dir) & 1) == 0) { continue; }
-            V2I delta = bd_dir_delta(dir);
-            V2 edge = {center.x + delta.x * MAP_TILE * 0.5f,
-                       center.y + delta.y * MAP_TILE * 0.5f};
-            d_line(center, edge, FEATURE_STYLES[style_idx].thickness,
-                   FEATURE_STYLES[style_idx].color);
           }
         }
       }

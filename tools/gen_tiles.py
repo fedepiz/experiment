@@ -470,6 +470,72 @@ def ms_mask(rng, code):
     return [[pred(x, y) for x in range(SIZE)] for y in range(SIZE)]
 
 
+# ------------------------------------------------------------- networks
+#
+# Rivers and roads: finished pieces per 4-bit connection case (N=1, E=2,
+# S=4, W=8, matching BD_Dir). A channel wanders from each connected edge
+# midpoint to the center; the wander vanishes at the edge, so pieces
+# connect across tiles.
+
+NET_VARIANTS = 4
+NET_ENDS = ((SIZE / 2, 0.0), (SIZE, SIZE / 2), (SIZE / 2, SIZE), (0.0, SIZE / 2))  # N E S W
+
+
+def channel_mask(rng, code, width):
+    keep = [[False] * SIZE for _ in range(SIZE)]
+    cx = SIZE / 2 + rng.uniform(-1.2, 1.2)
+    cy = SIZE / 2 + rng.uniform(-1.2, 1.2)
+    r = width / 2.0
+
+    def stamp(sx, sy, sr):
+        for y in range(max(0, int(sy - sr - 1)), min(SIZE, int(sy + sr + 2))):
+            for x in range(max(0, int(sx - sr - 1)), min(SIZE, int(sx + sr + 2))):
+                if (x + 0.5 - sx) ** 2 + (y + 0.5 - sy) ** 2 <= sr * sr:
+                    keep[y][x] = True
+
+    for bit in range(4):
+        if not (code >> bit) & 1:
+            continue
+        ex, ey = NET_ENDS[bit]
+        dx, dy = cx - ex, cy - ey
+        length = math.hypot(dx, dy)
+        nx, ny = -dy / length, dx / length  # perpendicular carries the wander
+        amp = rng.uniform(0.8, 1.8)
+        phase = rng.uniform(0.0, TAU)
+        for i in range(13):
+            t = i / 12.0
+            w = amp * math.sin(math.pi * t) * math.sin(phase + t * 5.0)
+            stamp(ex + dx * t + nx * w, ey + dy * t + ny * w, r)
+    if bin(code).count("1") == 1:  # stub: a head where the flow peters out
+        stamp(cx, cy, r + 0.8)
+    return keep
+
+
+def paint_network(rng, code, fill, bank, width, sparkle=None):
+    px = new_canvas()
+    keep = channel_mask(rng, code, width)
+    for y in range(SIZE):
+        for x in range(SIZE):
+            if keep[y][x]:
+                px[y][x] = rng.choice(fill)
+    # banks: channel pixels beside open ground darken; the tile border stays
+    # open, so the channel flows through
+    out = [row[:] for row in px]
+    for y in range(SIZE):
+        for x in range(SIZE):
+            if px[y][x] is None:
+                continue
+            for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                if 0 <= y + dy < SIZE and 0 <= x + dx < SIZE and px[y + dy][x + dx] is None:
+                    out[y][x] = bank
+    if sparkle:
+        for y in range(SIZE):
+            for x in range(SIZE):
+                if out[y][x] is not None and out[y][x] != bank and rng.random() < 0.05:
+                    out[y][x] = sparkle
+    return out
+
+
 # ------------------------------------------------------------------ output
 
 def to_image(px):
@@ -515,6 +581,22 @@ def main():
                 mask_row.append(img)
     sheet_rows.append(("masks", mask_row))
     print(f"masks: 14 cases x {MS_VARIANTS} variants")
+
+    # network pieces: rivers and roads by connection case
+    for name, fill, bank, width, sparkle in (
+        ("river", [(46, 82, 140), (54, 92, 152), (64, 104, 164)], (28, 52, 94), 5.0, (150, 190, 225)),
+        ("road", [(168, 140, 96), (178, 150, 106)], (112, 88, 60), 3.6, None),
+    ):
+        net_row = []
+        for code in range(1, 16):
+            for variant in range(NET_VARIANTS):
+                rng = random.Random(f"{name}-{code}:{variant}")
+                img = to_image(paint_network(rng, code, fill, bank, width, sparkle))
+                img.save(os.path.join(OUT_DIR, f"{name}_{code}_{variant}.png"))
+                if variant == 0:
+                    net_row.append(img)
+        sheet_rows.append((name, net_row))
+        print(f"{name}: 15 cases x {NET_VARIANTS} variants")
 
     for suffix, painters in (("overlay", OVERLAYS), ("edge", EDGE_OVERLAYS)):
         for name, painter in painters.items():
