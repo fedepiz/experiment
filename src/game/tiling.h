@@ -21,25 +21,29 @@
 // tl_cell is pure: same config, same neighborhood, same position -- same
 // answer. No hidden state, no assets, no board.
 //
-//- Boundaries are drawn as MASKED GROUND, not baked transition art: a
-// boundary piece pairs one window of the spilling class's own ground (id)
-// with a case-shaped alpha mask (mask_id), and the renderer multiplies the
-// two. Assets stay factored -- grounds and masks, never their product.
+//- GROUND IS DRAWN ON THE DUAL GRID: the drawn grid is offset half a cell
+// from the map grid, so each DUAL CELL is centered on a point where four
+// map cells meet. A dual cell paints its own area completely -- nothing
+// ever paints outside its cell, so no piece overlaps another. Each map cell
+// owns the dual cell at its NW corner (offset {-0.5,-0.5}); the caller's
+// draw loop must extend one row/column past the viewport's right/bottom so
+// edge dual cells find an owner.
 //
-//- The dual grid: the drawn boundary grid is offset half a cell from the
-// map grid; each DUAL CELL is centered on a point where four map cells meet
-// and shows the piece of boundary passing through it. Each map cell owns
-// the dual cell at its NW corner (offset {-0.5,-0.5}); the caller's draw
-// loop must extend one row/column past the viewport's right/bottom so edge
-// dual cells find an owner.
+// Within a dual cell, classes stack as cumulative fields in covering order:
+// the LOWEST-ranked class present draws its ground window FULL, as if there
+// were no border (a pure cell is exactly this piece alone); each HIGHER
+// class draws its own ground through a case-shaped alpha mask covering the
+// corners whose class ranks at-or-above it (rank ties break by class id).
+// Contours therefore nest, never cross, and connect across neighboring dual
+// cells by construction. Transitions are never baked art: always a ground
+// id paired with a mask id, multiplied by the renderer -- assets stay
+// factored. A masked layer's case is always one of the 14 non-trivial
+// cases below; a class with no ground has nothing to spill and skips.
 //
-// Boundary layers are cumulative fields: the layer for class c covers the
-// corners whose class ranks at-or-above c (rank ties break by class id), so
-// contours nest, never cross, and connect across neighboring dual cells by
-// construction. The lowest-ranked class present is the background and emits
-// no layer; a class spills only if it outranks the background and has
-// ground to spill. A non-background layer is always one of the 14
-// non-trivial cases below.
+// Ground windows are cut on the offset grid: window (gx,gy) is the torus
+// crop at (gx+0.5, gy+0.5) cells, which is what makes a dual cell's window
+// the world-space slice under it -- adjacent cells, pure or mixed, continue
+// one seamless texture per class.
 //
 //- Case taxonomy (the mask registry's index): a 4-bit corner code,
 // TL_Corner_* bits. The 14 cases collapse under rotation into 4 canonical
@@ -77,7 +81,7 @@ enum {
 typedef struct {
   U8  rank;            // boundary covering order; higher spills over lower
   U32 overlay_density; // percent of interior cells that carry an overlay
-  U32 ground_ids[TL_TORUS_GRID][TL_TORUS_GRID]; // [gy][gx] torus windows
+  U32 ground_ids[TL_TORUS_GRID][TL_TORUS_GRID]; // [gy][gx] offset-grid windows
   U32 overlay_ids[TL_VARIANT_CAP];              // interior pictographic art
   U32 overlay_count;
   U32 edge_overlay_ids[TL_VARIANT_CAP];         // sparse region-border art

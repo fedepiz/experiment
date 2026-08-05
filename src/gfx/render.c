@@ -4,6 +4,7 @@
 #include "base/tctx.h"
 #include "base/strings.h"
 #include "base/print.h"
+#include "base/os.h"
 #include "gfx/render.h"
 
 ////////////////////////////////
@@ -447,6 +448,9 @@ internal void r_frame_end(void) {
               r_gl_state.fb_size_px.x / r_gl_state.scale,
               r_gl_state.fb_size_px.y / r_gl_state.scale);
 
+  U32 stat_draw_calls = 0;
+  U32 stat_uploads = 0;
+  U64 stat_quads = 0;
   for(R_GL_Batch* batch = r_gl_state.first_batch; batch != 0; batch = batch->next) {
     R_GL_Tex* tex = &r_gl_state.textures[batch->tex_slot];
     glBindTexture(GL_TEXTURE_2D, tex->id);
@@ -462,8 +466,24 @@ internal void r_frame_end(void) {
       U64 chunk_size = chunk->count * sizeof(R_GL_Inst);
       glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)offset, (GLsizeiptr)chunk_size, chunk->insts);
       offset += chunk_size;
+      stat_uploads += 1;
     }
     glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, (GLsizei)batch->inst_count);
+    stat_draw_calls += 1;
+    stat_quads += batch->inst_count;
+  }
+
+  //- fp: temp: renderer pulse, once a second, last frame's numbers. Batch
+  // fragmentation reads as draw calls exceeding the handful of live
+  // textures; uploads is the glBufferSubData count (one per 256-quad chunk).
+  {
+    local_persist U64 last_pulse_us = 0;
+    U64 now = os_now_us();
+    if(now - last_pulse_us >= 1000000) {
+      last_pulse_us = now;
+      printf_str8("r: %u draw calls, %llu quads, %u uploads\n",
+                  stat_draw_calls, (unsigned long long)stat_quads, stat_uploads);
+    }
   }
 
 #if BUILD_DEBUG

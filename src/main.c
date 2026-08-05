@@ -89,6 +89,39 @@ internal U32 map__load(MapAssets* assets, Arena* scratch, String8 path) {
   return result;
 }
 
+// read-through cache around the tiler: a hit returns as-is, a miss asks the
+// tiler and keeps the answer. tl_cell always emits at least one piece, so a
+// zero cell reads as "not yet".
+typedef struct {
+  TL_Config tiling;
+  TL_Cell* cells; // (width+1) x (height+1): the ring owns far-edge dual cells
+  I32 w;
+  I32 h;
+} MapCache;
+
+internal MapCache map_cache_make(Arena* arena, I32 board_w, I32 board_h, TL_Config tiling) {
+  MapCache cache = {0};
+  cache.tiling = tiling;
+  cache.w = board_w + 1;
+  cache.h = board_h + 1;
+  cache.cells = push_array(arena, TL_Cell, (U64)cache.w * (U64)cache.h);
+  return cache;
+}
+
+internal TL_Cell* map_cache_cell(MapCache* cache, BD_Board* board, V2I p) {
+  TL_Cell* cell = &cache->cells[p.y * cache->w + p.x];
+  if(cell->count == 0) {
+    U32 nb[9];
+    for(I32 dy = -1; dy <= 1; dy += 1) {
+      for(I32 dx = -1; dx <= 1; dx += 1) {
+        nb[(dy + 1) * 3 + (dx + 1)] = bd_tile_at(board, v2i_add(p, (V2I){dx, dy}))->terrain;
+      }
+    }
+    *cell = tl_cell(&cache->tiling, nb, p);
+  }
+  return cell;
+}
+
 internal MapAssets map_assets_load(void) {
   MapAssets assets = {0};
   assets.sprite_count = 1; // id 0 = nil
@@ -99,20 +132,29 @@ internal MapAssets map_assets_load(void) {
     String8 name = WG_TERRAIN_DATA[type].name;
     tl_class_set(&assets.tiling, type, MAP_CLASS_RANKS[type], 80);
 
-    // ground: one torus painting per terrain, cut into 4x4 windows here;
-    // push_window fills each window's atlas gutter with its true neighbor
-    // texels, so windows butt seamlessly on screen
+    // ground: one torus painting per terrain, cut into 4x4 windows on the
+    // OFFSET grid -- each half a tile past the painting's own grid, since
+    // the tiler draws ground on dual cells (see tiling.h). The wrap margin
+    // keeps every offset window one contiguous crop; push_window fills each
+    // window's atlas gutter with its true neighbor texels, so windows butt
+    // seamlessly on screen.
     String8 ground_path = push_str8f(scratch.arena, "assets/tiles/%S_ground.png", name);
-    D_Image canvas = d_image_load(scratch.arena, ground_path);
-    if(canvas.w > 0) {
-      I32 tw = canvas.w / TL_TORUS_GRID;
-      I32 th = canvas.h / TL_TORUS_GRID;
+    D_Image torus = d_image_load(scratch.arena, ground_path);
+    if(torus.w > 0) {
+      I32 tw = torus.w / TL_TORUS_GRID;
+      I32 th = torus.h / TL_TORUS_GRID;
+      D_Image ext = d_image_create(scratch.arena, torus.w + tw, torus.h + th, (V4){0});
+      d_image_blit(ext, 0, 0, torus);
+      d_image_blit(ext, torus.w, 0, torus); // wrap margins; blit clips
+      d_image_blit(ext, 0, torus.h, torus);
+      d_image_blit(ext, torus.w, torus.h, torus);
       for(U32 gy = 0; gy < TL_TORUS_GRID; gy += 1) {
         for(U32 gx = 0; gx < TL_TORUS_GRID; gx += 1) {
-          Rect window = {{(F32)(gx * tw), (F32)(gy * th)},
-                         {(F32)((gx + 1) * tw), (F32)((gy + 1) * th)}};
+          I32 wx0 = (I32)gx * tw + tw / 2;
+          I32 wy0 = (I32)gy * th + th / 2;
+          Rect window = {{(F32)wx0, (F32)wy0}, {(F32)(wx0 + tw), (F32)(wy0 + th)}};
           tl_push_ground(&assets.tiling, type, gx, gy,
-                         map__register(&assets, d_spritesheet_push_window(canvas, window)));
+                         map__register(&assets, d_spritesheet_push_window(ext, window)));
         }
       }
     }
@@ -189,7 +231,7 @@ internal BD_Board* map_create(Arena* arena, U64 seed) {
   return board;
 }
 
-internal void map_draw(BD_Board* board, MapAssets* assets, D_Camera camera) {
+internal void map_draw(BD_Board* board, MapAssets* assets, MapCache* cache, D_Camera camera) {
   V2 vp = wnd_size();
   d_rect((Rect){{0, 0}, {vp.x, vp.y}}, (V4){0.06f, 0.06f, 0.08f, 1});
 
@@ -211,28 +253,13 @@ internal void map_draw(BD_Board* board, MapAssets* assets, D_Camera camera) {
     // receive the neighbors' boundary spill over the world edge.
     I32 gx1 = x1 + 1;
     I32 gy1 = y1 + 1;
-    I32 cells_w = gx1 - x0 + 1;
-
-    ArenaTemp scratch = arena_get_scratch(0, 0);
-    TL_Cell* cells = push_array(scratch.arena, TL_Cell, (U64)cells_w * (U64)(gy1 - y0 + 1));
-    for(I32 y = y0; y <= gy1; y += 1) {
-      for(I32 x = x0; x <= gx1; x += 1) {
-        U32 nb[9];
-        for(I32 dy = -1; dy <= 1; dy += 1) {
-          for(I32 dx = -1; dx <= 1; dx += 1) {
-            nb[(dy + 1) * 3 + (dx + 1)] = bd_tile_at(board, (V2I){x + dx, y + dy})->terrain;
-          }
-        }
-        cells[(y - y0) * cells_w + (x - x0)] = tl_cell(&assets->tiling, nb, (V2I){x, y});
-      }
-    }
 
     // layer-grouped passes -- terrain surface, then standing objects -- so a
     // boundary tongue can never paint over a neighbor's overlay art
     for(TL_Layer pass = 0; pass < TL_Layer_COUNT; pass += 1) {
       for(I32 y = y0; y <= gy1; y += 1) {
         for(I32 x = x0; x <= gx1; x += 1) {
-          TL_Cell* cell = &cells[(y - y0) * cells_w + (x - x0)];
+          TL_Cell* cell = map_cache_cell(cache, board, (V2I){x, y});
           B32 on_board = x < board->width && y < board->height;
           for(U32 i = 0; i < cell->count; i += 1) {
             TL_Piece* piece = &cell->pieces[i];
@@ -245,14 +272,15 @@ internal void map_draw(BD_Board* board, MapAssets* assets, D_Camera camera) {
               } else {
                 d_sprite(assets->sprites[piece->id], r, (V4){0}); // zero tint = as-is
               }
-            } else if(on_board) {
-              d_rect(r, WG_TERRAIN_DATA[piece->klass].color); // artless ground; nil's table color is loud magenta
+            } else if(piece->klass != WG_TerrainType_Nil && on_board) {
+              // artless terrain draws its flat color; nil is the void and
+              // draws nothing (also keeps the sheet batch unbroken)
+              d_rect(r, WG_TERRAIN_DATA[piece->klass].color);
             }
           }
         }
       }
     }
-    arena_release_scratch(scratch);
 
     // features as half-segments, tile center toward each connected neighbor;
     // the neighbor draws the matching half, so connections read as one line
@@ -507,6 +535,7 @@ typedef struct {
 typedef struct {
   B32 initialised;
   BD_Board* board;
+  MapCache map_cache;
   V2I waypoints[4];
   Entity entities[3];
   F32 move_timer;
@@ -612,6 +641,7 @@ int main(void) {
     if(!game.initialised) {
       arena_clear(game_arena);
       game_init(game_arena, &game, game_next_seed++);
+      game.map_cache = map_cache_make(game_arena, game.board->width, game.board->height, map_assets.tiling);
       // Reset the camera
       camera.center = (V2){game.board->width * MAP_TILE / 2, game.board->height * MAP_TILE / 2};
       camera.zoom = 0.5f; // whole map in view; scroll to zoom in
@@ -621,7 +651,7 @@ int main(void) {
 
     d_frame_begin(frame_arena, wnd_size_px(), wnd_scale());
     {
-      map_draw(game.board, &map_assets, camera); // fp: parked for the pacing experiment below
+      map_draw(game.board, &map_assets, &game.map_cache, camera); // fp: parked for the pacing experiment below
       // test_render(camera); // fp: parked draw-layer demo scene
 
       fps_update(&fps_counter);

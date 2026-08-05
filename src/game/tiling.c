@@ -83,19 +83,15 @@ internal TL_Cell tl_cell(TL_Config* config, U32 neighborhood[9], V2I p) {
   U32 klass = nb[4];
   TL_Class* def = &config->classes[klass];
 
-  //- ground: a world-space window of the class's torus, so neighboring
-  // cells continue one seamless texture
-  {
-    TL_Piece* piece = &result.pieces[result.count];
-    result.count += 1;
-    piece->klass = klass;
-    piece->layer = TL_Layer_Surface;
-    piece->id = def->ground_ids[p.y & (TL_TORUS_GRID - 1)][p.x & (TL_TORUS_GRID - 1)];
-  }
-
-  //- boundary layers at the NW dual cell (corners: NW, N, W, self)
+  //- the NW dual cell's ground stack (corners: NW, N, W, self): bottom
+  // class full, higher classes through their case masks, in covering order.
+  // Windows are cut on the offset grid, so [(p-1)&3] is exactly the
+  // world-space slice of the torus under this dual cell -- pure and mixed
+  // cells alike continue one seamless texture per class.
   {
     U32 corners[4] = {nb[0], nb[1], nb[3], nb[4]}; // TL_Corner_* bit order
+    U32 wx = (U32)((p.x - 1) & (TL_TORUS_GRID - 1));
+    U32 wy = (U32)((p.y - 1) & (TL_TORUS_GRID - 1));
     U32 present[4];
     U32 present_count = 0;
     for(U32 i = 0; i < 4; i += 1) {
@@ -106,11 +102,21 @@ internal TL_Cell tl_cell(TL_Config* config, U32 neighborhood[9], V2I p) {
         present_count += 1;
       }
     }
-    // ascending covering order; [0] is the background and emits no layer
+    // ascending covering order
     for(U32 i = 1; i < present_count; i += 1) {
       for(U32 j = i; j > 0 && tl__order(config, present[j]) < tl__order(config, present[j - 1]); j -= 1) {
         Swap(U32, present[j], present[j - 1]);
       }
+    }
+    // bottom: drawn full, as if there were no border
+    {
+      U32 bottom = present[0];
+      TL_Piece* piece = &result.pieces[result.count];
+      result.count += 1;
+      piece->id = config->classes[bottom].ground_ids[wy][wx];
+      piece->klass = bottom;
+      piece->layer = TL_Layer_Surface;
+      piece->offset = (V2){-0.5f, -0.5f};
     }
     for(U32 i = 1; i < present_count; i += 1) {
       U32 layer_klass = present[i];
@@ -120,16 +126,12 @@ internal TL_Cell tl_cell(TL_Config* config, U32 neighborhood[9], V2I p) {
         if(tl__order(config, corners[c]) >= tl__order(config, layer_klass)) { code |= 1u << c; }
       }
       if(config->mask_counts[code] == 0) { continue; }
-      // the spill is the class's own ground through the case mask; a class
-      // with no ground has nothing to spill. The window is hash-picked, not
-      // world-aligned -- tongue noise over tile noise reads fine.
-      U32 window = tl__noise(config->seed, p, 2 + layer_klass);
-      U32 ground_id = layer_def->ground_ids[(window >> 2) & (TL_TORUS_GRID - 1)][window & (TL_TORUS_GRID - 1)];
-      if(ground_id == 0) { continue; }
+      U32 ground_id = layer_def->ground_ids[wy][wx];
+      if(ground_id == 0) { continue; } // no ground, nothing to spill
       TL_Piece* piece = &result.pieces[result.count];
       result.count += 1;
       piece->id = ground_id;
-      piece->mask_id = config->mask_ids[code][tl__noise(config->seed, p, 6 + layer_klass) % config->mask_counts[code]];
+      piece->mask_id = config->mask_ids[code][tl__noise(config->seed, p, 2 + layer_klass) % config->mask_counts[code]];
       piece->klass = layer_klass;
       piece->layer = TL_Layer_Surface;
       piece->offset = (V2){-0.5f, -0.5f};
