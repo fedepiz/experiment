@@ -63,5 +63,11 @@ int  cocoa_next_event(Cocoa_Event* out);
 // retina).
 void  cocoa_gl_equip(void);
 void  cocoa_gl_swap(void);
+void  cocoa_gl_set_swap_interval(int interval);
 void  cocoa_framebuffer_size(float* out_width, float* out_height);
 float cocoa_backing_scale(void);
+
+// nominal refresh rate of the screen the window sits on, in Hz; 0 when there
+// is no window or no screen (re-resolves on every call, so a drag between
+// mixed-rate monitors updates the answer)
+float cocoa_refresh_rate(void);

@@ -317,6 +317,13 @@ void cocoa_gl_swap(void) {
   [cocoa_state.gl_context flushBuffer];
 }
 
+void cocoa_gl_set_swap_interval(int interval) {
+  if(cocoa_state.gl_context != nil) {
+    GLint value = interval;
+    [cocoa_state.gl_context setValues:&value forParameter:NSOpenGLContextParameterSwapInterval];
+  }
+}
+
 void cocoa_framebuffer_size(float* out_width, float* out_height) {
   float w = 0, h = 0;
   if(cocoa_state.is_open) {
@@ -333,6 +340,23 @@ float cocoa_backing_scale(void) {
   float result = 1.0f;
   if(cocoa_state.is_open) {
     result = (float)[cocoa_state.window backingScaleFactor];
+  }
+  return result;
+}
+
+float cocoa_refresh_rate(void) {
+  float result = 0;
+  if(cocoa_state.is_open) {
+    @autoreleasepool {
+      // maximumFramesPerSecond rather than CGDisplayModeGetRefreshRate: the
+      // CG call reports 0 on built-in panels, and this one already speaks the
+      // nominal rate ProMotion paces to (120). [window screen] tracks the
+      // screen the window mostly sits on, so no per-monitor cache is needed
+      NSScreen* screen = [cocoa_state.window screen];
+      if(screen != nil) {
+        result = (float)[screen maximumFramesPerSecond];
+      }
+    }
   }
   return result;
 }

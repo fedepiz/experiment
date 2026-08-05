@@ -1,4 +1,4 @@
-﻿////////////////////////////////
+////////////////////////////////
 //~ fp: Layer Includes
 //
 // The only file the compiler is pointed at. All headers first, then all
@@ -51,7 +51,7 @@ global V4 MAP_PAWN_COLORS[] = {
 
 // ground tiles are world-space slices: a 4x4 seamless torus per terrain,
 // indexed by map position, so neighboring tiles continue one texture
-#define MAP_GROUND_GRID 4
+#define MAP_GROUND_GRID     4
 #define MAP_GROUND_VARIANTS (MAP_GROUND_GRID * MAP_GROUND_GRID)
 
 typedef struct {
@@ -189,7 +189,7 @@ internal BD_Board* map_create(Arena* arena, U64 seed) {
   return board;
 }
 
-internal void map_render(BD_Board* board, MapAssets* assets, D_Camera camera) {
+internal void map_draw(BD_Board* board, MapAssets* assets, D_Camera camera) {
   V2 vp = wnd_size();
   d_rect((Rect){{0, 0}, {vp.x, vp.y}}, (V4){0.06f, 0.06f, 0.08f, 1});
 
@@ -623,7 +623,7 @@ int main(void) {
 
     d_frame_begin(frame_arena, wnd_size_px(), wnd_scale());
     {
-      map_render(game.board, &map_assets, camera); // fp: parked for the pacing experiment below
+      map_draw(game.board, &map_assets, camera); // fp: parked for the pacing experiment below
       // test_render(camera); // fp: parked draw-layer demo scene
 
       fps_update(&fps_counter);

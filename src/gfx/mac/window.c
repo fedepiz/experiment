@@ -65,18 +65,11 @@ internal F32 wnd_scale(void) {
 }
 
 internal void wnd_set_swap_interval(I32 interval) {
-  // needs a cocoa-layer call (NSOpenGLCPSwapInterval); trips loudly so it
-  // isn't forgotten
-  Unused(interval);
-  NotImplemented;
+  cocoa_gl_set_swap_interval((int)interval);
 }
 
 internal F32 wnd_refresh_rate(void) {
-  // no CGDisplay query through the cocoa layer yet; trips loudly rather than
-  // returning a quiet 0 (which would silently disable frame-time snapping
-  // and be forgotten)
-  NotImplemented;
-  return 0;
+  return (F32)cocoa_refresh_rate();
 }
 
 ////////////////////////////////
