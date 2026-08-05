@@ -131,13 +131,16 @@ internal WG_Params wg_params_load(Arena* arena, String8 path) {
   params.river_moisture = tb_get_num(world, str8_lit("river_moisture"), 0);
   params.continent_edge = tb_get_num(world, str8_lit("continent_edge"), 0);
   params.continent_smoothness = tb_get_num(world, str8_lit("continent_smoothness"), 0);
+  params.plate_spacing = tb_get_num(world, str8_lit("plate_spacing"), 0);
+  params.plate_fuzz = tb_get_num(world, str8_lit("plate_fuzz"), 0);
+  params.plate_fuzz_scale = tb_get_num(world, str8_lit("plate_fuzz_scale"), 0);
+  params.uplift_height = tb_get_num(world, str8_lit("uplift_height"), 0);
+  params.uplift_width = tb_get_num(world, str8_lit("uplift_width"), 0);
+  params.uplift_noise = tb_get_num(world, str8_lit("uplift_noise"), 0);
+  params.uplift_noise_scale = tb_get_num(world, str8_lit("uplift_noise_scale"), 0);
+  params.uplift_ridged = tb_get_num(world, str8_lit("uplift_ridged"), 0);
+  params.uplift_ridged_scale = tb_get_num(world, str8_lit("uplift_ridged_scale"), 0);
   params.min_region_size = (I32)tb_get_num(world, str8_lit("min_region_size"), 0);
-  params.ridge_count = (I32)tb_get_num(world, str8_lit("ridge_count"), 0);
-  params.ridge_height = tb_get_num(world, str8_lit("ridge_height"), 0);
-  params.ridge_width = tb_get_num(world, str8_lit("ridge_width"), 0);
-  params.ridge_wander = tb_get_num(world, str8_lit("ridge_wander"), 0);
-  params.ridge_min_length = tb_get_num(world, str8_lit("ridge_min_length"), 0);
-  params.elevation_amplitude = tb_get_num(world, str8_lit("elevation_amplitude"), 0);
 
   //- fp: terrain rows, in file order; row 0 is the baked nil
   {
@@ -202,7 +205,15 @@ internal WG_Params wg_params_load(Arena* arena, String8 path) {
   // the blend must complete before the border, or the border isn't water
   params.continent_smoothness = Clamp(0.001f, params.continent_smoothness,
                                       Max(params.continent_edge, 0.001f));
-  params.ridge_count = Clamp(0, params.ridge_count, 64);
+  params.plate_spacing = ClampBot(params.plate_spacing, 2.0f);
+  params.plate_fuzz = ClampBot(params.plate_fuzz, 0.0f);
+  params.plate_fuzz_scale = ClampBot(params.plate_fuzz_scale, 1.0f);
+  params.uplift_height = ClampBot(params.uplift_height, 0.0f);
+  params.uplift_width = ClampBot(params.uplift_width, 0.5f);
+  params.uplift_noise = Clamp(0.0f, params.uplift_noise, 1.0f);
+  params.uplift_noise_scale = ClampBot(params.uplift_noise_scale, 1.0f);
+  params.uplift_ridged = Clamp(0.0f, params.uplift_ridged, 1.0f);
+  params.uplift_ridged_scale = ClampBot(params.uplift_ridged_scale, 1.0f);
   params.river_min_length = ClampBot(params.river_min_length, 0);
   params.river_max_tries = ClampBot(params.river_max_tries, 0);
   params.pond_max_tiles = ClampBot(params.pond_max_tiles, 1);
@@ -265,87 +276,228 @@ internal F32 wg__fbm(U64 seed, F32 x, F32 y, I32 octaves, F32 persistence) {
   return sum / total;
 }
 
+// ridged fBm: each octave folds the signed noise around zero (1 - |2n - 1|,
+// squared to sharpen the crease), so maxima land on the winding zero-crossing
+// lines of smooth noise -- thin crests and V-valleys instead of soft blobs
+internal F32 wg__ridged_fbm(U64 seed, F32 x, F32 y, I32 octaves, F32 persistence) {
+  F32 sum = 0;
+  F32 total = 0;
+  F32 amplitude = 1.0f;
+  for(I32 octave = 0; octave < octaves; octave += 1) {
+    F32 n = wg__value_noise(seed + (U64)octave * 0x9E3779B97F4A7C15ull, x, y);
+    F32 folded = 1.0f - fabsf(2.0f * n - 1.0f);
+    sum += amplitude * folded * folded;
+    total += amplitude;
+    amplitude *= persistence;
+    x *= 2.0f;
+    y *= 2.0f;
+  }
+  return sum / total;
+}
+
+////////////////////////////////
+//~ fp: Tectonics
+//
+// The map splits into tectonic plates: fuzzy voronoi cells around a jittered
+// grid of seed points (one seed per plate_spacing-sized cell -- blue-noise-
+// ish spacing, and density stays constant across map sizes). Each plate
+// drifts with a hashed velocity; where the relative motion across a border
+// presses the plates together, the border tiles seed a ridge whose strength
+// is the compression. Uplift then falls off with distance to the nearest
+// ridge tile (chamfer-propagated, near-euclidean), the distance warped by
+// noise so ranges pinch and wander, and the result shaped by ridged noise so
+// crests break into peaks and saddles instead of running as smooth walls.
+
+#define WG__PLATE_SALT 0x6a09e667f3bcc909ull
+
+internal V2 wg__plate_seed(WG_Params* params, U64 seed, I32 cx, I32 cy) {
+  U64 salt = seed ^ WG__PLATE_SALT;
+  V2 p;
+  p.x = ((F32)cx + wg__noise01(salt + 1, cx, cy)) * params->plate_spacing;
+  p.y = ((F32)cy + wg__noise01(salt + 2, cx, cy)) * params->plate_spacing;
+  return p;
+}
+
+internal V2 wg__plate_velocity(U64 seed, I32 cx, I32 cy) {
+  U64 salt = seed ^ WG__PLATE_SALT;
+  F32 angle = 6.2831853f * wg__noise01(salt + 3, cx, cy);
+  F32 magnitude = wg__noise01(salt + 4, cx, cy);
+  return (V2){magnitude * cosf(angle), magnitude * sinf(angle)};
+}
+
+// fuzzy voronoi lookup: the query point warps by noise before the nearest-
+// seed search, so borders wander organically; plate_fuzz = 0 degrades to
+// exact voronoi. One seed per cell means scanning the two-ring around the
+// warped point's cell finds the true nearest (worley-style).
+internal I32 wg__plate_at(WG_Params* params, U64 seed, I32 gx, I32 gy, I32 x, I32 y) {
+  U64 salt = seed ^ WG__PLATE_SALT;
+  F32 fx = (F32)x;
+  F32 fy = (F32)y;
+  if(params->plate_fuzz > 0) {
+    F32 s = params->plate_fuzz_scale;
+    fx += params->plate_fuzz * (2.0f * wg__fbm(salt + 5, (F32)x / s, (F32)y / s, 2, 0.5f) - 1.0f);
+    fy += params->plate_fuzz * (2.0f * wg__fbm(salt + 6, (F32)x / s, (F32)y / s, 2, 0.5f) - 1.0f);
+  }
+  I32 ccx = (I32)floorf(fx / params->plate_spacing);
+  I32 ccy = (I32)floorf(fy / params->plate_spacing);
+  I32 best = 0;
+  F32 best_d2 = 1e30f;
+  for(I32 cy = ClampBot(ccy - 2, 0); cy <= ClampTop(ccy + 2, gy - 1); cy += 1) {
+    for(I32 cx = ClampBot(ccx - 2, 0); cx <= ClampTop(ccx + 2, gx - 1); cx += 1) {
+      V2 p = wg__plate_seed(params, seed, cx, cy);
+      F32 dx = fx - p.x;
+      F32 dy = fy - p.y;
+      F32 d2 = dx * dx + dy * dy;
+      if(d2 < best_d2) {
+        best_d2 = d2;
+        best = cy * gx + cx;
+      }
+    }
+  }
+  return best;
+}
+
+// compression across the border between plates a and b: relative velocity
+// projected on the a->b axis. Positive presses the plates together; unit-
+// capped velocities bound it to [-2,2], so *0.5 normalizes into [0,1].
+// Divergent and shearing borders score 0 -- rifts and trenches, later.
+internal F32 wg__plate_compression(WG_Params* params, U64 seed, I32 gx, I32 a, I32 b) {
+  V2 pa = wg__plate_seed(params, seed, a % gx, a / gx);
+  V2 pb = wg__plate_seed(params, seed, b % gx, b / gx);
+  V2 va = wg__plate_velocity(seed, a % gx, a / gx);
+  V2 vb = wg__plate_velocity(seed, b % gx, b / gx);
+  V2 axis = v2_norm(v2_sub(pb, pa), (V2){1, 0});
+  F32 conv = (va.x - vb.x) * axis.x + (va.y - vb.y) * axis.y;
+  return ClampBot(conv, 0.0f) * 0.5f;
+}
+
+// the whole plate pipeline, one uplift value per tile into out_uplift
+internal void wg__uplift_field(WG_Params* params, U64 seed, F32* out_uplift) {
+  I32 w = params->width;
+  I32 h = params->height;
+  I32 gx = (I32)ceilf((F32)w / params->plate_spacing);
+  I32 gy = (I32)ceilf((F32)h / params->plate_spacing);
+  U64 salt = seed ^ WG__PLATE_SALT;
+  ArenaTemp scratch = arena_get_scratch(0, 0);
+
+  //- fp: assign every tile its plate
+  I32* plate = push_array_no_zero(scratch.arena, I32, (U64)w * h);
+  for(I32 y = 0; y < h; y += 1) {
+    for(I32 x = 0; x < w; x += 1) {
+      plate[(U64)y * w + x] = wg__plate_at(params, seed, gx, gy, x, y);
+    }
+  }
+
+  //- fp: seed ridges: checking right and down covers every interior border
+  //  edge exactly once; both sides join the ridge, and a tile touching two
+  //  borders keeps the strongest press
+  F32* dist = push_array_no_zero(scratch.arena, F32, (U64)w * h);
+  F32* force = push_array_no_zero(scratch.arena, F32, (U64)w * h);
+  for(U64 i = 0; i < (U64)w * h; i += 1) {
+    dist[i] = 1e9f;
+    force[i] = 0;
+  }
+  for(I32 y = 0; y < h; y += 1) {
+    for(I32 x = 0; x < w; x += 1) {
+      U64 i = (U64)y * w + x;
+      for(I32 k = 0; k < 2; k += 1) {
+        I32 nx = k == 0 ? x + 1 : x;
+        I32 ny = k == 0 ? y : y + 1;
+        if(nx >= w || ny >= h) { continue; }
+        U64 j = (U64)ny * w + nx;
+        if(plate[i] == plate[j]) { continue; }
+        F32 compression = wg__plate_compression(params, seed, gx, plate[i], plate[j]);
+        if(compression <= 0) { continue; }
+        dist[i] = 0;
+        dist[j] = 0;
+        force[i] = Max(force[i], compression);
+        force[j] = Max(force[j], compression);
+      }
+    }
+  }
+
+  //- fp: chamfer distance transform, two passes: dist becomes near-euclidean
+  //  distance to the closest ridge tile, and force rides along with it, so
+  //  every tile knows how hard its nearest ridge presses
+  for(I32 y = 0; y < h; y += 1) {
+    for(I32 x = 0; x < w; x += 1) {
+      U64 i = (U64)y * w + x;
+      I32 ox[4] = {-1, -1, 0, 1};
+      I32 oy[4] = {0, -1, -1, -1};
+      F32 oc[4] = {1.0f, 1.41421356f, 1.0f, 1.41421356f};
+      for(I32 k = 0; k < 4; k += 1) {
+        I32 nx = x + ox[k];
+        I32 ny = y + oy[k];
+        if(nx < 0 || nx >= w || ny < 0 || ny >= h) { continue; }
+        U64 j = (U64)ny * w + nx;
+        if(dist[j] + oc[k] < dist[i]) {
+          dist[i] = dist[j] + oc[k];
+          force[i] = force[j];
+        }
+      }
+    }
+  }
+  for(I32 y = h - 1; y >= 0; y -= 1) {
+    for(I32 x = w - 1; x >= 0; x -= 1) {
+      U64 i = (U64)y * w + x;
+      I32 ox[4] = {1, 1, 0, -1};
+      I32 oy[4] = {0, 1, 1, 1};
+      F32 oc[4] = {1.0f, 1.41421356f, 1.0f, 1.41421356f};
+      for(I32 k = 0; k < 4; k += 1) {
+        I32 nx = x + ox[k];
+        I32 ny = y + oy[k];
+        if(nx < 0 || nx >= w || ny < 0 || ny >= h) { continue; }
+        U64 j = (U64)ny * w + nx;
+        if(dist[j] + oc[k] < dist[i]) {
+          dist[i] = dist[j] + oc[k];
+          force[i] = force[j];
+        }
+      }
+    }
+  }
+
+  //- fp: uplift: a quadratic falloff of the noise-warped distance, scaled by
+  //  the ridge's force, shaped by ridged noise
+  for(I32 y = 0; y < h; y += 1) {
+    for(I32 x = 0; x < w; x += 1) {
+      U64 i = (U64)y * w + x;
+      out_uplift[i] = 0;
+      if(force[i] <= 0) { continue; }
+      F32 d = dist[i];
+      if(params->uplift_noise > 0) {
+        F32 s = params->uplift_noise_scale;
+        F32 wobble = wg__fbm(salt + 7, (F32)x / s, (F32)y / s, 2, 0.5f);
+        d *= 1.0f + params->uplift_noise * (2.0f * wobble - 1.0f);
+      }
+      F32 t = Clamp(0.0f, d / params->uplift_width, 1.0f);
+      F32 bell = (1.0f - t) * (1.0f - t);
+      if(bell <= 0) { continue; }
+      F32 shape = 1.0f;
+      if(params->uplift_ridged > 0) {
+        F32 s = params->uplift_ridged_scale;
+        F32 ridged = wg__ridged_fbm(salt + 8, (F32)x / s, (F32)y / s, 3, 0.5f);
+        shape += params->uplift_ridged * (ridged - 1.0f); // lerp(1 .. ridged)
+      }
+      out_uplift[i] = params->uplift_height * force[i] * bell * shape;
+    }
+  }
+  arena_release_scratch(scratch);
+}
+
 ////////////////////////////////
 //~ fp: Fields
 //
-// Elevation is fBm minus a radial falloff toward the map edge, so the border
-// tends to ocean and the land reads as a continent rather than wallpaper.
+// Elevation is fBm plus tectonic uplift, drowned toward the map edge, so the
+// border tends to ocean and the land reads as a continent rather than
+// wallpaper.
 
-#define WG__RIDGE_SALT 0x9e2f8c1b5a7d3e41ull
-#define WG__RIDGE_SAMPLES 64
-
-// tectonic ridge skeletons: jittered polylines between distant points,
-// sampled into out_points (WG__RIDGE_SAMPLES per ridge). Endpoints land
-// anywhere on the map: the rim drowns whatever crosses it, so a ridge can
-// run out to sea and surface as island arcs.
-internal I32 wg__build_ridges(WG_Params* params, U64 seed, V2* out_points) {
-  I32 count = 0;
-  F32 w = (F32)params->width;
-  F32 h = (F32)params->height;
-  for(I32 ridge = 0; ridge < params->ridge_count; ridge += 1) {
-    U64 salt = seed ^ WG__RIDGE_SALT;
-    V2 a = {0};
-    V2 b = {0};
-    // keep the longest pair seen: an unachievable minimum degrades to "as
-    // long as the map allows"
-    F32 best_d2 = -1.0f;
-    F32 min_len = params->ridge_min_length * Min(w, h);
-    for(I32 attempt = 0; attempt < 16; attempt += 1) {
-      V2 ca, cb;
-      ca.x = w * wg__noise01(salt + 1, ridge, attempt);
-      ca.y = h * wg__noise01(salt + 2, ridge, attempt);
-      cb.x = w * wg__noise01(salt + 3, ridge, attempt);
-      cb.y = h * wg__noise01(salt + 4, ridge, attempt);
-      F32 dx = cb.x - ca.x;
-      F32 dy = cb.y - ca.y;
-      F32 d2 = dx * dx + dy * dy;
-      if(d2 > best_d2) {
-        best_d2 = d2;
-        a = ca;
-        b = cb;
-      }
-      if(d2 >= min_len * min_len) { break; }
-    }
-    F32 dx = b.x - a.x;
-    F32 dy = b.y - a.y;
-    F32 len = sqrtf(dx * dx + dy * dy);
-    F32 px = -dy / Max(len, 0.001f); // unit perpendicular carries the wander
-    F32 py = dx / Max(len, 0.001f);
-    for(I32 s = 0; s < WG__RIDGE_SAMPLES; s += 1) {
-      F32 t = (F32)s / (F32)(WG__RIDGE_SAMPLES - 1);
-      // smooth 1d noise along the spine; the sine pins wander at the ends
-      F32 wander = params->ridge_wander * sinf(3.14159265f * t) *
-                   (2.0f * wg__value_noise(salt + 5, t * 6.0f, (F32)ridge * 17.0f) - 1.0f);
-      out_points[count].x = a.x + dx * t + px * wander;
-      out_points[count].y = a.y + dy * t + py * wander;
-      count += 1;
-    }
-  }
-  return count;
-}
-
-internal F32 wg__elevation_at(WG_Params* params, U64 seed, V2* ridge_points,
-                              I32 ridge_point_count, I32 x, I32 y) {
-  F32 noise = wg__fbm(seed, (F32)x / params->elevation_scale,
-                      (F32)y / params->elevation_scale, params->elevation_octaves,
-                      params->elevation_persistence);
-  // noise deviates around the midline by elevation_amplitude, leaving the
-  // ridges as the mountain-maker while noise shapes flanks and passes
-  F32 e = 0.5f + (noise - 0.5f) * params->elevation_amplitude;
-  if(ridge_point_count > 0) {
-    F32 best = 1e9f;
-    for(I32 i = 0; i < ridge_point_count; i += 1) {
-      F32 dx = (F32)x - ridge_points[i].x;
-      F32 dy = (F32)y - ridge_points[i].y;
-      F32 d2 = dx * dx + dy * dy;
-      if(d2 < best) { best = d2; }
-    }
-    F32 u = sqrtf(best) / Max(params->ridge_width, 0.5f);
-    if(u < 1.0f) {
-      F32 bell = 1.0f - u * u;
-      e += params->ridge_height * bell * bell;
-    }
-  }
+internal F32 wg__elevation_at(WG_Params* params, U64 seed, F32 uplift, I32 x, I32 y) {
+  F32 e = wg__fbm(seed, (F32)x / params->elevation_scale,
+                  (F32)y / params->elevation_scale, params->elevation_octaves,
+                  params->elevation_persistence);
+  // uplift stacks on the noise base; the clamp keeps peaks inside the [0,1]
+  // domain the classification bands speak
+  e = ClampTop(e + uplift, 1.0f);
   F32 nx = 2.0f * (F32)x / (F32)Max(params->width - 1, 1) - 1.0f; // [-1,1] across the map
   F32 ny = 2.0f * (F32)y / (F32)Max(params->height - 1, 1) - 1.0f;
   // the continental rim: inside continent_edge the heightmap stands as
@@ -563,16 +715,15 @@ internal BD_Board* wg_generate(Arena* arena, WG_Params* params, U64 seed) {
   I32 h = params->height;
 
   //- fp: elevation field, kept for the whole generation -- classification
-  //  and rivers must agree on where downhill is. Tectonic ridges come first:
-  //  every later system (rivers, snowlines, foothills) hangs off elevation.
-  V2* ridge_points = push_array_no_zero(scratch.arena, V2,
-                                        (U64)Max(params->ridge_count, 1) * WG__RIDGE_SAMPLES);
-  I32 ridge_point_count = wg__build_ridges(params, seed, ridge_points);
+  //  and rivers must agree on where downhill is. Tectonic uplift comes
+  //  first: every later system (rivers, snowlines) hangs off elevation.
+  F32* uplift = push_array_no_zero(scratch.arena, F32, (U64)w * h);
+  wg__uplift_field(params, seed, uplift);
   F32* elevation = push_array_no_zero(scratch.arena, F32, (U64)w * h);
   for(I32 y = 0; y < h; y += 1) {
     for(I32 x = 0; x < w; x += 1) {
       elevation[(U64)y * w + x] =
-          wg__elevation_at(params, seed, ridge_points, ridge_point_count, x, y);
+          wg__elevation_at(params, seed, uplift[(U64)y * w + x], x, y);
     }
   }
 

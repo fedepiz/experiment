@@ -124,18 +124,22 @@ typedef struct {
   F32 continent_edge;
   F32 continent_smoothness;
 
-  //- fp: tectonic ridges: jittered polylines between distant points; their
-  //  distance field adds to elevation, so mountains come out as ranges, not
-  //  noise blobs. Ridges may run out to sea -- the rim drowns what crosses
-  //  it, surfacing as island arcs. elevation_amplitude scales the noise's
-  //  deviation around 0.5, making room for the ridges to be the mountain-
-  //  maker while noise supplies flanks and passes.
-  I32 ridge_count;       // ranges per world; 0 = pure noise elevation
-  F32 ridge_height;      // elevation added at the ridgeline
-  F32 ridge_width;       // tiles from spine to foot of the falloff
-  F32 ridge_wander;      // perpendicular meander amplitude, tiles
-  F32 ridge_min_length;  // endpoints at least this fraction of min(w,h) apart
-  F32 elevation_amplitude;
+  //- fp: tectonic plates: the map splits into fuzzy voronoi cells around
+  //  blue-noise seed points (one per plate_spacing-sized grid cell, so plate
+  //  size is map-scale independent). Each plate drifts with a hashed
+  //  velocity; borders whose relative motion presses inward seed ridges.
+  //  Uplift falls off with distance to the nearest ridge -- the distance
+  //  warped by noise so ranges pinch and wander -- and is shaped by ridged
+  //  noise so crests break into peaks and saddles instead of smooth walls.
+  F32 plate_spacing;       // mean tiles between plate seeds
+  F32 plate_fuzz;          // border warp amplitude, tiles; 0 = exact voronoi
+  F32 plate_fuzz_scale;    // tiles per warp-noise cell
+  F32 uplift_height;       // elevation added at a full-force ridge
+  F32 uplift_width;        // tiles from ridge spine to the foot of the falloff
+  F32 uplift_noise;        // distance warp strength, 0..1
+  F32 uplift_noise_scale;  // tiles per distance-warp-noise cell
+  F32 uplift_ridged;       // ridged-noise shaping blend, 0..1
+  F32 uplift_ridged_scale; // tiles per ridged-noise cell
 
   I32 river_count;      // rivers actually carved (the quota)...
   I32 river_max_tries;  // ...and the source attempts spent chasing it

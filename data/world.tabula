@@ -48,18 +48,22 @@ world = {
   continent_edge = 0.2
   continent_smoothness = 0.85
 
-  # tectonic ridges: jittered polylines between distant points add
-  # elevation, so mountains form ranges instead of noise blobs. Ridges may
-  # run out to sea -- the rim drowns what crosses it, surfacing as island
-  # arcs. elevation_amplitude scales the noise's deviation around 0.5,
-  # leaving the ridges as the mountain-maker; noise supplies flanks and
-  # passes.
-  ridge_count = 2
-  ridge_height = 0.3
-  ridge_width = 4        # tiles from spine to the foot of the falloff
-  ridge_wander = 6       # perpendicular meander amplitude, tiles
-  ridge_min_length = 0.45 # endpoints at least this fraction of min(w,h) apart
-  elevation_amplitude = 0.7
+  # tectonic plates: the map splits into fuzzy voronoi cells around blue-
+  # noise seed points (one per plate_spacing-sized grid cell, so plate size
+  # is map-scale independent). Each plate drifts with a random velocity;
+  # borders whose relative motion presses inward become ridges. Uplift falls
+  # off with distance to the nearest ridge -- warped by noise so ranges
+  # pinch and wander -- and is shaped by ridged noise so crests break into
+  # peaks and saddles instead of smooth walls.
+  plate_spacing = 40      # mean tiles between plate seeds
+  plate_fuzz = 5          # border warp amplitude, tiles; 0 = exact voronoi
+  plate_fuzz_scale = 8    # tiles per warp-noise cell
+  uplift_height = 0.8     # elevation added at a full-force ridge
+  uplift_width = 12       # tiles from ridge spine to the foot of the falloff
+  uplift_noise = 0.5      # distance warp strength, 0..1
+  uplift_noise_scale = 16 # tiles per distance-warp-noise cell
+  uplift_ridged = 0.6     # ridged-noise shaping blend, 0..1
+  uplift_ridged_scale = 8 # tiles per ridged-noise cell
 
   # terrain regions smaller than this dissolve into their most common
   # neighbor after classification (0 = off): kills single-tile speck noise
