@@ -459,18 +459,20 @@ internal F32 bd__influence_at(BD_Influence* source, F32 dist) {
   return result;
 }
 
+// a key's standing for one tile, when influence alone cannot separate two
+// claims: lowest wins. It is drawn from the key and the tile and nothing
+// else, so the winner is the same whatever order the sources are scanned in,
+// and stays the same every recompute.
+internal U64 bd__influence_tiebreak(U64 key, U64 idx) {
+  return bd__key_hash(key ^ bd__key_hash(idx * 0x9e3779b97f4a7c15ull));
+}
+
 internal BD_InfluenceAssignment* bd_influence_map(Arena* arena, BD_Board* board, BD_InfluenceArray sources, U64 key_unassigned) {
   U64 tile_count = (U64)board->width * board->height;
   BD_InfluenceAssignment* result = push_array_no_zero(arena, BD_InfluenceAssignment, tile_count);
   for(U64 idx = 0; idx < tile_count; idx += 1) {
     result[idx] = (BD_InfluenceAssignment){.key = key_unassigned};
   }
-
-  // a tile whose best influence is matched belongs to neither claimant. The
-  // strength stays recorded while contested, so a third source must actually
-  // beat it -- and a three-way tie stays a tie.
-  ArenaTemp scratch = arena_get_scratch(&arena, 1);
-  U8* contested = push_array(scratch.arena, U8, tile_count);
 
   for(U64 i = 0; i < sources.count; i += 1) {
     BD_Influence* source = &sources.elems[i];
@@ -490,22 +492,17 @@ internal BD_InfluenceAssignment* bd_influence_map(Arena* arena, BD_Board* board,
         F32 influence = bd__influence_at(source, bd_distance(pawn->pos, (V2I){x, y}));
         if(influence <= 0) { continue; }
         U64 idx = (U64)y * board->width + x;
-        if(influence > result[idx].strength) {
+        // strength decides; a dead heat goes to the tile's own tiebreak, so a
+        // contested border comes out speckled between its claimants
+        if(influence > result[idx].strength ||
+           (influence == result[idx].strength &&
+            bd__influence_tiebreak(source->key, idx) <
+                bd__influence_tiebreak(result[idx].key, idx))) {
           result[idx].key = source->key;
           result[idx].strength = influence;
-          contested[idx] = 0;
-        } else if(influence == result[idx].strength) {
-          contested[idx] = 1;
         }
       }
     }
   }
-
-  for(U64 idx = 0; idx < tile_count; idx += 1) {
-    if(contested[idx]) {
-      result[idx] = (BD_InfluenceAssignment){.key = key_unassigned};
-    }
-  }
-  arena_release_scratch(scratch);
   return result;
 }

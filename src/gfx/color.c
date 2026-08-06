@@ -80,3 +80,23 @@ internal V4 col_with_alpha(V4 color, F32 a) {
   V4 result = {color.x, color.y, color.z, a};
   return result;
 }
+
+// splitmix64 finalizer: consecutive hashes -- ids above all -- land far apart
+// on the wheel instead of shading into one another
+internal U64 col__hash_mix(U64 hash) {
+  hash ^= hash >> 30; hash *= 0xbf58476d1ce4e5b9ull;
+  hash ^= hash >> 27; hash *= 0x94d049bb133111ebull;
+  hash ^= hash >> 31;
+  return hash;
+}
+
+internal V4 col_rgb_from_hash(U64 hash) {
+  if(hash == 0) { return Col_Transparent; } // nothing to colour
+  U64 bits = col__hash_mix(hash);
+  // hue takes the whole wheel; saturation and value only span bands that stay
+  // legible, so no draw ever comes back near-black, near-white, or washed out
+  F32 h = (F32)((bits >> 40) & 0xFFFF) / 65536.0f;
+  F32 s = 0.55f + (F32)((bits >> 24) & 0xFF) / 255.0f * 0.35f;
+  F32 v = 0.65f + (F32)((bits >> 8) & 0xFF) / 255.0f * 0.30f;
+  return col_hsva(h, s, v, 1.0f);
+}

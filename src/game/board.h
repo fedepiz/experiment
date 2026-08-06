@@ -285,10 +285,13 @@ typedef struct {
   BD_Influence* elems;
 } BD_InfluenceArray;
 
-// what holds a tile. A tie between the strongest sources goes to nobody: the
-// tile reads back unassigned, exactly like one no source reaches.
+// what holds a tile. Only a tile no source reaches at all reads back
+// unassigned: equal claims are split by a hash of the key against the tile,
+// so a contested border speckles between its claimants tile by tile instead
+// of falling to nobody. That hash reads the key and the tile alone, so the
+// same sources always produce the same map, in any order.
 typedef struct {
-  U64 key;      // key_unassigned when unclaimed
+  U64 key;      // key_unassigned only when nothing reached this tile
   F32 strength; // the winning influence; 0 when unassigned
 } BD_InfluenceAssignment;
 

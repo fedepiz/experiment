@@ -7,6 +7,7 @@
 #include "base/tctx.h"
 #include "game/board.h"
 #include "game/thing_db.h"
+#include "gfx/color.h"
 
 ////////////////////////////////
 //~ fp: Game
@@ -103,7 +104,7 @@ internal void gm__extract(GM_Game* game) {
 // distance alone settles a border. Unlike extraction this writes the db, so
 // it runs after it, on the pawn positions extraction just reconciled.
 #define GM_INFLUENCE_STRENGTH 1.0f
-#define GM_INFLUENCE_RANGE    8.0f
+#define GM_INFLUENCE_RANGE    6.0f
 #define GM_INFLUENCE_DECAY    BD_InfluenceDecay_Linear
 internal void gm__home_derive(GM_Game* game) {
   TH_Db* db = game->db;
@@ -184,6 +185,14 @@ internal void gm_init(Arena* arena, GM_Game* game, U64 seed) {
     th_flag_set(db, id, TH_Flag_HasInfluence, true);
     th_flag_set(db, id, TH_Flag_Placed, true);
   }
+  // And another one
+  {
+    TH_Id id = th_spawn(db);
+    gm__xy_set(db, id, (V2I){102, 96});
+    th_ivar_set(db, id, TH_IVar_Sprite, GM_Sprite_Tholos);
+    th_flag_set(db, id, TH_Flag_HasInfluence, true);
+    th_flag_set(db, id, TH_Flag_Placed, true);
+  }
 
   th_commit(db);
   gm__extract(game);
@@ -256,9 +265,7 @@ internal GM_MapItems gm_map_items(Arena* arena, GM_Game* game, V2I min, V2I max)
       item->has_terrain = bd_in_bounds(board, item->pos);
 
       TH_Id home = th_field_ref_get(db, TH_FieldRef_Home, item->pos);
-      if(home) {
-        item->color = (V4){1, 1, 0, 1};
-      }
+      item->color = col_rgb_from_hash(home);
 
       for(I32 dy = -1; dy <= 1; dy += 1) {
         for(I32 dx = -1; dx <= 1; dx += 1) {
