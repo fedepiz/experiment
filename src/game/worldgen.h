@@ -5,38 +5,59 @@
 #include "base/arena.h"
 #include "base/strings.h"
 #include "tabula.h"
-#include "game/board.h"
+#include "game/thing_db.h"
 
 ////////////////////////////////
 //~ fp: Worldgen
 //
 // Procedural world generation: turns generation knobs and terrain rows --
-// both loaded from a tabula file -- into a populated board. This is where
-// board terrain ids get their meaning: they index the terrain rows below.
+// both loaded from a tabula file -- into a populated world, written as
+// fields into the thing database (TH_IField_Terrain and the feature masks).
+// This is where terrain ids get their meaning: they index the terrain type
+// table below.
 //
 // Generation is deterministic: same params, same seed, same world. All
 // randomness is integer-hash noise keyed on the seed passed to wg_generate --
 // there is no rng state anywhere.
 
 ////////////////////////////////
-//~ fp: Terrain Definitions
+//~ fp: Terrain Types
 //
-// Terrain is data: each `terrain_type = { ... }` entry in the world file
-// becomes one row here, in file order, and the row index is the terrain id
-// everywhere (board tiles, tiling classes, art prefixes). One fat row per
-// terrain carries what every consumer reads: identity and art naming, map
-// fallback color, boundary rank, overlay density, travel cost, and the
-// classification bands.
+// What a terrain *is*, apart from where generation puts it: static data,
+// filled by wg_params_load from the world file's terrain_type rows, in file
+// order -- the row index is the terrain id everywhere (TH_IField_Terrain
+// values, tiling classes, art prefixes). Row 0 is the reserved nil terrain
+// (ZII: an unpainted cell reads as nil -- impassable, loud magenta). Names
+// are copied into the rows, so the table outlives any load arena.
+
+#define WG_TERRAIN_CAP 24
+#define WG_TERRAIN_NAME_CAP 31
+
+typedef struct {
+  U8 name_len;                       // asset prefix and display name,
+  U8 name_chars[WG_TERRAIN_NAME_CAP]; // read via wg_terrain_name
+  V4 color;            // flat map color when a terrain has no ground art
+  U8 rank;             // boundary covering order; higher spills over lower
+  U32 overlay_density; // percent of interior cells carrying an overlay
+  F32 move_cost;       // cost to enter, <= 0 impassable (BD_TravelRules semantics)
+} WG_TerrainType;
+
+global WG_TerrainType WG_TERRAIN_TYPES[WG_TERRAIN_CAP];
+global U32 WG_TERRAIN_TYPE_COUNT;
+
+internal String8 wg_terrain_name(U32 type); // empty past the count
+internal U32 wg_terrain_by_name(String8 name); // 0 (nil) when unknown
+
+////////////////////////////////
+//~ fp: Terrain Classification
 //
+// The generation-only half of a terrain row: which field values claim it.
 // Classification is ordered FIRST MATCH: a tile takes the first row whose
 // declared bands all contain the tile's field values. Bands are closed
 // intervals; a zero band reads as "don't care" (ZII), so an all-zero row is
-// a catch-all -- the file's last row should be one. Row 0 is the reserved
-// nil terrain (ZII: an unpainted tile reads as nil -- impassable, loud
-// magenta); the classifier starts at row 1, and a tile no row claims stays
-// nil (wg_params_load reports any such gap in the band data).
-
-#define WG_TERRAIN_CAP 24
+// a catch-all -- the file's last row should be one. The classifier starts at
+// row 1, and a tile no row claims stays nil (wg_params_load reports any such
+// gap in the band data).
 
 typedef struct {
   F32 min;
@@ -44,18 +65,11 @@ typedef struct {
 } WG_Band; // zero band = don't care
 
 typedef struct {
-  String8 name;        // asset prefix and display name; lives on the load arena
-  V4 color;            // flat map color when a terrain has no ground art
-  U8 rank;             // boundary covering order; higher spills over lower
-  U32 overlay_density; // percent of interior cells carrying an overlay
-  F32 move_cost;       // cost to enter, <= 0 impassable (BD_TravelRules semantics)
-
-  //- classification bands
   WG_Band elevation;
   WG_Band moisture;
   WG_Band drainage;
   WG_Band temperature;
-  B32 needs_coast;     // only matches with the sea one step away
+  B32 needs_coast; // only matches with the sea one step away
 } WG_TerrainDef;
 
 
@@ -115,7 +129,8 @@ typedef struct {
   // read as noise, not terrain.
   I32 min_region_size;
 
-  //- fp: terrain rows, in file order (see WG_TerrainDef); [0] is baked nil
+  //- fp: classification bands, one row per terrain type, in file order
+  //  (see WG_TerrainDef); [0] is the baked nil. Mirrors WG_TERRAIN_TYPES.
   WG_TerrainDef terrains[WG_TERRAIN_CAP];
   U32 terrain_count;
 
@@ -169,15 +184,22 @@ typedef struct {
   F32 river_cross_cost;
 } WG_Params;
 
-// terrain names are pushed onto `arena`; everything else is by value
-internal WG_Params wg_params_load(Arena* arena, String8 path);
+// also (re)fills WG_TERRAIN_TYPES from the file's terrain rows
+internal WG_Params wg_params_load(String8 path);
 
 ////////////////////////////////
 //~ fp: Generation
 //
-// Allocates a board on `arena`, carves rivers downhill from high ground,
+// Writes a world into the thing database: sets the world size (asserted
+// against TH_WORLD_MAX_DIM), carves rivers downhill from high ground, and
 // classifies terrain from the fields (rivers first, so their valleys read as
-// wetter land), and installs travel rules from the terrain rows. The params
+// wetter land). Everything lands in TH_ fields -- TH_IField_Terrain and the
+// feature masks; previous field contents are overwritten. The params
 // describe a family of worlds; `seed` picks the member.
 
-internal BD_Board* wg_generate(Arena* arena, WG_Params* params, U64 seed);
+internal void wg_generate(TH_Db* db, WG_Params* params, U64 seed);
+
+// Feature masks are kept mirrored: connecting p toward d also sets the
+// opposite bit on p's neighbor. At the world edge the neighbor half is
+// simply dropped -- a river may flow off the world.
+internal void wg_field_connect(TH_Db* db, V2I p, Dir4 dir, TH_IField mask_field);

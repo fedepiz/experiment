@@ -7,40 +7,22 @@
 ////////////////////////////////
 //~ fp: Board
 //
-// The game board: a 2d tile grid plus everything positioned on it. The board
-// owns spatial state and answers spatial questions -- terrain per tile,
-// features (rivers, roads) as inter-tile connections, pawns standing on
-// tiles, and pathfinding over all of the above. It knows nothing else of the
-// game: terrain kinds, pawn kinds, and pawn identities are opaque numbers the
-// game gives meaning to elsewhere (what a terrain looks like or what a pawn
-// *is* are not board questions).
+// The game board: a DERIVED spatial index, never authoritative. The game's
+// truth lives elsewhere (the thing database's fields and things); the board
+// holds a mirror of it -- terrain per tile, features (rivers, roads) as
+// inter-tile connections, pawns standing on tiles -- shaped for spatial
+// questions and pathfinding, and recomputable from that truth at any time.
+// Whoever mirrors writes tiles directly through bd_tile_at and clears the
+// path cache after. The board knows nothing else of the game: terrain kinds,
+// pawn kinds, and pawn identities are opaque numbers the game gives meaning
+// to elsewhere (what a terrain looks like or what a pawn *is* are not board
+// questions).
 //
 // Coordinates are integer tile positions, (0,0) top-left, x right, y down.
 // Reads are total: out-of-bounds and stale-handle lookups resolve to shared
 // nil sentinels (read-only by convention), so query chains never crash.
-// Mutations that carry bookkeeping (features, pawns) go through functions,
-// which no-op on anything nil or out of bounds; plain per-tile data (terrain)
-// is written directly through bd_tile_at.
-
-////////////////////////////////
-//~ fp: Directions
-//
-// The four tile neighborhoods, clockwise from north -- movement and features
-// are 4-connected, DF-style. Feature connection masks below index bits by
-// these, so the order is load-bearing: opposite direction == +2 mod 4.
-
-typedef U32 BD_Dir;
-enum {
-  BD_Dir_N,
-  BD_Dir_E,
-  BD_Dir_S,
-  BD_Dir_W,
-  BD_Dir_COUNT,
-};
-
-internal V2I    bd_dir_delta(BD_Dir dir);
-internal BD_Dir bd_dir_opposite(BD_Dir dir);
-internal BD_Dir bd_dir_from_delta(V2I delta); // BD_Dir_COUNT when delta isn't a single step
+// Pawn mutations carry bookkeeping and go through functions, which no-op on
+// anything nil or out of bounds.
 
 ////////////////////////////////
 //~ fp: Features
@@ -69,7 +51,7 @@ typedef U16 BD_Terrain;
 typedef struct BD_Pawn BD_Pawn;
 typedef struct {
   BD_Terrain terrain;
-  U8 features[BD_Feature_COUNT]; // connection masks, bit d = toward BD_Dir d
+  U8 features[BD_Feature_COUNT]; // connection masks, bit d = toward Dir4 d
 
   // pawns standing here, maintained by pawn place/remove
   BD_Pawn* first_pawn;
@@ -104,11 +86,14 @@ struct BD_Pawn {
 // rules are valid (ZII): every terrain costs 1, roads and rivers change
 // nothing.
 
+#define BD_TERRAIN_CAP 32
+
 typedef struct {
   // cost to enter a tile of terrain t is terrain_cost[t]; <= 0 means
   // impassable, and ids >= terrain_cost_count are impassable too. A zero
-  // pointer means every terrain costs 1.
-  F32* terrain_cost;
+  // count means every terrain costs 1. Embedded, not pointed to: the costs
+  // are a cache of terrain data mirrored in, so A* never leaves the board.
+  F32 terrain_cost[BD_TERRAIN_CAP];
   U64 terrain_cost_count;
 
   // when > 0 and the step follows a road connection, this replaces the
@@ -129,9 +114,8 @@ typedef struct {
 // point pool; when either the entries or the pool fill up, the whole cache is
 // dropped and rebuilds on demand.
 //
-// The cache never observes map mutations. Feature connect/disconnect clear it
-// themselves; after writing terrain or rules directly, call
-// bd_path_cache_clear or stale paths will be served.
+// The cache never observes map mutations: after writing tiles or rules, call
+// bd_path_cache_clear or stale paths will be served (the game's mirror does).
 
 typedef struct {
   V2I from;
@@ -191,13 +175,11 @@ internal F32 bd_distance(V2I a, V2I b);       // euclidean, "as the crow flies"
 ////////////////////////////////
 //~ fp: Features
 //
-// Connections are kept mirrored: connecting p toward d also connects p's
-// neighbor toward opposite(d). At the map edge the neighbor half is simply
-// dropped -- a river may flow off the world.
+// Masks are mirrored data: the writer that mirrors them in keeps the
+// invariant that connecting p toward d also connects p's neighbor toward
+// opposite(d) (see wg_field_connect).
 
-internal U8   bd_feature_mask(BD_Board* board, V2I p, BD_Feature feature); // presence = mask != 0
-internal void bd_feature_connect(BD_Board* board, V2I p, BD_Dir dir, BD_Feature feature);
-internal void bd_feature_disconnect(BD_Board* board, V2I p, BD_Dir dir, BD_Feature feature);
+internal U8 bd_feature_mask(BD_Board* board, V2I p, BD_Feature feature); // presence = mask != 0
 
 ////////////////////////////////
 //~ fp: Pawns

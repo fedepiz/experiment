@@ -110,16 +110,16 @@ internal TL_Cell* map_cache_cell(MapCache* cache, GM_MapItem* item) {
   return cell;
 }
 
-internal MapAssets map_assets_load(WG_Params* params) {
+internal MapAssets map_assets_load(void) {
   MapAssets assets = {0};
   assets.sprite_count = 1; // id 0 = nil
-  assets.class_count = params->terrain_count;
+  assets.class_count = WG_TERRAIN_TYPE_COUNT;
   ArenaTemp scratch = arena_get_scratch(0, 0);
   d_spritesheet_begin(512, 512, D_Sampling_Smooth);
 
-  for(U32 type = 0; type < params->terrain_count; type += 1) {
-    WG_TerrainDef* def = &params->terrains[type];
-    String8 name = def->name;
+  for(U32 type = 0; type < WG_TERRAIN_TYPE_COUNT; type += 1) {
+    WG_TerrainType* def = &WG_TERRAIN_TYPES[type];
+    String8 name = wg_terrain_name(type);
     assets.fallback_colors[type] = def->color;
     tl_class_set(&assets.tiling, type, def->rank, def->overlay_density);
 
@@ -537,13 +537,6 @@ internal void fps_draw(FPS_Counter* counter) {
 // `app worlds N [first_seed]`: generate N worlds headless and print one CSV
 // row of metrics per world to stdout, for offline analysis.
 
-internal U32 report__terrain_by_name(WG_Params* params, String8 name) {
-  for(U32 i = 0; i < params->terrain_count; i += 1) {
-    if(str8_match(params->terrains[i].name, name, 0)) { return i; }
-  }
-  return 0;
-}
-
 typedef struct {
   U16 group;
   U16 touches_border;
@@ -568,8 +561,8 @@ internal I32 report__components(Arena* arena, U16* groups, I32 w, I32 h,
         V2I p = queue[head];
         comp.size += 1;
         if(p.x == 0 || p.y == 0 || p.x == w - 1 || p.y == h - 1) { comp.touches_border = 1; }
-        for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += 1) {
-          V2I n = v2i_add(p, bd_dir_delta(dir));
+        for(Dir4 dir = 0; dir < Dir4_COUNT; dir += 1) {
+          V2I n = v2i_add(p, dir4_delta(dir));
           if(n.x < 0 || n.y < 0 || n.x >= w || n.y >= h) { continue; }
           U64 nidx = (U64)n.y * w + n.x;
           if(visited[nidx] || groups[nidx] != comp.group) { continue; }
@@ -586,30 +579,29 @@ internal I32 report__components(Arena* arena, U16* groups, I32 w, I32 h,
 }
 
 internal void worldgen_report(I32 world_count, U64 first_seed) {
-  Arena* arena = arena_alloc();
-  WG_Params params = wg_params_load(arena, str8_lit("data/world.tabula"));
+  WG_Params params = wg_params_load(str8_lit("data/world.tabula"));
 
   // the report knows some terrains by role; ids resolve by name so the file
   // stays free to reorder
-  U32 id_water = report__terrain_by_name(&params, str8_lit("water"));
-  U32 id_ocean = report__terrain_by_name(&params, str8_lit("ocean"));
-  U32 id_ice = report__terrain_by_name(&params, str8_lit("ice"));
-  U32 id_beach = report__terrain_by_name(&params, str8_lit("beach"));
-  U32 id_mountain = report__terrain_by_name(&params, str8_lit("mountain"));
-  U32 id_snowcap = report__terrain_by_name(&params, str8_lit("snowcap"));
+  U32 id_water = wg_terrain_by_name(str8_lit("water"));
+  U32 id_ocean = wg_terrain_by_name(str8_lit("ocean"));
+  U32 id_ice = wg_terrain_by_name(str8_lit("ice"));
+  U32 id_beach = wg_terrain_by_name(str8_lit("beach"));
+  U32 id_mountain = wg_terrain_by_name(str8_lit("mountain"));
+  U32 id_snowcap = wg_terrain_by_name(str8_lit("snowcap"));
   B32 is_hot[WG_TERRAIN_CAP] = {0};
   B32 is_cold[WG_TERRAIN_CAP] = {0};
-  is_hot[report__terrain_by_name(&params, str8_lit("desert"))] = 1;
-  is_hot[report__terrain_by_name(&params, str8_lit("badlands"))] = 1;
-  is_hot[report__terrain_by_name(&params, str8_lit("savanna"))] = 1;
-  is_hot[report__terrain_by_name(&params, str8_lit("jungle"))] = 1;
+  is_hot[wg_terrain_by_name(str8_lit("desert"))] = 1;
+  is_hot[wg_terrain_by_name(str8_lit("badlands"))] = 1;
+  is_hot[wg_terrain_by_name(str8_lit("savanna"))] = 1;
+  is_hot[wg_terrain_by_name(str8_lit("jungle"))] = 1;
   is_cold[id_ice] = 1;
   is_cold[id_snowcap] = 1;
-  is_cold[report__terrain_by_name(&params, str8_lit("tundra"))] = 1;
-  is_cold[report__terrain_by_name(&params, str8_lit("taiga"))] = 1;
+  is_cold[wg_terrain_by_name(str8_lit("tundra"))] = 1;
+  is_cold[wg_terrain_by_name(str8_lit("taiga"))] = 1;
 
   printf_str8("seed");
-  for(U32 i = 1; i < params.terrain_count; i += 1) { printf_str8(",%S", params.terrains[i].name); }
+  for(U32 i = 1; i < params.terrain_count; i += 1) { printf_str8(",%S", wg_terrain_name(i)); }
   printf_str8(",land,landmasses,largest_landmass,ranges,largest_range,specks,lakes"
               ",river_tiles,river_nets,coast,beach_on_coast,hot_cold,nil,passable_largest\n");
 
@@ -617,9 +609,10 @@ internal void worldgen_report(I32 world_count, U64 first_seed) {
   for(I32 world = 0; world < world_count; world += 1) {
     arena_clear(world_arena);
     U64 seed = first_seed + (U64)world;
-    BD_Board* board = wg_generate(world_arena, &params, seed);
-    I32 w = board->width;
-    I32 h = board->height;
+    TH_Db* db = th_init_db(world_arena);
+    wg_generate(db, &params, seed);
+    I32 w = params.width;
+    I32 h = params.height;
     U64 tiles = (U64)w * h;
 
     U32 counts[WG_TERRAIN_CAP] = {0};
@@ -634,30 +627,30 @@ internal void worldgen_report(I32 world_count, U64 first_seed) {
     for(I32 y = 0; y < h; y += 1) {
       for(I32 x = 0; x < w; x += 1) {
         U64 idx = (U64)y * w + x;
-        BD_Tile* tile = bd_tile_at(board, (V2I){x, y});
-        U32 t = tile->terrain;
+        V2I p = {x, y};
+        U32 t = (U32)th_ifield_get(db, p, TH_IField_Terrain);
         counts[t] += 1;
         B32 land = t != 0 && t != id_water && t != id_ocean && t != id_ice;
         by_terrain[idx] = (U16)(t + 1);
         by_land[idx] = (U16)land;
         by_range[idx] = t == id_mountain || t == id_snowcap;
-        by_passable[idx] = (U16)bd_tile_passable(board, (V2I){x, y});
-        by_river[idx] = tile->features[BD_Feature_River] != 0;
+        by_passable[idx] = t < WG_TERRAIN_TYPE_COUNT && WG_TERRAIN_TYPES[t].move_cost > 0;
+        by_river[idx] = th_ifield_get(db, p, TH_IField_RiverMask) != 0;
         river_tiles += by_river[idx];
         if(land) {
           B32 sea_beside = 0;
-          for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += 1) {
-            V2I n = v2i_add((V2I){x, y}, bd_dir_delta(dir));
-            U32 nt = bd_tile_at(board, n)->terrain;
-            sea_beside |= bd_in_bounds(board, n) && (nt == id_water || nt == id_ocean);
+          for(Dir4 dir = 0; dir < Dir4_COUNT; dir += 1) {
+            V2I n = v2i_add(p, dir4_delta(dir));
+            U32 nt = (U32)th_ifield_get(db, n, TH_IField_Terrain);
+            sea_beside |= th_world_in_bounds(db, n) && (nt == id_water || nt == id_ocean);
           }
           coast += sea_beside;
         }
         // unordered adjacent pairs: only look right and down
         for(U32 pair = 0; pair < 2; pair += 1) {
           V2I n = pair == 0 ? (V2I){x + 1, y} : (V2I){x, y + 1};
-          if(!bd_in_bounds(board, n)) { continue; }
-          U32 nt = bd_tile_at(board, n)->terrain;
+          if(!th_world_in_bounds(db, n)) { continue; }
+          U32 nt = (U32)th_ifield_get(db, n, TH_IField_Terrain);
           hot_cold += (is_hot[t] && is_cold[nt]) || (is_cold[t] && is_hot[nt]);
         }
       }
@@ -747,12 +740,10 @@ int main(int argc, char** argv) {
 
   MapAssets map_assets = {0};
   {
-    // the terrain rows drive asset naming and tiling registration; parsed
-    // into scratch, since everything the assets keep is copied out
-    ArenaTemp scratch = arena_get_scratch(0, 0);
-    WG_Params world_params = wg_params_load(scratch.arena, str8_lit("data/world.tabula"));
-    map_assets = map_assets_load(&world_params);
-    arena_release_scratch(scratch);
+    // the terrain type table drives asset naming and tiling registration;
+    // loading the params fills it
+    wg_params_load(str8_lit("data/world.tabula"));
+    map_assets = map_assets_load();
   }
 
   //- fp: temp: fps overlay

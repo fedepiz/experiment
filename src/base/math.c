@@ -39,6 +39,34 @@ internal V2I v2i_sub(V2I a, V2I b) {
   return (V2I){a.x - b.x, a.y - b.y};
 }
 
+global V2I dir4__deltas[Dir4_COUNT] = {
+    {0, -1},
+    {1, 0},
+    {0, 1},
+    {-1, 0},
+};
+
+internal V2I dir4_delta(Dir4 dir) {
+  Assert(dir < Dir4_COUNT);
+  return dir4__deltas[dir];
+}
+
+internal Dir4 dir4_opposite(Dir4 dir) {
+  Assert(dir < Dir4_COUNT);
+  return (dir + 2) % Dir4_COUNT;
+}
+
+internal Dir4 dir4_from_delta(V2I delta) {
+  Dir4 result = Dir4_COUNT;
+  for(Dir4 dir = 0; dir < Dir4_COUNT; dir += 1) {
+    if(v2i_eq(dir4__deltas[dir], delta)) {
+      result = dir;
+      break;
+    }
+  }
+  return result;
+}
+
 internal F32 v2_magnitude(V2 a) {
   return sqrtf(a.x * a.x + a.y * a.y);
 }

@@ -1,10 +1,17 @@
 #pragma once
 #include "base/core.h"
+#include "base/math.h"
 #include "base/strings.h"
 #include "base/arena.h"
 
 // Max number of things that can possibly exist
 #define TH_NUM_THINGS 65000
+
+// Max world dimensions: fields (per-position facts, below) are fixed columns
+// of TH_WORLD_MAX_DIM^2 cells, so the world can never outgrow them. World
+// generation asserts its dimensions against this.
+#define TH_WORLD_MAX_DIM 256
+#define TH_WORLD_CELLS (TH_WORLD_MAX_DIM * TH_WORLD_MAX_DIM)
 
 // The structure that contains the database of things.
 // KEEP CONTIGUOUS and relocatable (ie, no stored pointers)
@@ -147,3 +154,68 @@ internal TH_Edges th_edges(Arena* arena, TH_Db* db, TH_Relation rel, TH_Id sourc
 
 // Relations are (logically) matrices: a set of value 0 is equivalent to a removal
 internal void th_edge_set(TH_Db* db, TH_Relation rel, TH_Id source, TH_Id target, F32 value);
+
+// Fields: per-position facts, the positional mirror of the per-thing families
+// above -- one dense column per kind, indexed by tile position instead of
+// thing slot. Tiles have no identity or lifecycle; a position is its own key.
+// The world's actual size (set once by world generation, at most
+// TH_WORLD_MAX_DIM per axis) bounds reads and writes: out-of-world positions
+// resolve to the shared nil objects, read-only by convention.
+
+internal void th_world_size_set(TH_Db* db, I32 width, I32 height);
+internal V2I th_world_size(TH_Db* db);
+internal B32 th_world_in_bounds(TH_Db* db, V2I pos);
+
+// Field variables: scalars per position
+typedef U16 TH_Field;
+enum {
+  TH_Field_Nil,
+  TH_Field_COUNT
+};
+
+internal F32* th_field(TH_Db* db, V2I pos, TH_Field field);
+internal F32 th_field_get(TH_Db* db, V2I pos, TH_Field field);
+// Safer write than *th_field() = ...; no-op out of the world
+internal void th_field_set(TH_Db* db, V2I pos, TH_Field field, F32 value);
+
+// Integer field scalars: ids, masks, encoded enumerations
+typedef U16 TH_IField;
+enum {
+  TH_IField_Nil,
+  TH_IField_Terrain,   // terrain type id (see worldgen's terrain table)
+  TH_IField_RiverMask, // feature connection masks, bit d = toward Dir4 d
+  TH_IField_RoadMask,
+  TH_IField_COUNT
+};
+
+internal I32* th_ifield(TH_Db* db, V2I pos, TH_IField ifield);
+internal I32 th_ifield_get(TH_Db* db, V2I pos, TH_IField ifield);
+// Safer write than *th_ifield() = ...; no-op out of the world
+internal void th_ifield_set(TH_Db* db, V2I pos, TH_IField ifield, I32 value);
+
+// Single-bit access into mask ifields; bits index 0..31. Set returns the old
+// value (like th_flag_set) and no-ops out of the world.
+internal B32 th_ifield_get_bit(TH_Db* db, V2I pos, TH_IField ifield, U32 bit);
+internal B32 th_ifield_set_bit(TH_Db* db, V2I pos, TH_IField ifield, U32 bit, B32 value);
+
+// Field refs: one thing per position per ref kind. Reads validate the target,
+// so a despawned thing reads back as nil.
+typedef U16 TH_FieldRef;
+enum {
+  TH_FieldRef_Nil,
+  TH_FieldRef_COUNT
+};
+
+internal TH_Id th_field_ref_get(TH_Db* db, TH_FieldRef ref, V2I pos);
+internal void th_field_ref_set(TH_Db* db, TH_FieldRef ref, V2I pos, TH_Id target);
+
+// Field flags: booleans per position, implemented as bitsets
+typedef U8 TH_FieldFlag;
+enum {
+  TH_FieldFlag_Nil,
+  TH_FieldFlag_COUNT
+};
+
+internal B32 th_field_flag_get(TH_Db* db, V2I pos, TH_FieldFlag flag);
+// Return the old value
+internal B32 th_field_flag_set(TH_Db* db, V2I pos, TH_FieldFlag flag, B32 value);

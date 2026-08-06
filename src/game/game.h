@@ -12,7 +12,10 @@
 //~ fp: Game
 //
 // The pure simulated world: everything that would exist on a headless
-// server. The board plus a few entities wandering a waypoint loop. Entities
+// server. The thing database is the authoritative state -- things plus the
+// world fields (terrain, feature masks); the board is derived from it, kept
+// mirrored for spatial queries and pathfinding. A few entities wander a
+// waypoint loop. Entities
 // bank movement points each tick and pay the board's step cost to walk, so
 // terrain speed is felt, not just routed around: forest crossings crawl,
 // road hops fly. Time arrives as `dt` from the caller; nothing here touches

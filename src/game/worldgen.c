@@ -5,7 +5,6 @@
 #include "base/print.h"
 #include "base/tctx.h"
 #include "tabula.h"
-#include "game/board.h"
 #include "game/worldgen.h"
 
 #include <math.h>
@@ -96,8 +95,25 @@ internal void wg__report_band_gaps(String8 path, WG_Params* params) {
   }
 }
 
-internal WG_Params wg_params_load(Arena* arena, String8 path) {
-  ArenaTemp scratch = arena_get_scratch(&arena, 1); // names push onto `arena`; keep it out of scratch
+internal String8 wg_terrain_name(U32 type) {
+  if(type >= WG_TERRAIN_TYPE_COUNT) { return str8_lit(""); }
+  return str8(WG_TERRAIN_TYPES[type].name_chars, WG_TERRAIN_TYPES[type].name_len);
+}
+
+internal U32 wg_terrain_by_name(String8 name) {
+  for(U32 i = 0; i < WG_TERRAIN_TYPE_COUNT; i += 1) {
+    if(str8_match(wg_terrain_name(i), name, 0)) { return i; }
+  }
+  return 0;
+}
+
+internal void wg__terrain_name_set(WG_TerrainType* type, String8 name) {
+  type->name_len = (U8)ClampTop(name.size, WG_TERRAIN_NAME_CAP);
+  MemoryCopy(type->name_chars, name.str, type->name_len);
+}
+
+internal WG_Params wg_params_load(String8 path) {
+  ArenaTemp scratch = arena_get_scratch(0, 0);
   TB_Value* root = tb_parse_file_and_report(scratch.arena, path);
   TB_Value* world = tb_get(root, str8_lit("world"));
 
@@ -146,11 +162,15 @@ internal WG_Params wg_params_load(Arena* arena, String8 path) {
   params.continent_height = tb_get_num(world, str8_lit("continent_height"), 0);
   params.min_region_size = (I32)tb_get_num(world, str8_lit("min_region_size"), 0);
 
-  //- fp: terrain rows, in file order; row 0 is the baked nil
+  //- fp: terrain rows, in file order; row 0 is the baked nil. Bands go into
+  //  the params, everything else into the static type table -- refilled
+  //  whole, so repeated loads stay idempotent.
+  MemoryZeroArray(WG_TERRAIN_TYPES);
   {
-    WG_TerrainDef* nil_def = &params.terrains[0];
-    nil_def->name = str8_lit("nil");
-    nil_def->color = (V4){1, 0, 1, 1}; // loud magenta
+    WG_TerrainType* nil_type = &WG_TERRAIN_TYPES[0];
+    wg__terrain_name_set(nil_type, str8_lit("nil"));
+    nil_type->color = (V4){1, 0, 1, 1}; // loud magenta
+    WG_TERRAIN_TYPE_COUNT = 1;
     params.terrain_count = 1;
   }
   for(TB_Node* node = world->first_member; node != 0; node = node->next) {
@@ -161,14 +181,16 @@ internal WG_Params wg_params_load(Arena* arena, String8 path) {
       break;
     }
     TB_Value* src = &node->value;
+    WG_TerrainType* type = &WG_TERRAIN_TYPES[params.terrain_count];
     WG_TerrainDef* def = &params.terrains[params.terrain_count];
     params.terrain_count += 1;
+    WG_TERRAIN_TYPE_COUNT = params.terrain_count;
 
-    def->name = push_str8_copy(arena, tb_get_str8(src, str8_lit("name"), str8_lit("unnamed")));
-    def->color = wg__color_from_key(src, str8_lit("color"), (V4){1, 0, 1, 1}); // magenta = the loud fallback
-    def->rank = (U8)tb_get_num(src, str8_lit("rank"), 0);
-    def->overlay_density = (U32)tb_get_num(src, str8_lit("overlay_density"), 0);
-    def->move_cost = tb_get_num(src, str8_lit("move_cost"), 0); // missing = impassable, visibly
+    wg__terrain_name_set(type, tb_get_str8(src, str8_lit("name"), str8_lit("unnamed")));
+    type->color = wg__color_from_key(src, str8_lit("color"), (V4){1, 0, 1, 1}); // magenta = the loud fallback
+    type->rank = (U8)tb_get_num(src, str8_lit("rank"), 0);
+    type->overlay_density = (U32)tb_get_num(src, str8_lit("overlay_density"), 0);
+    type->move_cost = tb_get_num(src, str8_lit("move_cost"), 0); // missing = impassable, visibly
 
     def->elevation = wg__band_from_key(src, str8_lit("elevation"));
     def->moisture = wg__band_from_key(src, str8_lit("moisture"));
@@ -188,12 +210,14 @@ internal WG_Params wg_params_load(Arena* arena, String8 path) {
   params.road_cost = tb_get_num(world, str8_lit("road_cost"), 0);
   params.river_cross_cost = tb_get_num(world, str8_lit("river_cross_cost"), 0);
 
-  //- fp: keep downstream code out of degenerate territory, loudly
-  if(params.width < 1 || params.height < 1) {
-    eprintf_str8("%S: bad world dimensions %dx%d, using 256x256\n",
-                 path, params.width, params.height);
-    params.width = 256;
-    params.height = 256;
+  //- fp: keep downstream code out of degenerate territory, loudly. The
+  //  ceiling is the field columns' capacity (see TH_WORLD_MAX_DIM).
+  if(params.width < 1 || params.height < 1 ||
+     params.width > TH_WORLD_MAX_DIM || params.height > TH_WORLD_MAX_DIM) {
+    eprintf_str8("%S: bad world dimensions %dx%d, using %dx%d\n",
+                 path, params.width, params.height, TH_WORLD_MAX_DIM, TH_WORLD_MAX_DIM);
+    params.width = TH_WORLD_MAX_DIM;
+    params.height = TH_WORLD_MAX_DIM;
   }
   params.elevation_scale = ClampBot(params.elevation_scale, 1.0f);
   params.moisture_scale = ClampBot(params.moisture_scale, 1.0f);
@@ -642,16 +666,22 @@ internal F32 wg__drainage_at(WG_Params* params, F32* elevation, I32 x, I32 y) {
 #define WG__MEANDER_SALT      0x2545f4914f6cdd1dull
 #define WG__ELEVATION_OFF_MAP (-1000.0f)
 
-internal void wg__carve_rivers(BD_Board* board, WG_Params* params, U64 seed, F32* elevation) {
-  I32 w = board->width;
-  I32 h = board->height;
+internal void wg_field_connect(TH_Db* db, V2I p, Dir4 dir, TH_IField mask_field) {
+  if(dir >= Dir4_COUNT) { return; }
+  th_ifield_set_bit(db, p, mask_field, dir, true);
+  th_ifield_set_bit(db, v2i_add(p, dir4_delta(dir)), mask_field, dir4_opposite(dir), true);
+}
+
+internal void wg__carve_rivers(TH_Db* db, WG_Params* params, U64 seed, F32* elevation) {
+  I32 w = params->width;
+  I32 h = params->height;
   // strict descent can never revisit a tile, so w * h bounds any walk exactly
   U64 max_steps = (U64)w * h;
   ArenaTemp scratch = arena_get_scratch(0, 0);
   //- fp: trace buffer: a river is walked first and connected after, so one
   //  that peters out under river_min_length steps is culled, not drawn
   V2I* trace_pos = push_array_no_zero(scratch.arena, V2I, max_steps);
-  BD_Dir* trace_dir = push_array_no_zero(scratch.arena, BD_Dir, max_steps);
+  Dir4* trace_dir = push_array_no_zero(scratch.arena, Dir4, max_steps);
   V2I* pond_queue = push_array_no_zero(scratch.arena, V2I, (U64)params->pond_max_tiles);
   //- fp: attempts chase a quota: a culled stub or dead source costs a try,
   //  not a river, so maps reach river_count unless the terrain truly runs
@@ -669,7 +699,7 @@ internal void wg__carve_rivers(BD_Board* board, WG_Params* params, U64 seed, F32
                (I32)(wg__hash(salt + 1, attempt, sample) % (U32)h)};
       F32 e = elevation[(U64)p.y * w + p.x];
       if(e > source_elevation && e >= params->sea_level &&
-         bd_feature_mask(board, p, BD_Feature_River) == 0) {
+         th_ifield_get(db, p, TH_IField_RiverMask) == 0) {
         source = p;
         source_elevation = e;
       }
@@ -683,25 +713,25 @@ internal void wg__carve_rivers(BD_Board* board, WG_Params* params, U64 seed, F32
     V2I at = source;
     for(U64 step = 0; step < max_steps; step += 1) {
       F32 here = elevation[(U64)at.y * w + at.x];
-      BD_Dir down_dir = BD_Dir_COUNT;
+      Dir4 down_dir = Dir4_COUNT;
       F32 down_score = 0;
       B32 down_off_map = 0;
-      for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += 1) {
-        V2I n = v2i_add(at, bd_dir_delta(dir));
-        B32 off_map = !bd_in_bounds(board, n);
+      for(Dir4 dir = 0; dir < Dir4_COUNT; dir += 1) {
+        V2I n = v2i_add(at, dir4_delta(dir));
+        B32 off_map = !th_world_in_bounds(db, n);
         // off the map counts as the lowest place there is: coastal springs
         // near the border drain off the world instead of pooling
         F32 e = off_map ? WG__ELEVATION_OFF_MAP : elevation[(U64)n.y * w + n.x];
         if(e >= here) { continue; } // only strictly downhill: no cycles
         F32 score = e + params->river_meander *
                             (wg__noise01(seed ^ WG__MEANDER_SALT, n.x, n.y) - 0.5f);
-        if(down_dir == BD_Dir_COUNT || score < down_score) {
+        if(down_dir == Dir4_COUNT || score < down_score) {
           down_dir = dir;
           down_score = score;
           down_off_map = off_map;
         }
       }
-      if(down_dir == BD_Dir_COUNT) {
+      if(down_dir == Dir4_COUNT) {
         in_basin = 1;
         break;
       } // nowhere lower
@@ -710,14 +740,14 @@ internal void wg__carve_rivers(BD_Board* board, WG_Params* params, U64 seed, F32
       trace_dir[length] = down_dir;
       length += 1;
       if(down_off_map) { break; }
-      at = v2i_add(at, bd_dir_delta(down_dir));
+      at = v2i_add(at, dir4_delta(down_dir));
       if(elevation[(U64)at.y * w + at.x] < params->sea_level) { break; } // reached the sea
     }
 
     if(length < params->river_min_length) { continue; } // stubby spring: cull it
     carved += 1;
     for(I32 idx = 0; idx < length; idx += 1) {
-      bd_feature_connect(board, trace_pos[idx], trace_dir[idx], BD_Feature_River);
+      wg_field_connect(db, trace_pos[idx], trace_dir[idx], TH_IField_RiverMask);
     }
 
     //- fp: a river ends *in* water, so the mouth tile's mirrored half would
@@ -725,7 +755,7 @@ internal void wg__carve_rivers(BD_Board* board, WG_Params* params, U64 seed, F32
     //  land neighbor keeps its half and flows right up to the water's edge.
     //  (An off-map ending leaves `at` on land, so the condition skips it.)
     if(!in_basin && elevation[(U64)at.y * w + at.x] < params->sea_level) {
-      bd_tile_at(board, at)->features[BD_Feature_River] = 0;
+      th_ifield_set(db, at, TH_IField_RiverMask, 0);
     }
 
     //- fp: a river that dies inland floods its basin into a pond: the
@@ -738,19 +768,19 @@ internal void wg__carve_rivers(BD_Board* board, WG_Params* params, U64 seed, F32
       F32 basin_elevation = elevation[(U64)at.y * w + at.x];
       F32 pond = params->sea_level - 0.01f;
       elevation[(U64)at.y * w + at.x] = pond;
-      bd_tile_at(board, at)->features[BD_Feature_River] = 0; // no river inside the lake
+      th_ifield_set(db, at, TH_IField_RiverMask, 0); // no river inside the lake
       pond_queue[0] = at;
       I32 pond_count = 1;
       for(I32 head = 0; head < pond_count; head += 1) {
-        for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += 1) {
-          V2I n = v2i_add(pond_queue[head], bd_dir_delta(dir));
+        for(Dir4 dir = 0; dir < Dir4_COUNT; dir += 1) {
+          V2I n = v2i_add(pond_queue[head], dir4_delta(dir));
           if(pond_count >= params->pond_max_tiles) { break; }
-          if(!bd_in_bounds(board, n)) { continue; }
+          if(!th_world_in_bounds(db, n)) { continue; }
           F32 e = elevation[(U64)n.y * w + n.x];
           // >= sea_level: the fill stops where water already is
           if(e >= params->sea_level && e <= basin_elevation + params->pond_epsilon) {
             elevation[(U64)n.y * w + n.x] = pond;
-            bd_tile_at(board, n)->features[BD_Feature_River] = 0; // drowns any channel here
+            th_ifield_set(db, n, TH_IField_RiverMask, 0); // drowns any channel here
             pond_queue[pond_count] = n;
             pond_count += 1;
           }
@@ -780,7 +810,7 @@ internal F32* wg__elevation_field(Arena* arena, U64 seed, WG_Params* params) {
   return elevation;
 }
 
-internal U8* wg__determine_sea(Arena* arena, WG_Params* params, BD_Board* board, F32* elevation) {
+internal U8* wg__determine_sea(Arena* arena, WG_Params* params, F32* elevation) {
   I32 w = params->width;
   I32 h = params->height;
   ArenaTemp scratch = arena_get_scratch(&arena, 1);
@@ -799,9 +829,9 @@ internal U8* wg__determine_sea(Arena* arena, WG_Params* params, BD_Board* board,
       }
     }
     for(I32 head = 0; head < count; head += 1) {
-      for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += 1) {
-        V2I n = v2i_add(queue[head], bd_dir_delta(dir));
-        if(!bd_in_bounds(board, n) || sea[(U64)n.y * w + n.x]) { continue; }
+      for(Dir4 dir = 0; dir < Dir4_COUNT; dir += 1) {
+        V2I n = v2i_add(queue[head], dir4_delta(dir));
+        if(n.x < 0 || n.x >= w || n.y < 0 || n.y >= h || sea[(U64)n.y * w + n.x]) { continue; }
         if(elevation[(U64)n.y * w + n.x] >= params->sea_level) { continue; }
         sea[(U64)n.y * w + n.x] = 1;
         queue[count] = n;
@@ -813,7 +843,7 @@ internal U8* wg__determine_sea(Arena* arena, WG_Params* params, BD_Board* board,
   return sea;
 }
 
-internal void wg__classify_tiles(WG_Params* params, U64 seed, BD_Board* board, F32* elevation, U8* sea) {
+internal void wg__classify_tiles(WG_Params* params, U64 seed, TH_Db* db, F32* elevation, U8* sea) {
   //- fp: classify tiles: prepare the fields, then first-match the terrain
   //  rows (see WG_TerrainDef). River banks read wetter than their moisture
   //  field says, so valleys go green or boggy.
@@ -827,9 +857,9 @@ internal void wg__classify_tiles(WG_Params* params, U64 seed, BD_Board* board, F
       F32 drainage = wg__drainage_at(params, elevation, x, y);
       F32 temperature = wg__temperature_at(params, seed, e, x, y);
 
-      B32 river_nearby = bd_feature_mask(board, p, BD_Feature_River) != 0;
-      for(BD_Dir dir = 0; !river_nearby && dir < BD_Dir_COUNT; dir += 1) {
-        river_nearby = bd_feature_mask(board, v2i_add(p, bd_dir_delta(dir)), BD_Feature_River) != 0;
+      B32 river_nearby = th_ifield_get(db, p, TH_IField_RiverMask) != 0;
+      for(Dir4 dir = 0; !river_nearby && dir < Dir4_COUNT; dir += 1) {
+        river_nearby = th_ifield_get(db, v2i_add(p, dir4_delta(dir)), TH_IField_RiverMask) != 0;
       }
       if(river_nearby) { moisture = ClampTop(moisture + params->river_moisture, 1.0f); }
 
@@ -842,13 +872,13 @@ internal void wg__classify_tiles(WG_Params* params, U64 seed, BD_Board* board, F
         }
       }
 
-      bd_tile_at(board, p)->terrain =
-          (BD_Terrain)wg__classify(params, e, moisture, drainage, temperature, coast);
+      th_ifield_set(db, p, TH_IField_Terrain,
+                    (I32)wg__classify(params, e, moisture, drainage, temperature, coast));
     }
   }
 }
 
-internal void wg__despeckle(WG_Params* params, BD_Board* board) {
+internal void wg__despeckle(WG_Params* params, TH_Db* db) {
   I32 w = params->width;
   I32 h = params->height;
   ArenaTemp scratch = arena_get_scratch(0, 0);
@@ -861,15 +891,15 @@ internal void wg__despeckle(WG_Params* params, BD_Board* board) {
       for(I32 y = 0; y < h; y += 1) {
         for(I32 x = 0; x < w; x += 1) {
           if(visited[(U64)y * w + x]) { continue; }
-          BD_Terrain terrain = bd_tile_at(board, (V2I){x, y})->terrain;
+          I32 terrain = th_ifield_get(db, (V2I){x, y}, TH_IField_Terrain);
           visited[(U64)y * w + x] = 1;
           queue[0] = (V2I){x, y};
           I32 size = 1;
           for(I32 head = 0; head < size; head += 1) {
-            for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += 1) {
-              V2I n = v2i_add(queue[head], bd_dir_delta(dir));
-              if(!bd_in_bounds(board, n) || visited[(U64)n.y * w + n.x]) { continue; }
-              if(bd_tile_at(board, n)->terrain != terrain) { continue; }
+            for(Dir4 dir = 0; dir < Dir4_COUNT; dir += 1) {
+              V2I n = v2i_add(queue[head], dir4_delta(dir));
+              if(!th_world_in_bounds(db, n) || visited[(U64)n.y * w + n.x]) { continue; }
+              if(th_ifield_get(db, n, TH_IField_Terrain) != terrain) { continue; }
               visited[(U64)n.y * w + n.x] = 1;
               queue[size] = n;
               size += 1;
@@ -878,14 +908,14 @@ internal void wg__despeckle(WG_Params* params, BD_Board* board) {
           if(size >= params->min_region_size) { continue; }
           U32 votes[WG_TERRAIN_CAP] = {0};
           for(I32 i = 0; i < size; i += 1) {
-            for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += 1) {
-              V2I n = v2i_add(queue[i], bd_dir_delta(dir));
-              if(!bd_in_bounds(board, n)) { continue; }
-              BD_Terrain nt = bd_tile_at(board, n)->terrain;
+            for(Dir4 dir = 0; dir < Dir4_COUNT; dir += 1) {
+              V2I n = v2i_add(queue[i], dir4_delta(dir));
+              if(!th_world_in_bounds(db, n)) { continue; }
+              I32 nt = th_ifield_get(db, n, TH_IField_Terrain);
               if(nt != terrain) { votes[nt] += 1; }
             }
           }
-          U32 best = terrain;
+          U32 best = (U32)terrain;
           U32 best_votes = 0;
           for(U32 i = 0; i < params->terrain_count; i += 1) {
             if(votes[i] > best_votes) {
@@ -895,7 +925,7 @@ internal void wg__despeckle(WG_Params* params, BD_Board* board) {
           }
           if(best_votes == 0) { continue; } // the whole map is one small region
           for(I32 i = 0; i < size; i += 1) {
-            bd_tile_at(board, queue[i])->terrain = (BD_Terrain)best;
+            th_ifield_set(db, queue[i], TH_IField_Terrain, (I32)best);
           }
           merged = 1;
         }
@@ -909,21 +939,22 @@ internal void wg__despeckle(WG_Params* params, BD_Board* board) {
 ////////////////////////////////
 //~ fp: Generation
 
-internal BD_Board* wg_generate(Arena* arena, WG_Params* params, U64 seed) {
-  BD_Board* board = bd_board_alloc(arena, params->width, params->height, 1024);
+internal void wg_generate(TH_Db* db, WG_Params* params, U64 seed) {
+  Assert(params->width <= TH_WORLD_MAX_DIM && params->height <= TH_WORLD_MAX_DIM);
+  th_world_size_set(db, params->width, params->height);
 
-  //- fp: travel rules from the terrain table; the cost array shares the
-  //  board's arena, so their lifetimes cannot drift apart
-  F32* terrain_cost = push_array(arena, F32, params->terrain_count);
-  for(U32 type = 0; type < params->terrain_count; type += 1) {
-    terrain_cost[type] = params->terrains[type].move_cost;
+  //- fp: generation owns the world fields whole: previous contents (terrain,
+  //  rivers, roads) are overwritten, not merged
+  for(I32 y = 0; y < params->height; y += 1) {
+    for(I32 x = 0; x < params->width; x += 1) {
+      V2I p = {x, y};
+      th_ifield_set(db, p, TH_IField_Terrain, 0);
+      th_ifield_set(db, p, TH_IField_RiverMask, 0);
+      th_ifield_set(db, p, TH_IField_RoadMask, 0);
+    }
   }
-  board->rules.terrain_cost = terrain_cost;
-  board->rules.terrain_cost_count = params->terrain_count;
-  board->rules.road_cost = params->road_cost;
-  board->rules.river_cross_cost = params->river_cross_cost;
 
-  ArenaTemp scratch = arena_get_scratch(&arena, 1);
+  ArenaTemp scratch = arena_get_scratch(0, 0);
 
   //- fp: elevation field, kept for the whole generation -- classification
   //  and rivers must agree on where downhill is. Tectonic uplift comes
@@ -932,23 +963,22 @@ internal BD_Board* wg_generate(Arena* arena, WG_Params* params, U64 seed) {
 
   //- fp: rivers first: classification reads their presence, so river valleys
   //  come out wetter than the rain alone would make them
-  wg__carve_rivers(board, params, seed, elevation);
+  wg__carve_rivers(db, params, seed, elevation);
 
   //- fp: the sea is the border-connected body of sub-sea_level water (the
   //  rim guarantees the border is ocean). Lakes and ponds are below sea
   //  level too but not border-connected, so their shores never read as
   //  coast -- beaches belong to the ocean.
-  U8* sea = wg__determine_sea(scratch.arena, params, board, elevation);
+  U8* sea = wg__determine_sea(scratch.arena, params, elevation);
 
   //- fp: classify tiles: prepare the fields, then first-match the terrain
   //  rows (see WG_TerrainDef). River banks read wetter than their moisture
   //  field says, so valleys go green or boggy.
-  wg__classify_tiles(params, seed, board, elevation, sea);
+  wg__classify_tiles(params, seed, db, elevation, sea);
 
   //- fp: despeckle: terrain regions smaller than min_region_size dissolve
   //  into their most common neighbor, repeated until the map is stable
-  wg__despeckle(params, board);
+  wg__despeckle(params, db);
 
   arena_release_scratch(scratch);
-  return board;
 }

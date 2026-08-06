@@ -11,21 +11,47 @@
 ////////////////////////////////
 //~ fp: Game
 
-// worldgen plus demo dressing: a road between two would-be settlements on
-// opposite sides of the continent, following the terrain's own best path
-internal BD_Board* gm__board_create(Arena* arena, U64 seed) {
-  WG_Params params = wg_params_load(arena, str8_lit("data/world.tabula"));
-  BD_Board* board = wg_generate(arena, &params, seed);
+// mirror the authoritative fields into the derived board: terrain ids,
+// feature masks, and travel rules (costs cached from the terrain table),
+// then drop the path cache. Call after any field write.
+StaticAssert(WG_TERRAIN_CAP <= BD_TERRAIN_CAP, gm_terrain_costs_fit);
+internal void gm__board_mirror(GM_Game* game, WG_Params* params) {
+  TH_Db* db = game->db;
+  BD_Board* board = game->board;
+  for(I32 y = 0; y < board->height; y += 1) {
+    for(I32 x = 0; x < board->width; x += 1) {
+      V2I p = {x, y};
+      BD_Tile* tile = bd_tile_at(board, p);
+      tile->terrain = (BD_Terrain)th_ifield_get(db, p, TH_IField_Terrain);
+      tile->features[BD_Feature_River] = (U8)th_ifield_get(db, p, TH_IField_RiverMask);
+      tile->features[BD_Feature_Road] = (U8)th_ifield_get(db, p, TH_IField_RoadMask);
+    }
+  }
+  BD_TravelRules* rules = &board->rules;
+  for(U32 type = 0; type < WG_TERRAIN_TYPE_COUNT; type += 1) {
+    rules->terrain_cost[type] = WG_TERRAIN_TYPES[type].move_cost;
+  }
+  rules->terrain_cost_count = WG_TERRAIN_TYPE_COUNT;
+  rules->road_cost = params->road_cost;
+  rules->river_cross_cost = params->river_cross_cost;
+  bd_path_cache_clear(board);
+}
+
+// demo dressing: a road between two would-be settlements on opposite sides
+// of the continent, following the terrain's own best path -- routed on the
+// mirrored board, written into the fields, mirrored back
+internal void gm__demo_road(GM_Game* game, WG_Params* params) {
+  BD_Board* board = game->board;
   V2I west = bd_snap_passable(board, (V2I){board->width / 6, board->height / 2});
   V2I east = bd_snap_passable(board, (V2I){board->width * 5 / 6, board->height / 2});
-  ArenaTemp scratch = arena_get_scratch(&arena, 1);
+  ArenaTemp scratch = arena_get_scratch(0, 0);
   BD_Path path = bd_path_find(scratch.arena, board, west, east);
   for(U64 idx = 0; idx + 1 < path.count; idx += 1) {
-    BD_Dir dir = bd_dir_from_delta(v2i_sub(path.points[idx + 1], path.points[idx]));
-    bd_feature_connect(board, path.points[idx], dir, BD_Feature_Road);
+    Dir4 dir = dir4_from_delta(v2i_sub(path.points[idx + 1], path.points[idx]));
+    wg_field_connect(game->db, path.points[idx], dir, TH_IField_RoadMask);
   }
   arena_release_scratch(scratch);
-  return board;
+  gm__board_mirror(game, params);
 }
 
 internal V2I gm__xy_get(TH_Db* db, TH_Id id) {
@@ -73,7 +99,13 @@ internal void gm__extract(GM_Game* game) {
 internal void gm_init(Arena* arena, GM_Game* game, U64 seed) {
   MemoryZeroStruct(game);
   game->db = th_init_db(arena);
-  game->board = gm__board_create(arena, seed);
+
+  //- fp: the world: generated into the fields, then mirrored into the board
+  WG_Params params = wg_params_load(str8_lit("data/world.tabula"));
+  wg_generate(game->db, &params, seed);
+  game->board = bd_board_alloc(arena, params.width, params.height, 1024);
+  gm__board_mirror(game, &params);
+  gm__demo_road(game, &params);
 
   TH_Db* db = game->db;
 

@@ -30,6 +30,23 @@ internal B32 v2i_eq(V2I a, V2I b);
 internal V2I v2i_add(V2I a, V2I b);
 internal V2I v2i_sub(V2I a, V2I b);
 
+// The four grid neighborhoods, clockwise from north -- shared vocabulary for
+// anything 4-connected on a V2I grid. The order is load-bearing: opposite
+// direction == +2 mod 4, and connection masks (bit d = toward direction d)
+// index bits by these.
+typedef U32 Dir4;
+enum {
+  Dir4_N,
+  Dir4_E,
+  Dir4_S,
+  Dir4_W,
+  Dir4_COUNT,
+};
+
+internal V2I  dir4_delta(Dir4 dir);
+internal Dir4 dir4_opposite(Dir4 dir);
+internal Dir4 dir4_from_delta(V2I delta); // Dir4_COUNT when delta isn't a single step
+
 typedef struct {
   F32 x;
   F32 y;

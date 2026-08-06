@@ -62,6 +62,16 @@ struct TH_Db {
   U32 edge_first[TH_Relation_COUNT][TH_NUM_THINGS];
   U32 edge_free;
   U32 edge_watermark;
+
+  //- fp: fields, dense: table[kind][cell], cell = y * TH_WORLD_MAX_DIM + x.
+  // Columns are fixed at TH_WORLD_CELLS; world_width/height bound the part in
+  // use. Kind 0 rows sit unused, as with the per-thing tables.
+  I32 world_width;
+  I32 world_height;
+  F32 fields[TH_Field_COUNT][TH_WORLD_CELLS];
+  I32 ifields[TH_IField_COUNT][TH_WORLD_CELLS];
+  TH_Id field_refs[TH_FieldRef_COUNT][TH_WORLD_CELLS];
+  U64 field_flags[TH_FieldFlag_COUNT][TH_WORLD_CELLS / 64];
 };
 
 ////////////////////////////////
@@ -427,4 +437,98 @@ internal void th_edge_set(TH_Db* db, TH_Relation rel, TH_Id source, TH_Id target
       .next = db->edge_first[rel][src],
   };
   db->edge_first[rel][src] = e;
+}
+
+////////////////////////////////
+//~ fp: Fields
+
+internal void th_world_size_set(TH_Db* db, I32 width, I32 height) {
+  Assert(1 <= width && width <= TH_WORLD_MAX_DIM);
+  Assert(1 <= height && height <= TH_WORLD_MAX_DIM);
+  db->world_width = width;
+  db->world_height = height;
+}
+
+internal V2I th_world_size(TH_Db* db) {
+  return (V2I){db->world_width, db->world_height};
+}
+
+internal B32 th_world_in_bounds(TH_Db* db, V2I pos) {
+  return 0 <= pos.x && pos.x < db->world_width &&
+         0 <= pos.y && pos.y < db->world_height;
+}
+
+internal U32 th__cell(V2I pos) {
+  return (U32)pos.y * TH_WORLD_MAX_DIM + (U32)pos.x;
+}
+
+internal F32* th_field(TH_Db* db, V2I pos, TH_Field field) {
+  if(!th_world_in_bounds(db, pos) || field == TH_Field_Nil || field >= TH_Field_COUNT) { return &TH_NIL_VAR; }
+  return &db->fields[field][th__cell(pos)];
+}
+
+internal F32 th_field_get(TH_Db* db, V2I pos, TH_Field field) {
+  return *th_field(db, pos, field);
+}
+
+internal void th_field_set(TH_Db* db, V2I pos, TH_Field field, F32 value) {
+  F32* p = th_field(db, pos, field);
+  if(p != &TH_NIL_VAR) { *p = value; }
+}
+
+internal I32* th_ifield(TH_Db* db, V2I pos, TH_IField ifield) {
+  if(!th_world_in_bounds(db, pos) || ifield == TH_IField_Nil || ifield >= TH_IField_COUNT) { return &TH_NIL_IVAR; }
+  return &db->ifields[ifield][th__cell(pos)];
+}
+
+internal I32 th_ifield_get(TH_Db* db, V2I pos, TH_IField ifield) {
+  return *th_ifield(db, pos, ifield);
+}
+
+internal void th_ifield_set(TH_Db* db, V2I pos, TH_IField ifield, I32 value) {
+  I32* p = th_ifield(db, pos, ifield);
+  if(p != &TH_NIL_IVAR) { *p = value; }
+}
+
+internal B32 th_ifield_get_bit(TH_Db* db, V2I pos, TH_IField ifield, U32 bit) {
+  if(bit >= 32) { return false; }
+  return (th_ifield_get(db, pos, ifield) >> bit) & 1;
+}
+
+internal B32 th_ifield_set_bit(TH_Db* db, V2I pos, TH_IField ifield, U32 bit, B32 value) {
+  I32* p = th_ifield(db, pos, ifield);
+  if(p == &TH_NIL_IVAR || bit >= 32) { return false; }
+  B32 old = (*p >> bit) & 1;
+  if(value) {
+    *p |= (I32)(1u << bit);
+  } else {
+    *p &= ~(I32)(1u << bit);
+  }
+  return old;
+}
+
+internal TH_Id th_field_ref_get(TH_Db* db, TH_FieldRef ref, V2I pos) {
+  if(!th_world_in_bounds(db, pos) || ref == TH_FieldRef_Nil || ref >= TH_FieldRef_COUNT) { return 0; }
+  TH_Id target = db->field_refs[ref][th__cell(pos)];
+  if(th__slot(db, target) == 0) { return 0; } // target despawned since
+  return target;
+}
+
+internal void th_field_ref_set(TH_Db* db, TH_FieldRef ref, V2I pos, TH_Id target) {
+  if(!th_world_in_bounds(db, pos) || ref == TH_FieldRef_Nil || ref >= TH_FieldRef_COUNT) { return; }
+  if(th__slot(db, target) == 0) { target = 0; } // nil / stale clears
+  db->field_refs[ref][th__cell(pos)] = target;
+}
+
+internal B32 th_field_flag_get(TH_Db* db, V2I pos, TH_FieldFlag flag) {
+  if(!th_world_in_bounds(db, pos) || flag == TH_FieldFlag_Nil || flag >= TH_FieldFlag_COUNT) { return false; }
+  return th__bit_get(db->field_flags[flag], th__cell(pos));
+}
+
+internal B32 th_field_flag_set(TH_Db* db, V2I pos, TH_FieldFlag flag, B32 value) {
+  if(!th_world_in_bounds(db, pos) || flag == TH_FieldFlag_Nil || flag >= TH_FieldFlag_COUNT) { return false; }
+  U32 cell = th__cell(pos);
+  B32 old = th__bit_get(db->field_flags[flag], cell);
+  th__bit_set(db->field_flags[flag], cell, value);
+  return old;
 }

@@ -7,37 +7,6 @@
 #include <math.h>
 
 ////////////////////////////////
-//~ fp: Directions
-
-global V2I bd__dir_deltas[BD_Dir_COUNT] = {
-    {0, -1},
-    {1, 0},
-    {0, 1},
-    {-1, 0},
-};
-
-internal V2I bd_dir_delta(BD_Dir dir) {
-  Assert(dir < BD_Dir_COUNT);
-  return bd__dir_deltas[dir];
-}
-
-internal BD_Dir bd_dir_opposite(BD_Dir dir) {
-  Assert(dir < BD_Dir_COUNT);
-  return (dir + 2) % BD_Dir_COUNT;
-}
-
-internal BD_Dir bd_dir_from_delta(V2I delta) {
-  BD_Dir result = BD_Dir_COUNT;
-  for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += 1) {
-    if(v2i_eq(bd__dir_deltas[dir], delta)) {
-      result = dir;
-      break;
-    }
-  }
-  return result;
-}
-
-////////////////////////////////
 //~ fp: Grid
 
 internal BD_Board* bd_board_alloc(Arena* arena, I32 width, I32 height, U32 path_cache_entries) {
@@ -93,30 +62,6 @@ internal U8 bd_feature_mask(BD_Board* board, V2I p, BD_Feature feature) {
     result = bd_tile_at(board, p)->features[feature];
   }
   return result;
-}
-
-internal void bd_feature_connect(BD_Board* board, V2I p, BD_Dir dir, BD_Feature feature) {
-  if(feature >= BD_Feature_COUNT || dir >= BD_Dir_COUNT) { return; }
-  BD_Tile* tile = bd_tile_at(board, p);
-  if(tile == &BD_NIL_TILE) { return; }
-  tile->features[feature] |= (U8)(1u << dir);
-  BD_Tile* neighbor = bd_tile_at(board, v2i_add(p, bd__dir_deltas[dir]));
-  if(neighbor != &BD_NIL_TILE) {
-    neighbor->features[feature] |= (U8)(1u << bd_dir_opposite(dir));
-  }
-  bd_path_cache_clear(board);
-}
-
-internal void bd_feature_disconnect(BD_Board* board, V2I p, BD_Dir dir, BD_Feature feature) {
-  if(feature >= BD_Feature_COUNT || dir >= BD_Dir_COUNT) { return; }
-  BD_Tile* tile = bd_tile_at(board, p);
-  if(tile == &BD_NIL_TILE) { return; }
-  tile->features[feature] &= (U8) ~(1u << dir);
-  BD_Tile* neighbor = bd_tile_at(board, v2i_add(p, bd__dir_deltas[dir]));
-  if(neighbor != &BD_NIL_TILE) {
-    neighbor->features[feature] &= (U8) ~(1u << bd_dir_opposite(dir));
-  }
-  bd_path_cache_clear(board);
 }
 
 ////////////////////////////////
@@ -283,10 +228,10 @@ internal BD__PathNode bd__heap_pop(BD__PathNode* heap, U64* count) {
 
 // cost of stepping from `from_tile` toward `dir` into `to_tile` under the
 // board's rules; <= 0 means the step cannot be taken
-internal F32 bd__step_cost(BD_Board* board, BD_Tile* from_tile, BD_Dir dir, BD_Tile* to_tile) {
+internal F32 bd__step_cost(BD_Board* board, BD_Tile* from_tile, Dir4 dir, BD_Tile* to_tile) {
   BD_TravelRules* rules = &board->rules;
   F32 cost = 1.0f;
-  if(rules->terrain_cost != 0) {
+  if(rules->terrain_cost_count != 0) {
     if(to_tile->terrain >= rules->terrain_cost_count) { return 0; }
     cost = rules->terrain_cost[to_tile->terrain];
     if(cost <= 0) { return 0; }
@@ -304,7 +249,7 @@ internal F32 bd__step_cost(BD_Board* board, BD_Tile* from_tile, BD_Dir dir, BD_T
 // 0 when the rules make everything impassable
 internal F32 bd__min_step_cost(BD_TravelRules* rules) {
   F32 result = 1.0f;
-  if(rules->terrain_cost != 0) {
+  if(rules->terrain_cost_count != 0) {
     result = 0;
     for(U64 idx = 0; idx < rules->terrain_cost_count; idx += 1) {
       F32 cost = rules->terrain_cost[idx];
@@ -364,8 +309,8 @@ internal BD_Path bd__path_compute(Arena* arena, BD_Board* board, V2I from, V2I t
 
     V2I p = {(I32)(node.idx % w), (I32)(node.idx / w)};
     BD_Tile* tile = &board->tiles[node.idx];
-    for(BD_Dir dir = 0; dir < BD_Dir_COUNT; dir += 1) {
-      V2I np = v2i_add(p, bd__dir_deltas[dir]);
+    for(Dir4 dir = 0; dir < Dir4_COUNT; dir += 1) {
+      V2I np = v2i_add(p, dir4_delta(dir));
       if(!bd_in_bounds(board, np)) { continue; }
       U32 nidx = (U32)((U64)np.y * w + np.x);
       if(state[nidx] == 2) { continue; }
@@ -402,8 +347,8 @@ internal BD_Path bd__path_compute(Arena* arena, BD_Board* board, V2I from, V2I t
 internal F32 bd_step_cost(BD_Board* board, V2I from, V2I to) {
   F32 result = 0;
   if(bd_in_bounds(board, from) && bd_in_bounds(board, to)) {
-    BD_Dir dir = bd_dir_from_delta(v2i_sub(to, from));
-    if(dir < BD_Dir_COUNT) {
+    Dir4 dir = dir4_from_delta(v2i_sub(to, from));
+    if(dir < Dir4_COUNT) {
       result = bd__step_cost(board, bd_tile_at(board, from), dir, bd_tile_at(board, to));
     }
   }
@@ -412,7 +357,7 @@ internal F32 bd_step_cost(BD_Board* board, V2I from, V2I to) {
 
 internal B32 bd_tile_passable(BD_Board* board, V2I p) {
   B32 result = bd_in_bounds(board, p);
-  if(result && board->rules.terrain_cost != 0) {
+  if(result && board->rules.terrain_cost_count != 0) {
     BD_Terrain terrain = bd_tile_at(board, p)->terrain;
     result = terrain < board->rules.terrain_cost_count &&
              board->rules.terrain_cost[terrain] > 0;

@@ -60,7 +60,7 @@
 // of neighboring dual cells meet.
 //
 //- NETWORKS (rivers, roads) are line features autotiled by their 4-bit
-// connection mask -- bit d = toward BD_Dir d, relayed from the board as-is.
+// connection mask -- bit d = toward Dir4 d, relayed from the board as-is.
 // Art is finished pieces per connection case, entering and exiting at edge
 // midpoints so pieces connect across cells. Networks draw in id order
 // (road over river reads as a bridge), and a cell carrying any network
