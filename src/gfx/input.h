@@ -21,5 +21,6 @@ internal B32  input_is_key_down(WND_Key key);
 internal B32  input_is_key_pressed(WND_Key key);
 internal B32  input_is_mouse_button_down(WND_MouseButton mouse);
 internal B32  input_is_mouse_button_pressed(WND_MouseButton mouse);
+internal B32  input_is_mouse_button_released(WND_MouseButton mouse);
 internal V2   input_mouse_pos(void);
 internal V2   input_scroll(void); // wheel delta accumulated over this frame; +y away from the user

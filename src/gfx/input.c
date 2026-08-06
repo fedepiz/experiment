@@ -13,6 +13,7 @@ typedef struct {
   B8 mouse_current[WND_MouseButton_COUNT];
   B8 mouse_prev[WND_MouseButton_COUNT];
   B8 mouse_pressed[WND_MouseButton_COUNT]; // latch, same idea
+  B8 mouse_released[WND_MouseButton_COUNT]; // latch: went up at any point this frame
   V2 mouse_pos;
   V2 scroll; // accumulated over the frame: several wheel events sum
 } Input;
@@ -39,6 +40,11 @@ internal B32 input_is_mouse_button_pressed(WND_MouseButton mouse) {
   return input_state.mouse_pressed[mouse];
 }
 
+internal B32 input_is_mouse_button_released(WND_MouseButton mouse) {
+  if(mouse >= WND_MouseButton_COUNT) return false;
+  return input_state.mouse_released[mouse];
+}
+
 internal V2 input_mouse_pos(void) {
   return input_state.mouse_pos;
 }
@@ -54,6 +60,7 @@ internal void input_process_events(WND_EventList event_list) {
   MemoryCopy(input_state.mouse_prev, input_state.mouse_current, sizeof(input_state.mouse_current));
   MemoryZeroArray(input_state.key_pressed);
   MemoryZeroArray(input_state.mouse_pressed);
+  MemoryZeroArray(input_state.mouse_released);
   MemoryZeroStruct(&input_state.scroll);
 
   for(WND_Event* evt = event_list.first; evt; evt = evt->next) {
@@ -71,6 +78,7 @@ internal void input_process_events(WND_EventList event_list) {
         break;
       case WND_EventType_MouseUp:
         input_state.mouse_current[evt->button] = false;
+        input_state.mouse_released[evt->button] = true; // survives a same-frame MouseDown
         break;
       case WND_EventType_MouseMoved:
         input_state.mouse_pos = evt->pos;

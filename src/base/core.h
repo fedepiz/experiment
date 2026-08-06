@@ -152,6 +152,12 @@ typedef double F64;
 
 #define Unused(x) ((void)(x))
 
+// Runs `begin` before the body and `end` after it; the body runs exactly
+// once. A `break` inside the body skips `end`.
+#define DeferLoop(begin, end) for(int Glue(defer__, __LINE__) = ((begin), 0); \
+                                  !Glue(defer__, __LINE__);                   \
+                                  Glue(defer__, __LINE__) += 1, (end))
+
 ////////////////////////////////
 //~ fp: Asserts
 

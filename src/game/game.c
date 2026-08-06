@@ -4,6 +4,7 @@
 #include "game/game.h"
 #include "base/core.h"
 #include "base/math.h"
+#include "base/strings.h"
 #include "base/tctx.h"
 #include "game/board.h"
 #include "game/thing_db.h"
@@ -180,6 +181,8 @@ internal void gm_init(Arena* arena, GM_Game* game, U64 seed) {
   // demo dressing: a band holding the land around it, so tiles have a Home
   {
     TH_Id id = th_spawn(db);
+    TH_Phrase* name = th_label(db, id, TH_Label_Name);
+    th_push_word(name, th_define_word(db, str8_lit("Place #A")));
     gm__xy_set(db, id, (V2I){100, 100});
     th_ivar_set(db, id, TH_IVar_Sprite, GM_Sprite_Band);
     th_flag_set(db, id, TH_Flag_HasInfluence, true);
@@ -188,6 +191,8 @@ internal void gm_init(Arena* arena, GM_Game* game, U64 seed) {
   // And another one
   {
     TH_Id id = th_spawn(db);
+    TH_Phrase* name = th_label(db, id, TH_Label_Name);
+    th_push_word(name, th_define_word(db, str8_lit("Place #B")));
     gm__xy_set(db, id, (V2I){102, 96});
     th_ivar_set(db, id, TH_IVar_Sprite, GM_Sprite_Tholos);
     th_flag_set(db, id, TH_Flag_HasInfluence, true);
@@ -198,6 +203,95 @@ internal void gm_init(Arena* arena, GM_Game* game, U64 seed) {
   gm__extract(game);
   gm__home_derive(game);
   game->initialised = true;
+}
+
+////////////////////////////////
+//~ fp: Selection
+
+internal void gm_select(GM_Game* game, V2I tile) {
+  GM_Selection selection = {0};
+  if(bd_in_bounds(game->board, tile)) {
+    selection.kind = GM_SelectionKind_Tile;
+    selection.tile = tile;
+    BD_Pawn* pawn = bd_tile_at(game->board, tile)->first_pawn;
+    if(pawn != 0) {
+      selection.kind = GM_SelectionKind_Thing;
+      selection.id = (TH_Id)pawn->key;
+    }
+  }
+  game->selection = selection;
+}
+
+internal void gm_deselect(GM_Game* game) {
+  game->selection = (GM_Selection){0};
+}
+
+// re-derive a thing selection's tile from the thing; a dead or unplaced
+// thing clears the selection. Runs every update.
+internal void gm__selection_refresh(GM_Game* game) {
+  if(game->selection.kind == GM_SelectionKind_Thing) {
+    if(th_flag_get(game->db, game->selection.id, TH_Flag_Placed)) {
+      game->selection.tile = gm__xy_get(game->db, game->selection.id);
+    } else {
+      game->selection = (GM_Selection){0};
+    }
+  }
+}
+
+internal String8 gm__thing_name(Arena* arena, TH_Db* db, TH_Id id) {
+  return th_resolve_phrase(arena, db, *th_label(db, id, TH_Label_Name), str8_lit(""));
+}
+
+internal void gm__tile_facts(Arena* arena, GM_Game* game, TB_Value* out, V2I pos) {
+  TH_Db* db = game->db;
+  TB_Value* xy = tb_add_list(arena, out, str8_lit("pos"));
+  tb_list_push_num(arena, xy, (F32)pos.x);
+  tb_list_push_num(arena, xy, (F32)pos.y);
+
+  U32 terrain = (U32)th_ifield_get(db, pos, TH_IField_Terrain);
+  tb_add_str8(arena, out, str8_lit("terrain"), wg_terrain_name(terrain));
+  if(terrain < WG_TERRAIN_TYPE_COUNT) {
+    tb_add_num(arena, out, str8_lit("move_cost"), WG_TERRAIN_TYPES[terrain].move_cost);
+  }
+
+  BD_Tile* tile = bd_tile_at(game->board, pos);
+  if(tile->features[BD_Feature_River] != 0 || tile->features[BD_Feature_Road] != 0) {
+    TB_Value* features = tb_add_list(arena, out, str8_lit("features"));
+    if(tile->features[BD_Feature_River] != 0) { tb_list_push_str8(arena, features, str8_lit("river")); }
+    if(tile->features[BD_Feature_Road] != 0) { tb_list_push_str8(arena, features, str8_lit("road")); }
+  }
+
+  TH_Id home = th_field_ref_get(db, TH_FieldRef_Home, pos);
+  if(home != 0) {
+    String8 name = gm__thing_name(arena, db, home);
+    if(name.size > 0) {
+      tb_add_str8(arena, out, str8_lit("home"), name);
+    }
+  }
+}
+
+internal TB_Value* gm_selection_info(Arena* arena, GM_Game* game) {
+  GM_Selection selection = game->selection;
+  if(selection.kind == GM_SelectionKind_Nil) { return &tb_nil_value; }
+
+  TH_Db* db = game->db;
+  TB_Value* info = tb_build_object(arena);
+  switch(selection.kind) {
+    case GM_SelectionKind_Tile: {
+      tb_add_str8(arena, info, str8_lit("kind"), str8_lit("tile"));
+    } break;
+    case GM_SelectionKind_Thing: {
+      tb_add_str8(arena, info, str8_lit("kind"), str8_lit("thing"));
+      GM_Sprite sprite = (GM_Sprite)Clamp(0, th_ivar_get(db, selection.id, TH_IVar_Sprite), GM_Sprite_COUNT - 1);
+      String8 name = gm__thing_name(arena, db, selection.id);
+      if(name.size == 0) { name = GM_SPRITE_NAMES[sprite]; }
+      tb_add_str8(arena, info, str8_lit("name"), name);
+      tb_add_str8(arena, info, str8_lit("sprite"), GM_SPRITE_NAMES[sprite]);
+      tb_add_num(arena, info, str8_lit("move_pts"), th_var_get(db, selection.id, TH_Var_MovePts));
+    } break;
+  }
+  gm__tile_facts(arena, game, tb_add_object(arena, info, str8_lit("tile")), selection.tile);
+  return info;
 }
 
 internal void gm_update(GM_Game* game, F32 dt) {
@@ -243,6 +337,7 @@ internal void gm_update(GM_Game* game, F32 dt) {
     gm__extract(game);
     gm__home_derive(game);
   }
+  gm__selection_refresh(game);
 }
 
 internal GM_MapItems gm_map_items(Arena* arena, GM_Game* game, V2I min, V2I max) {
@@ -254,7 +349,7 @@ internal GM_MapItems gm_map_items(Arena* arena, GM_Game* game, V2I min, V2I max)
   ArenaTemp scratch = arena_get_scratch(&arena, 1);
   BD_PawnArray pawns = bd_pawns_all(scratch.arena, board);
   U64 cell_count = (U64)(max.x - min.x + 1) * (U64)(max.y - min.y + 1);
-  out.items = push_array(arena, GM_MapItem, cell_count + pawns.count);
+  out.items = push_array(arena, GM_MapItem, cell_count + pawns.count + 1); // +1: selection highlight
 
   //- fp: ground segment: one item per window cell, off-board ring included
   for(I32 y = min.y; y <= max.y; y += 1) {
@@ -296,6 +391,16 @@ internal GM_MapItems gm_map_items(Arena* arena, GM_Game* game, V2I min, V2I max)
       item->color = (V4){1, 0, 0, 1};
     }
     item->sprite = Clamp(0, th_ivar_get(db, this, TH_IVar_Sprite), GM_Sprite_COUNT - 1);
+  }
+
+  //- fp: highlight segment: the selection marker, above everything
+  if(game->selection.kind != GM_SelectionKind_Nil &&
+     game->selection.tile.x >= min.x && game->selection.tile.x <= max.x &&
+     game->selection.tile.y >= min.y && game->selection.tile.y <= max.y) {
+    GM_MapItem* item = &out.items[out.count];
+    out.count += 1;
+    item->pos = game->selection.tile;
+    item->has_highlight = true;
   }
 
   arena_release_scratch(scratch);

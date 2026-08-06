@@ -388,6 +388,96 @@ internal F32 tb_get_num(TB_Value* object, String8 key, F32 fallback) {
 }
 
 ////////////////////////////////
+//~ fp: Builder
+
+internal TB_Value* tb_build_object(Arena* arena) {
+  TB_Value* value = push_array(arena, TB_Value, 1);
+  value->kind = TB_ValueKind_Object;
+  return value;
+}
+
+internal TB_Value* tb_build_list(Arena* arena) {
+  TB_Value* value = push_array(arena, TB_Value, 1);
+  value->kind = TB_ValueKind_List;
+  return value;
+}
+
+internal TB_Value* tb_add(Arena* arena, TB_Value* object, String8 key) {
+  if(object == 0 || object->kind != TB_ValueKind_Object) { return &tb_nil_value; }
+  TB_Node* node = push_array(arena, TB_Node, 1);
+  node->key = key;
+  DLLPushBack(object->first_member, object->last_member, node);
+  object->member_count += 1;
+  return &node->value;
+}
+
+internal void tb_add_str8(Arena* arena, TB_Value* object, String8 key, String8 value) {
+  TB_Value* slot = tb_add(arena, object, key);
+  if(slot != &tb_nil_value) {
+    slot->kind = TB_ValueKind_String;
+    slot->text = value;
+  }
+}
+
+internal void tb_add_num(Arena* arena, TB_Value* object, String8 key, F32 value) {
+  TB_Value* slot = tb_add(arena, object, key);
+  if(slot != &tb_nil_value) {
+    slot->kind = TB_ValueKind_Number;
+    slot->number = value;
+    slot->text = push_str8f(arena, "%g", value);
+  }
+}
+
+internal TB_Value* tb_add_object(Arena* arena, TB_Value* object, String8 key) {
+  TB_Value* slot = tb_add(arena, object, key);
+  if(slot != &tb_nil_value) {
+    slot->kind = TB_ValueKind_Object;
+  }
+  return slot;
+}
+
+internal TB_Value* tb_add_list(Arena* arena, TB_Value* object, String8 key) {
+  TB_Value* slot = tb_add(arena, object, key);
+  if(slot != &tb_nil_value) {
+    slot->kind = TB_ValueKind_List;
+  }
+  return slot;
+}
+
+internal TB_Value* tb_list_push(Arena* arena, TB_Value* list) {
+  if(list == 0 || list->kind != TB_ValueKind_List) { return &tb_nil_value; }
+  TB_Value* element = push_array(arena, TB_Value, 1);
+  SLLQueuePush(list->first, list->last, element);
+  list->count += 1;
+  return element;
+}
+
+internal void tb_list_push_str8(Arena* arena, TB_Value* list, String8 value) {
+  TB_Value* element = tb_list_push(arena, list);
+  if(element != &tb_nil_value) {
+    element->kind = TB_ValueKind_String;
+    element->text = value;
+  }
+}
+
+internal void tb_list_push_num(Arena* arena, TB_Value* list, F32 value) {
+  TB_Value* element = tb_list_push(arena, list);
+  if(element != &tb_nil_value) {
+    element->kind = TB_ValueKind_Number;
+    element->number = value;
+    element->text = push_str8f(arena, "%g", value);
+  }
+}
+
+internal TB_Value* tb_list_push_object(Arena* arena, TB_Value* list) {
+  TB_Value* element = tb_list_push(arena, list);
+  if(element != &tb_nil_value) {
+    element->kind = TB_ValueKind_Object;
+  }
+  return element;
+}
+
+////////////////////////////////
 //~ fp: Error Reporting
 
 internal String8 tb_str8_from_error(Arena* arena, String8 label, TB_Error* error) {

@@ -21,6 +21,7 @@
 #include "gfx/window.h"
 #include "gfx/input.h"
 #include "gfx/draw.h"
+#include "ui.h"
 
 ////////////////////////////////
 //~ fp: temp: Test Map
@@ -227,14 +228,30 @@ internal MapAssets map_assets_load(void) {
 
 
 // draw order: the tiler's layers first (a fact about how the art is built --
-// boundary tongues must not paint over overlay art), then surface items
-#define MAP_BIN_COUNT (TL_Layer_COUNT + 1)
+// boundary tongues must not paint over overlay art), then surface items,
+// then highlights above everything
+#define MAP_LAYER_SURFACE   TL_Layer_COUNT
+#define MAP_LAYER_HIGHLIGHT (TL_Layer_COUNT + 1)
+#define MAP_LAYER_COUNT     (TL_Layer_COUNT + 2)
 
 // the world-space rect of the tile at (x, y) -- fractional positions land on
 // the dual grid -- shrunk by `inset` world units per side
 internal Rect map_tile_rect(F32 x, F32 y, F32 inset) {
   return (Rect){{x * MAP_TILE + inset, y * MAP_TILE + inset},
                 {(x + 1) * MAP_TILE - inset, (y + 1) * MAP_TILE - inset}};
+}
+
+// the tile cell under a screen position, taken in client pixels as
+// input_mouse_pos gives them. Floors, so cells west/north of the board come
+// back negative -- callers bounds-check against the board.
+internal V2I map_tile_from_screen(D_Camera camera, V2 screen_px) {
+  F32 scale = wnd_scale();
+  if(scale == 0) { scale = 1; }
+  V2 world = d_camera_from_screen(camera, v2_scale(screen_px, 1.0f / scale));
+  V2I tile = {(I32)(world.x / MAP_TILE), (I32)(world.y / MAP_TILE)};
+  tile.x -= (F32)tile.x * MAP_TILE > world.x;
+  tile.y -= (F32)tile.y * MAP_TILE > world.y;
+  return tile;
 }
 
 internal void map_draw(GM_MapItems items, MapAssets* assets, MapCache* cache, D_Camera camera) {
@@ -245,6 +262,7 @@ internal void map_draw(GM_MapItems items, MapAssets* assets, MapCache* cache, D_
     U32 mask;   // sprite mask, 0 = none
     V4 color;   // sprite tint (zero = as-is), or the fill when sprite == 0
     F32 rounding;
+    F32 outline; // > 0: outline of this thickness (world units) instead of a fill
   } MapDrawCmd;
 
   V2 vp = wnd_size();
@@ -252,31 +270,45 @@ internal void map_draw(GM_MapItems items, MapAssets* assets, MapCache* cache, D_
 
   ArenaTemp scratch = arena_get_scratch(0, 0);
 
-  //- size the bins: one slot per piece / surface item. Upper bounds -- pieces
-  // that resolve to nothing leave slack. This pass also warms the cell cache,
-  // so the scatter below re-resolves for free.
-  U64 cap[MAP_BIN_COUNT] = {0};
+  //- size the layers: one slot per piece / surface item. Upper bounds --
+  // pieces that resolve to nothing leave slack. This pass also warms the cell
+  // cache, so the scatter below re-resolves for free.
+  U64 cap[MAP_LAYER_COUNT] = {0};
   for(U64 i = 0; i < items.count; i += 1) {
     GM_MapItem* item = &items.items[i];
+    if(item->has_highlight) {
+      cap[MAP_LAYER_HIGHLIGHT] += 1;
+      continue;
+    }
     if(item->has_pawn) {
-      cap[TL_Layer_COUNT] += 1;
+      cap[MAP_LAYER_SURFACE] += 1;
       continue;
     }
     TL_Cell* cell = map_cache_cell(cache, item);
     for(U32 pi = 0; pi < cell->count; pi += 1) { cap[cell->pieces[pi].layer] += 1; }
   }
-  U64 base[MAP_BIN_COUNT];
+  U64 base[MAP_LAYER_COUNT];
   U64 total = 0;
-  for(U32 bin = 0; bin < MAP_BIN_COUNT; bin += 1) {
-    base[bin] = total;
-    total += cap[bin];
+  for(U32 layer = 0; layer < MAP_LAYER_COUNT; layer += 1) {
+    base[layer] = total;
+    total += cap[layer];
   }
   MapDrawCmd* cmds = push_array_no_zero(scratch.arena, MapDrawCmd, total);
-  U64 count[MAP_BIN_COUNT] = {0};
+  U64 count[MAP_LAYER_COUNT] = {0};
 
-  //- scatter: resolve each item once, every drawable lands in its bin's slots
+  //- scatter: resolve each item once, every drawable lands in its layer's slots
   for(U64 i = 0; i < items.count; i += 1) {
     GM_MapItem* item = &items.items[i];
+    if(item->has_highlight) {
+      MapDrawCmd* cmd = &cmds[base[MAP_LAYER_HIGHLIGHT] + count[MAP_LAYER_HIGHLIGHT]];
+      count[MAP_LAYER_HIGHLIGHT] += 1;
+      *cmd = (MapDrawCmd){
+          .rect = map_tile_rect(item->pos.x, item->pos.y, 0),
+          .color = ui_theme()->accent_color,
+          .outline = 1.0f,
+      };
+      continue;
+    }
     if(item->has_terrain) {
       TL_Cell* cell = map_cache_cell(cache, item);
       for(U32 pi = 0; pi < cell->count; pi += 1) {
@@ -312,8 +344,8 @@ internal void map_draw(GM_MapItems items, MapAssets* assets, MapCache* cache, D_
         rounding = (MAP_TILE - 2 * inset) * 0.35f;
       }
 
-      MapDrawCmd* cmd = &cmds[base[TL_Layer_COUNT] + count[TL_Layer_COUNT]];
-      count[TL_Layer_COUNT] += 1;
+      MapDrawCmd* cmd = &cmds[base[MAP_LAYER_SURFACE] + count[MAP_LAYER_SURFACE]];
+      count[MAP_LAYER_SURFACE] += 1;
       *cmd = (MapDrawCmd){
           .rect = map_tile_rect(item->pos.x, item->pos.y, inset),
           .sprite = sprite,
@@ -323,17 +355,19 @@ internal void map_draw(GM_MapItems items, MapAssets* assets, MapCache* cache, D_
     }
   }
 
-  //- submit: bins in order, commands in scatter order
+  //- submit: layers in order, commands in scatter order
   d_camera_begin(camera);
-  for(U32 bin = 0; bin < MAP_BIN_COUNT; bin += 1) {
-    for(U64 i = 0; i < count[bin]; i += 1) {
-      MapDrawCmd* cmd = &cmds[base[bin] + i];
+  for(U32 layer = 0; layer < MAP_LAYER_COUNT; layer += 1) {
+    for(U64 i = 0; i < count[layer]; i += 1) {
+      MapDrawCmd* cmd = &cmds[base[layer] + i];
       if(cmd->sprite != 0) {
         if(cmd->mask != 0) {
           d_sprite_masked(assets->sprites[cmd->sprite], assets->sprites[cmd->mask], cmd->rect, cmd->color);
         } else {
           d_sprite(assets->sprites[cmd->sprite], cmd->rect, cmd->color);
         }
+      } else if(cmd->outline > 0) {
+        d_rect_outline(cmd->rect, cmd->color, cmd->outline);
       } else if(cmd->rounding > 0) {
         d_rect_rounded(cmd->rect, cmd->color, cmd->rounding);
       } else {
@@ -531,6 +565,237 @@ internal void fps_draw(FPS_Counter* counter) {
   d_text(counter->font, text_size, (V2){box.min.x + pad.x, box.min.y + pad.y},
          Col_White, text);
   arena_release_scratch(scratch);
+}
+
+////////////////////////////////
+//~ fp: temp: Debug HUD
+//
+// The seam between the pure UI core and gfx: text callbacks answered by
+// draw, input gathered into a UI_Input, the frame's draw list replayed
+// through d_* calls. Fonts cross the boundary as D_Font.u64. hud_build is
+// the demo panel: FPS readout, wrapped text, a reseed button with a tooltip.
+
+// a color is a [r g b a] list; shorter lists keep alpha 1, misses keep fallback
+internal V4 hud__color(TB_Value* object, String8 key, V4 fallback) {
+  TB_Value* list = tb_get(object, key);
+  if(list->kind != TB_ValueKind_List || list->count < 3) {
+    return fallback;
+  }
+  V4 color = {0, 0, 0, 1};
+  F32* comps[4] = {&color.x, &color.y, &color.z, &color.w};
+  U64 i = 0;
+  for(TB_Value* el = list->first; el != 0 && i < 4; el = el->next, i += 1) {
+    *comps[i] = tb_num_from_value(el, 0);
+  }
+  return color;
+}
+
+// data/ui.tabula -> UI_Theme: the chronicle surface (panel_background / ink /
+// outline) becomes the Default and Panel roles, button_* and tooltip_* their
+// roles; missing keys keep the built-in theme
+internal UI_Theme hud_theme_load(String8 path) {
+  UI_Theme theme = ui_default_theme();
+  ArenaTemp scratch = arena_get_scratch(0, 0);
+  TB_Value* root = tb_parse_file_and_report(scratch.arena, path);
+  TB_Value* style = tb_get(root, str8_lit("style"));
+  theme.font_size = tb_get_num(style, str8_lit("font_size"), theme.font_size);
+
+  UI_RoleStyle base = theme.roles[UI_Role_Default];
+  base.background_color = hud__color(style, str8_lit("panel_background"), base.background_color);
+  base.text_color = hud__color(style, str8_lit("ink"), base.text_color);
+  base.border_color = hud__color(style, str8_lit("outline"), base.border_color);
+  base.border_thickness = tb_get_num(style, str8_lit("border_thickness"), base.border_thickness);
+  base.corner_radius = 0;
+  theme.roles[UI_Role_Default] = base;
+
+  theme.roles[UI_Role_Panel] = base;
+  theme.roles[UI_Role_Panel].corner_radius = tb_get_num(style, str8_lit("panel_corner_radius"), 0);
+
+  theme.roles[UI_Role_Button] = base;
+  theme.roles[UI_Role_Button].background_color = hud__color(style, str8_lit("button_background"), base.background_color);
+  theme.roles[UI_Role_Button].border_color = hud__color(style, str8_lit("button_border_color"), base.border_color);
+  theme.roles[UI_Role_Button].border_thickness = tb_get_num(style, str8_lit("button_border_thickness"), base.border_thickness);
+  theme.roles[UI_Role_Button].corner_radius = tb_get_num(style, str8_lit("button_corner_radius"), 0);
+
+  theme.roles[UI_Role_Tooltip] = base;
+  theme.roles[UI_Role_Tooltip].background_color = hud__color(style, str8_lit("tooltip_background"), base.text_color);
+  theme.roles[UI_Role_Tooltip].text_color = hud__color(style, str8_lit("tooltip_text"), base.background_color);
+  theme.roles[UI_Role_Tooltip].corner_radius = tb_get_num(style, str8_lit("tooltip_corner_radius"), 8);
+
+  theme.muted_color = hud__color(style, str8_lit("muted"), base.text_color);
+  theme.accent_color = hud__color(style, str8_lit("accent"), base.text_color);
+  arena_release_scratch(scratch);
+  return theme;
+}
+
+internal V2 hud_measure_text(void* user, U64 font, F32 size, String8 text) {
+  Unused(user);
+  return d_text_dim((D_Font){font}, size, text);
+}
+
+internal UI_FontMetrics hud_font_metrics(void* user, U64 font, F32 size) {
+  Unused(user);
+  D_FontMetrics m = d_font_metrics((D_Font){font}, size);
+  return (UI_FontMetrics){m.ascent, m.descent, m.line_advance};
+}
+
+// the mouse arrives in client pixels; the UI, like draw, speaks points
+internal UI_Input hud_gather_input(void) {
+  UI_Input in = {0};
+  F32 scale = wnd_scale();
+  if(scale == 0) { scale = 1; }
+  in.mouse = v2_scale(input_mouse_pos(), 1.0f / scale);
+  WND_MouseButton buttons[UI_MouseButton_COUNT] = {
+      WND_MouseButton_Left, WND_MouseButton_Right, WND_MouseButton_Middle};
+  for(U32 i = 0; i < UI_MouseButton_COUNT; i += 1) {
+    in.down[i] = (B8)input_is_mouse_button_down(buttons[i]);
+    in.pressed[i] = (B8)input_is_mouse_button_pressed(buttons[i]);
+    in.released[i] = (B8)input_is_mouse_button_released(buttons[i]);
+  }
+  in.scroll = input_scroll();
+  in.dt = wnd_frame_time();
+  in.window = wnd_size();
+  return in;
+}
+
+internal void hud_replay_draw_list(UI_DrawList list) {
+  for(U64 i = 0; i < list.count; i += 1) {
+    UI_DrawCommand* cmd = &list.commands[i];
+    switch(cmd->kind) {
+      case UI_DrawCommandKind_Rect: {
+        D_RectParams params = {0};
+        params.rect = cmd->rect;
+        for(Corner c = 0; c < Corner_COUNT; c += 1) {
+          params.colors[c] = cmd->colors[c];
+          params.corner_radii[c] = cmd->corner_radii[c];
+        }
+        params.border_thickness = cmd->border_thickness;
+        params.edge_softness = cmd->edge_softness;
+        d_rect_ex(&params);
+      } break;
+      case UI_DrawCommandKind_Text: {
+        d_text((D_Font){cmd->font}, cmd->font_size, cmd->pos, cmd->color, cmd->text);
+      } break;
+      case UI_DrawCommandKind_ClipPush: {
+        d_push_clip(cmd->rect);
+      } break;
+      case UI_DrawCommandKind_ClipPop: {
+        d_pop_clip();
+      } break;
+      default: break;
+    }
+  }
+}
+
+// one label/value line: label in ink at the left, value at the right
+internal void hud__stat_row(String8 label, String8 value, V4 value_color) {
+  ui_push_pref_width(ui_size_pct(1, 0));
+  UI_Box* row = ui_row_begin(label);
+  ui_pop_pref_width();
+  Unused(row);
+  ui_label(label);
+  ui_spacer(ui_size_grow(1));
+  ui_push_text_color(value_color);
+  ui_label(value);
+  ui_pop_text_color();
+  ui_row_end();
+}
+
+// the generic tier of the selection panel: any member of the fact tree
+// renders without hud changes. Scalars become stat rows (numbers in accent),
+// lists join into one value, nested objects become muted section headers
+// followed by their own rows. `omit` skips one top-level key (the curated
+// title). Strings live on the caller's arena for the duration of the build.
+internal void hud__fact_rows(Arena* arena, TB_Value* object, String8 omit) {
+  UI_Theme* theme = ui_theme();
+  for(TB_Node* node = object->first_member; node != 0; node = node->next) {
+    if(omit.size > 0 && str8_match(node->key, omit, 0)) { continue; }
+    TB_Value* value = &node->value;
+    switch(value->kind) {
+      case TB_ValueKind_Identifier:
+      case TB_ValueKind_String: {
+        hud__stat_row(node->key, value->text, theme->roles[UI_Role_Default].text_color);
+      } break;
+      case TB_ValueKind_Number: {
+        hud__stat_row(node->key, value->text, theme->accent_color);
+      } break;
+      case TB_ValueKind_List: {
+        String8List parts = {0};
+        for(TB_Value* el = value->first; el != 0; el = el->next) {
+          str8_list_push(arena, &parts, el->text);
+        }
+        StringJoin join = {str8_lit(""), str8_lit(", "), str8_lit("")};
+        hud__stat_row(node->key, str8_list_join(arena, parts, &join),
+                      theme->roles[UI_Role_Default].text_color);
+      } break;
+      case TB_ValueKind_Object: {
+        ui_spacer(ui_size_px(2, 1));
+        ui_push_text_color(theme->muted_color);
+        ui_label(node->key);
+        ui_pop_text_color();
+        hud__fact_rows(arena, value, str8_lit(""));
+      } break;
+      default: break;
+    }
+  }
+}
+
+// top-right panel over the current selection: curated title (thing name, or
+// the tile's terrain), then the generic fact rows
+internal void hud_selection_panel(GM_Game* game) {
+  ArenaTemp scratch = arena_get_scratch(0, 0);
+  TB_Value* info = gm_selection_info(scratch.arena, game);
+  if(!tb_value_is_nil(info)) {
+    ui_push_padding((V2){12, 10});
+    UI_Box* panel = ui_panel_begin(str8_lit("selection_panel"));
+    ui_pop_padding();
+    panel->flags |= UI_BoxFlag_Floating;
+    panel->floating_anchor = (V2){0, 0};
+    panel->floating_pos = (V2){12, 12};
+    panel->pref_size[UI_Axis_X] = ui_size_px(240, 1);
+    {
+      String8 title = tb_get_str8(info, str8_lit("name"), str8_lit(""));
+      if(title.size == 0) {
+        title = tb_get_str8(tb_get(info, str8_lit("tile")), str8_lit("terrain"), str8_lit("tile"));
+      }
+      ui_push_font_size(19);
+      ui_label(title);
+      ui_pop_font_size();
+      hud__fact_rows(scratch.arena, info, str8_lit("name"));
+    }
+    ui_panel_end();
+  }
+  {
+    UI_Box* panel = ui_panel_begin(str8_lit("panel2"));
+    panel->flags |= UI_BoxFlag_Floating;
+    panel->floating_anchor = (V2){0, 1};
+    panel->pref_size[UI_Axis_X] = ui_size_pct(1, 1);
+    panel->pref_size[UI_Axis_Y] = ui_size_px(40, 1);
+    ui_push_pref_height(ui_size_grow(1));
+    ui_push_child_align(UI_Align_Center);
+    ui_push_padding((V2){10, 0});
+    UI_Row(str8_lit("row1")) {
+      ui_button(str8_lit("Button #1"));
+      ui_button(str8_lit("Button #2"));
+      ui_button(str8_lit("Button #3"));
+      ui_button(str8_lit("Button #4"));
+    }
+    ui_pop_padding();
+    ui_pop_child_align();
+    ui_pop_pref_height();
+    ui_panel_end();
+  }
+  arena_release_scratch(scratch);
+}
+
+internal void hud_build(FPS_Counter* fps, GM_Game* game) {
+  ui_push_font(fps->font.u64);
+  ui_push_child_gap(8);
+
+  hud_selection_panel(game);
+
+  ui_pop_child_gap();
+  ui_pop_font();
 }
 
 ////////////////////////////////
@@ -735,6 +1000,8 @@ int main(int argc, char** argv) {
   wnd_open(str8_lit("Imperium"), 1600, 900);
   wnd_equip_gl();
   d_init();
+  ui_init(hud_measure_text, hud_font_metrics, 0);
+  ui_set_theme(hud_theme_load(str8_lit("data/ui.tabula")));
 
   //- fp: temp: the long-lived game state, and the presentation state that
   //  shadows it (rebuilt with it on every reseed)
@@ -756,6 +1023,7 @@ int main(int argc, char** argv) {
   fps_counter.font = d_font_open(str8_lit("assets/fonts/Arial.ttf"));
 
   D_Camera camera = {0};
+  B32 hud_mouse_over = 0; // as of the last built frame
 
   for(B32 keep_going = true; keep_going;) {
     WND_EventList evts = wnd_get_events(frame_arena);
@@ -771,9 +1039,13 @@ int main(int argc, char** argv) {
       keep_going = false;
     }
 
-    if(input_is_mouse_button_pressed(WND_MouseButton_Left)) {
-      V2 pos = input_mouse_pos();
-      printf_str8("(%f, %f)\n", pos.x, pos.y);
+    if(game.initialised && !hud_mouse_over) {
+      if(input_is_mouse_button_pressed(WND_MouseButton_Left)) {
+        gm_select(&game, map_tile_from_screen(camera, input_mouse_pos()));
+      }
+      if(input_is_mouse_button_pressed(WND_MouseButton_Right)) {
+        gm_deselect(&game);
+      }
     }
 
     pace_60fps_update();
@@ -805,7 +1077,12 @@ int main(int argc, char** argv) {
       // test_render(camera); // fp: parked draw-layer demo scene
 
       fps_update(&fps_counter);
-      fps_draw(&fps_counter);
+
+      ui_frame_begin(frame_arena, hud_gather_input());
+      hud_build(&fps_counter, &game);
+      UI_DrawList hud_list = ui_frame_end();
+      hud_replay_draw_list(hud_list);
+      hud_mouse_over = hud_list.mouse_over_ui;
     }
     d_frame_end();
 
@@ -828,6 +1105,7 @@ int main(int argc, char** argv) {
 //- fp: [c]
 #include "base/base.c"
 #include "tabula.c"
+#include "ui.c"
 #include "game/tiling.c"
 #include "game/game.c"
 #include "gfx/gfx.c"

@@ -141,6 +141,33 @@ internal String8 tb_str8_from_value(TB_Value* value, String8 fallback);
 internal F32     tb_num_from_value(TB_Value* value, F32 fallback);
 
 ////////////////////////////////
+//~ fp: Builder
+//
+// Programmatic construction of trees, for producers (extractions, reports)
+// whose consumers read them like parsed files. Total in the module's style:
+// adding to a nil or non-Object/non-List target no-ops, and functions that
+// return a value return nil then. Strings are stored as views -- callers
+// keep them alive as long as the tree (push them on the same arena).
+// Numbers get a "%g" text spelling, so they read back as strings too.
+
+internal TB_Value* tb_build_object(Arena* arena); // a standalone Object value
+internal TB_Value* tb_build_list(Arena* arena);   // a standalone List value
+
+//- fp: object members; tb_add returns the new member's nil value for the
+//  caller to fill, the wrappers fill it themselves
+internal TB_Value* tb_add(Arena* arena, TB_Value* object, String8 key);
+internal void      tb_add_str8(Arena* arena, TB_Value* object, String8 key, String8 value);
+internal void      tb_add_num(Arena* arena, TB_Value* object, String8 key, F32 value);
+internal TB_Value* tb_add_object(Arena* arena, TB_Value* object, String8 key);
+internal TB_Value* tb_add_list(Arena* arena, TB_Value* object, String8 key);
+
+//- fp: list elements, same protocol
+internal TB_Value* tb_list_push(Arena* arena, TB_Value* list);
+internal void      tb_list_push_str8(Arena* arena, TB_Value* list, String8 value);
+internal void      tb_list_push_num(Arena* arena, TB_Value* list, F32 value);
+internal TB_Value* tb_list_push_object(Arena* arena, TB_Value* list);
+
+////////////////////////////////
 //~ fp: Error Reporting
 //
 // label names the source (a path, "<stdin>", ...); TB_Error doesn't know it
