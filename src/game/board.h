@@ -145,9 +145,9 @@ typedef struct {
   BD_PathEntry* entries; // [entry_cap]
   U32 entry_cap;
   U32 entry_count;
-  V2I* points;      // shared hop pool; entries reference slices of it
+  V2I* points; // shared hop pool; entries reference slices of it
   U64 point_count;
-  U64 point_cap;    // width * height -- any single path fits
+  U64 point_cap; // width * height -- any single path fits
 } BD_Board;
 
 ////////////////////////////////
@@ -165,7 +165,7 @@ global BD_Pawn BD_NIL_PAWN;
 
 internal BD_Board* bd_board_alloc(Arena* arena, I32 width, I32 height, U32 path_cache_entries);
 
-internal B32      bd_in_bounds(BD_Board* board, V2I p);
+internal B32 bd_in_bounds(BD_Board* board, V2I p);
 internal BD_Tile* bd_tile_at(BD_Board* board, V2I p); // out of bounds: the nil tile
 
 //- fp: tile-space distances; no board needed
@@ -186,12 +186,12 @@ internal U8 bd_feature_mask(BD_Board* board, V2I p, BD_Feature feature); // pres
 //
 // Pawns on one tile read directly: bd_tile_at(...)->first_pawn, then ->next.
 
-internal void      bd_pawn_place(BD_Board* board, U64 key, V2I pos); // upsert; no-op when pos is out of bounds
-internal void      bd_pawn_remove(BD_Board* board, U64 key);
-internal BD_Pawn*  bd_pawn_lookup(BD_Board* board, U64 key); // unknown key: the nil pawn
+internal void bd_pawn_place(BD_Board* board, U64 key, V2I pos); // upsert; no-op when pos is out of bounds
+internal void bd_pawn_remove(BD_Board* board, U64 key);
+internal BD_Pawn* bd_pawn_lookup(BD_Board* board, U64 key); // unknown key: the nil pawn
 
 typedef struct {
-  BD_Pawn** v;
+  BD_Pawn** elems;
   U64 count;
 } BD_PawnArray;
 
@@ -210,10 +210,10 @@ internal BD_PawnArray bd_pawns_all(Arena* arena, BD_Board* board);
 // rather than padded. Zero width/height means the rect missed the board.
 
 typedef struct {
-  V2I min;    // top-left tile the window actually starts at
-  I32 width;  // window dimensions; v holds width * height ids
+  V2I min;   // top-left tile the window actually starts at
+  I32 width; // window dimensions; elems holds width * height ids
   I32 height;
-  BD_Terrain* v; // row-major: v[y * width + x] is terrain at min + (x, y)
+  BD_Terrain* elems; // row-major: elems[y * width + x] is terrain at min + (x, y)
 } BD_TerrainPatch;
 
 // terrain in [min, max] (corners inclusive), pushed on `arena`
@@ -255,3 +255,43 @@ internal V2I bd_snap_passable(BD_Board* board, V2I want);
 internal V2I bd_path_next_towards(BD_Board* board, V2I from, V2I to);
 
 internal void bd_path_cache_clear(BD_Board* board);
+
+////////////////////////////////
+//~ fp: Influence
+//
+// Which source claims a tile. Sources radiate influence that falls off with
+// distance; each tile goes to the strongest. A source is a pawn key -- it
+// radiates from wherever that pawn stands, and a key the board does not know
+// contributes nothing. Distance is euclidean and terrain-blind: influence
+// neither pays travel costs nor stops at impassable ground.
+
+typedef U8 BD_InfluenceDecay;
+
+enum {
+  BD_InfluenceDecay_No,        // full strength out to range, nothing past it
+  BD_InfluenceDecay_Linear,    // strength * (1 - d/range)
+  BD_InfluenceDecay_Quadratic, // strength * (1 - d/range)^2
+};
+
+typedef struct {
+  U64 key;      // the pawn this radiates from; unknown keys contribute nothing
+  F32 range;    // tiles reached, inclusive; <= 0 contributes nothing
+  F32 strength; // influence at the source's own tile; <= 0 contributes nothing
+  BD_InfluenceDecay decay;
+} BD_Influence;
+
+typedef struct {
+  U64 count;
+  BD_Influence* elems;
+} BD_InfluenceArray;
+
+// what holds a tile. A tie between the strongest sources goes to nobody: the
+// tile reads back unassigned, exactly like one no source reaches.
+typedef struct {
+  U64 key;      // key_unassigned when unclaimed
+  F32 strength; // the winning influence; 0 when unassigned
+} BD_InfluenceAssignment;
+
+// contest `sources` over every tile; width * height assignments pushed on
+// `arena`, row-major -- result[y * board->width + x]
+internal BD_InfluenceAssignment* bd_influence_map(Arena* arena, BD_Board* board, BD_InfluenceArray sources, U64 key_unassigned);

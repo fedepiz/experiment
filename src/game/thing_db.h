@@ -73,6 +73,7 @@ enum {
   TH_Flag_Nil,
   TH_Flag_Debug, // A test mark
   TH_Flag_Placed, // standing on the board: reconciled to a pawn each tick
+  TH_Flag_HasInfluence, // claims the land around it; tiles it wins are homed to it
   TH_Flag_COUNT,
 };
 
@@ -203,6 +204,9 @@ internal B32 th_ifield_set_bit(TH_Db* db, V2I pos, TH_IField ifield, U32 bit, B3
 typedef U16 TH_FieldRef;
 enum {
   TH_FieldRef_Nil,
+  // Assigns the tile to be associated
+  // with some group
+  TH_FieldRef_Home,
   TH_FieldRef_COUNT
 };
 

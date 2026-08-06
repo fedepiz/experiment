@@ -277,44 +277,49 @@ internal void map_draw(GM_MapItems items, MapAssets* assets, MapCache* cache, D_
   //- scatter: resolve each item once, every drawable lands in its bin's slots
   for(U64 i = 0; i < items.count; i += 1) {
     GM_MapItem* item = &items.items[i];
+    if(item->has_terrain) {
+      TL_Cell* cell = map_cache_cell(cache, item);
+      for(U32 pi = 0; pi < cell->count; pi += 1) {
+        TL_Piece* piece = &cell->pieces[pi];
+
+        V4 color = {0};
+        if(piece->id != 0) {
+          color = item->color;
+        }
+
+        Rect r = map_tile_rect(item->pos.x + piece->offset.x, item->pos.y + piece->offset.y, 0);
+        MapDrawCmd* cmd = &cmds[base[piece->layer] + count[piece->layer]];
+        *cmd = (MapDrawCmd){.rect = r, .sprite = piece->id, .color = color, .mask = piece->mask_id};
+        count[piece->layer] += 1;
+      }
+    }
+
     if(item->has_pawn) {
-      MapDrawCmd* cmd = &cmds[base[TL_Layer_COUNT] + count[TL_Layer_COUNT]];
-      count[TL_Layer_COUNT] += 1;
       U32 variant_count = assets->gm_sprite_counts[item->sprite];
+
+      F32 inset = 0.0;
+      F32 rounding = 0.0;
+      U32 sprite = 0;
+
       if(variant_count > 0) {
         // full tile; the art brings its own silhouette, the item's color
         // rides along as tint (white = as-is). Variant hashed off the thing
         // id: stable for the thing's whole life, varied across things.
         U32 variant = (item->id * 2654435761u) % variant_count;
-        *cmd = (MapDrawCmd){
-            .rect = map_tile_rect(item->pos.x, item->pos.y, 0),
-            .sprite = assets->gm_sprites[item->sprite][variant],
-            .color = item->color,
-        };
+        sprite = assets->gm_sprites[item->sprite][variant];
       } else {
-        F32 inset = MAP_TILE * 0.2f;
-        *cmd = (MapDrawCmd){
-            .rect = map_tile_rect(item->pos.x, item->pos.y, inset),
-            .color = item->color,
-            .rounding = (MAP_TILE - 2 * inset) * 0.35f,
-        };
+        inset = MAP_TILE * 0.2f;
+        rounding = (MAP_TILE - 2 * inset) * 0.35f;
       }
-      continue;
-    }
-    TL_Cell* cell = map_cache_cell(cache, item);
-    for(U32 pi = 0; pi < cell->count; pi += 1) {
-      TL_Piece* piece = &cell->pieces[pi];
-      Rect r = map_tile_rect(item->pos.x + piece->offset.x, item->pos.y + piece->offset.y, 0);
-      MapDrawCmd* cmd = &cmds[base[piece->layer] + count[piece->layer]];
-      if(piece->id != 0) {
-        count[piece->layer] += 1;
-        *cmd = (MapDrawCmd){.rect = r, .sprite = piece->id, .mask = piece->mask_id};
-      } else if(piece->klass != 0 && item->has_terrain) {
-        // artless terrain draws its flat color; nil (class 0) is the void
-        // and draws nothing
-        count[piece->layer] += 1;
-        *cmd = (MapDrawCmd){.rect = r, .color = assets->fallback_colors[piece->klass]};
-      }
+
+      MapDrawCmd* cmd = &cmds[base[TL_Layer_COUNT] + count[TL_Layer_COUNT]];
+      count[TL_Layer_COUNT] += 1;
+      *cmd = (MapDrawCmd){
+          .rect = map_tile_rect(item->pos.x, item->pos.y, inset),
+          .sprite = sprite,
+          .rounding = rounding,
+          .color = item->color,
+      };
     }
   }
 

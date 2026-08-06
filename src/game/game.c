@@ -79,7 +79,7 @@ internal void gm__extract(GM_Game* game) {
   BD_PawnArray pawns = bd_pawns_all(scratch.arena, game->board);
   for(U64 i = 0; i < pawns.count; i += 1) {
     // a stale id reads no flags, so dead things fail this check too
-    TH_Id id = (TH_Id)pawns.v[i]->key;
+    TH_Id id = (TH_Id)pawns.elems[i]->key;
     if(!th_flag_get(db, id, TH_Flag_Placed)) {
       bd_pawn_remove(game->board, id);
     }
@@ -94,6 +94,51 @@ internal void gm__extract(GM_Game* game) {
       bd_pawn_place(game->board, this, gm__xy_get(db, this));
     }
   }
+}
+
+// home: which thing each tile belongs to. Every thing flagged HasInfluence
+// contests the board, and the winner of a tile becomes its Home -- a
+// contested or unreached tile belongs to nobody (nil). One claim is like
+// every other for now: the rules below are the same for all sources, so
+// distance alone settles a border. Unlike extraction this writes the db, so
+// it runs after it, on the pawn positions extraction just reconciled.
+#define GM_INFLUENCE_STRENGTH 1.0f
+#define GM_INFLUENCE_RANGE    8.0f
+#define GM_INFLUENCE_DECAY    BD_InfluenceDecay_Linear
+internal void gm__home_derive(GM_Game* game) {
+  TH_Db* db = game->db;
+  BD_Board* board = game->board;
+  ArenaTemp scratch = arena_get_scratch(0, 0);
+
+  // count, then fill -- two cheap passes beat growable storage. Sources that
+  // are not on the board find no pawn and simply claim nothing.
+  BD_InfluenceArray sources = {0};
+  for(TH_Id this = th_first_flagged(db, TH_Flag_HasInfluence);
+      this != 0; this = th_next_flagged(db, TH_Flag_HasInfluence, this)) {
+    sources.count += 1;
+  }
+  sources.elems = push_array_no_zero(scratch.arena, BD_Influence, sources.count);
+  U64 at = 0;
+  for(TH_Id this = th_first_flagged(db, TH_Flag_HasInfluence);
+      this != 0; this = th_next_flagged(db, TH_Flag_HasInfluence, this)) {
+    sources.elems[at] = (BD_Influence){
+        .key = this, // a placed thing is its own pawn's key
+        .strength = GM_INFLUENCE_STRENGTH,
+        .range = GM_INFLUENCE_RANGE,
+        .decay = GM_INFLUENCE_DECAY,
+    };
+    at += 1;
+  }
+
+  // nil is the unassigned key: th_field_ref_set reads it as "clear this tile"
+  BD_InfluenceAssignment* map = bd_influence_map(scratch.arena, board, sources, 0);
+  for(I32 y = 0; y < board->height; y += 1) {
+    for(I32 x = 0; x < board->width; x += 1) {
+      TH_Id home = (TH_Id)map[(U64)y * board->width + x].key;
+      th_field_ref_set(db, TH_FieldRef_Home, (V2I){x, y}, home);
+    }
+  }
+  arena_release_scratch(scratch);
 }
 
 internal void gm_init(Arena* arena, GM_Game* game, U64 seed) {
@@ -131,15 +176,18 @@ internal void gm_init(Arena* arena, GM_Game* game, U64 seed) {
     th_flag_set(db, id, TH_Flag_Placed, true);
   }
 
+  // demo dressing: a band holding the land around it, so tiles have a Home
   {
     TH_Id id = th_spawn(db);
     gm__xy_set(db, id, (V2I){100, 100});
     th_ivar_set(db, id, TH_IVar_Sprite, GM_Sprite_Band);
+    th_flag_set(db, id, TH_Flag_HasInfluence, true);
     th_flag_set(db, id, TH_Flag_Placed, true);
   }
 
   th_commit(db);
   gm__extract(game);
+  gm__home_derive(game);
   game->initialised = true;
 }
 
@@ -184,6 +232,7 @@ internal void gm_update(GM_Game* game, F32 dt) {
 
     th_commit(db);
     gm__extract(game);
+    gm__home_derive(game);
   }
 }
 
@@ -205,6 +254,12 @@ internal GM_MapItems gm_map_items(Arena* arena, GM_Game* game, V2I min, V2I max)
       out.count += 1;
       item->pos = (V2I){x, y};
       item->has_terrain = bd_in_bounds(board, item->pos);
+
+      TH_Id home = th_field_ref_get(db, TH_FieldRef_Home, item->pos);
+      if(home) {
+        item->color = (V4){1, 1, 0, 1};
+      }
+
       for(I32 dy = -1; dy <= 1; dy += 1) {
         for(I32 dx = -1; dx <= 1; dx += 1) {
           item->neighbours[(dy + 1) * 3 + (dx + 1)] =
@@ -220,7 +275,7 @@ internal GM_MapItems gm_map_items(Arena* arena, GM_Game* game, V2I min, V2I max)
 
   //- fp: surface segment: pawns standing inside the window, after the ground
   for(U64 idx = 0; idx < pawns.count; idx++) {
-    BD_Pawn* pawn = pawns.v[idx];
+    BD_Pawn* pawn = pawns.elems[idx];
     if(pawn->pos.x < min.x || pawn->pos.x > max.x ||
        pawn->pos.y < min.y || pawn->pos.y > max.y) { continue; }
     GM_MapItem* item = &out.items[out.count];

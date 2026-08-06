@@ -134,12 +134,12 @@ internal BD_PawnArray bd_pawns_in_rect(Arena* arena, BD_Board* board, V2I min, V
       }
     }
   }
-  result.v = push_array_no_zero(arena, BD_Pawn*, count);
+  result.elems = push_array_no_zero(arena, BD_Pawn*, count);
   for(I32 y = y0; y <= y1; y += 1) {
     for(I32 x = x0; x <= x1; x += 1) {
       BD_Tile* tile = &board->tiles[(U64)y * board->width + x];
       for(BD_Pawn* pawn = tile->first_pawn; pawn != 0; pawn = pawn->next) {
-        result.v[result.count] = pawn;
+        result.elems[result.count] = pawn;
         result.count += 1;
       }
     }
@@ -149,10 +149,10 @@ internal BD_PawnArray bd_pawns_in_rect(Arena* arena, BD_Board* board, V2I min, V
 
 internal BD_PawnArray bd_pawns_all(Arena* arena, BD_Board* board) {
   BD_PawnArray result = {0};
-  result.v = push_array_no_zero(arena, BD_Pawn*, board->pawn_count);
+  result.elems = push_array_no_zero(arena, BD_Pawn*, board->pawn_count);
   for(U64 bucket = 0; bucket < board->pawn_bucket_count; bucket += 1) {
     for(BD_Pawn* pawn = board->pawn_buckets[bucket]; pawn != 0; pawn = pawn->hash_next) {
-      result.v[result.count] = pawn;
+      result.elems[result.count] = pawn;
       result.count += 1;
     }
   }
@@ -172,10 +172,10 @@ internal BD_TerrainPatch bd_terrain_in_rect(Arena* arena, BD_Board* board, V2I m
   result.min = (V2I){x0, y0};
   result.width = x1 - x0 + 1;
   result.height = y1 - y0 + 1;
-  result.v = push_array_no_zero(arena, BD_Terrain, (U64)result.width * result.height);
+  result.elems = push_array_no_zero(arena, BD_Terrain, (U64)result.width * result.height);
   for(I32 y = y0; y <= y1; y += 1) {
     for(I32 x = x0; x <= x1; x += 1) {
-      result.v[(U64)(y - y0) * result.width + (x - x0)] =
+      result.elems[(U64)(y - y0) * result.width + (x - x0)] =
           board->tiles[(U64)y * board->width + x].terrain;
     }
   }
@@ -435,5 +435,77 @@ internal V2I bd_path_next_towards(BD_Board* board, V2I from, V2I to) {
   if(entry != 0 && entry->count > 1) {
     result = board->points[entry->first + 1];
   }
+  return result;
+}
+
+////////////////////////////////
+//~ fp: Influence
+
+// `source` felt `dist` tiles away; 0 past its range
+internal F32 bd__influence_at(BD_Influence* source, F32 dist) {
+  if(dist > source->range) { return 0; }
+  F32 t = dist / source->range;
+  F32 result = source->strength;
+  switch(source->decay) {
+    case BD_InfluenceDecay_Linear: {
+      result *= 1.0f - t;
+    } break;
+    case BD_InfluenceDecay_Quadratic: {
+      F32 falloff = 1.0f - t;
+      result *= falloff * falloff;
+    } break;
+    default: break; // BD_InfluenceDecay_No: flat out to the range
+  }
+  return result;
+}
+
+internal BD_InfluenceAssignment* bd_influence_map(Arena* arena, BD_Board* board, BD_InfluenceArray sources, U64 key_unassigned) {
+  U64 tile_count = (U64)board->width * board->height;
+  BD_InfluenceAssignment* result = push_array_no_zero(arena, BD_InfluenceAssignment, tile_count);
+  for(U64 idx = 0; idx < tile_count; idx += 1) {
+    result[idx] = (BD_InfluenceAssignment){.key = key_unassigned};
+  }
+
+  // a tile whose best influence is matched belongs to neither claimant. The
+  // strength stays recorded while contested, so a third source must actually
+  // beat it -- and a three-way tie stays a tie.
+  ArenaTemp scratch = arena_get_scratch(&arena, 1);
+  U8* contested = push_array(scratch.arena, U8, tile_count);
+
+  for(U64 i = 0; i < sources.count; i += 1) {
+    BD_Influence* source = &sources.elems[i];
+    if(source->range <= 0 || source->strength <= 0) { continue; }
+    BD_Pawn* pawn = bd_pawn_lookup(board, source->key);
+    if(pawn == &BD_NIL_PAWN) { continue; }
+
+    // only the range's bounding box can be reached, so no source pays for
+    // the whole board
+    I32 reach = (I32)source->range;
+    I32 x0 = ClampBot(pawn->pos.x - reach, 0);
+    I32 y0 = ClampBot(pawn->pos.y - reach, 0);
+    I32 x1 = ClampTop(pawn->pos.x + reach, board->width - 1);
+    I32 y1 = ClampTop(pawn->pos.y + reach, board->height - 1);
+    for(I32 y = y0; y <= y1; y += 1) {
+      for(I32 x = x0; x <= x1; x += 1) {
+        F32 influence = bd__influence_at(source, bd_distance(pawn->pos, (V2I){x, y}));
+        if(influence <= 0) { continue; }
+        U64 idx = (U64)y * board->width + x;
+        if(influence > result[idx].strength) {
+          result[idx].key = source->key;
+          result[idx].strength = influence;
+          contested[idx] = 0;
+        } else if(influence == result[idx].strength) {
+          contested[idx] = 1;
+        }
+      }
+    }
+  }
+
+  for(U64 idx = 0; idx < tile_count; idx += 1) {
+    if(contested[idx]) {
+      result[idx] = (BD_InfluenceAssignment){.key = key_unassigned};
+    }
+  }
+  arena_release_scratch(scratch);
   return result;
 }
