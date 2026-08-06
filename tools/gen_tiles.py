@@ -690,6 +690,390 @@ EDGE_OVERLAYS = {
 }
 
 
+# ----------------------------------------------------------------- sites
+# 1-tile markers for places and groups: settlements (village, walled town,
+# palace-citadel) and mobile groups (hunter-gatherer band, herders). The
+# setting is bronze-age Europe / Levant: mudbrick and thatch, cyclopean
+# stone, plastered halls -- a palace is Mycenae or Hattusa, not a fairy
+# tale. Same drawing rules as overlays: silhouette, top-left light, seated
+# dark bottom edge, transparent background.
+
+MUDBRICK = ((122, 96, 62), (150, 120, 80), (178, 148, 102))
+THATCH = ((126, 108, 62), (168, 148, 90), (198, 178, 112))
+PLASTER = ((150, 132, 100), (190, 170, 134), (218, 200, 162))
+SITE_STONE = ((104, 100, 92), (139, 135, 126), (174, 170, 160))
+DOOR_DARK = (56, 42, 28)
+
+
+def _shaded(rng, ramp, f, dither=0.12):
+    """Pick dark/mid/light from a ramp by a 0..1 lit factor, dithered."""
+    dark, mid, light = ramp
+    f += rng.uniform(-dither, dither)
+    return light if f > 0.66 else dark if f < 0.33 else mid
+
+
+def _hut(px, rng, x0, y0, w, body_h, roof_h):
+    """One thatched hut: darker pitched roof overhanging a whitewashed
+    body, door at the base -- the tone gap keeps wall and roof legible.
+    (x0, y0) is the body's left column at the roof peak row."""
+    for r in range(roof_h):
+        inset = roof_h - 1 - r
+        xs = x0 - 1 + inset
+        xe = x0 + w - inset
+        for xx in range(xs, xe + 1):
+            f = 0.8 - 0.6 * (xx - xs) / max(xe - xs, 1) - 0.2 * (r / max(roof_h, 1))
+            put(px, xx, y0 + r, _shaded(rng, THATCH, f, 0.08))
+    for yy in range(y0 + roof_h, y0 + roof_h + body_h):
+        for xx in range(x0, x0 + w):
+            f = 1.0 - 0.7 * (xx - x0) / max(w - 1, 1)
+            put(px, xx, yy, _shaded(rng, PLASTER, f, 0.06))
+    door_x = x0 + w // 2 + rng.randrange(-1, 2)
+    for yy in range(y0 + roof_h + max(body_h - 2, 1), y0 + roof_h + body_h):
+        put(px, door_x, yy, DOOR_DARK)
+
+
+def paint_site_village(rng):
+    """A handful of thatched huts over whitewashed walls, clustered but
+    never merging."""
+    px = new_canvas()
+    slots = [(1, 3), (9, 4), (3, 9), (10, 10)]
+    rng.shuffle(slots)
+    for x0, y0 in sorted(slots[:3], key=lambda s: s[1]):
+        _hut(px, rng, x0 + rng.randrange(0, 2), y0 + rng.randrange(0, 2),
+             rng.randrange(4, 6), rng.randrange(2, 4), 2)
+    return outline_silhouette(px, (96, 76, 50), (74, 58, 38))
+
+
+def paint_site_town(rng):
+    """A walled town seen side-on like its siblings: a crenellated stone
+    wall with corner towers and a gate, a skyline of flat mudbrick roofs
+    jumbled up behind it."""
+    px = new_canvas()
+    #- rooftop skyline first; the wall draws over their lower stories
+    slots = [(2, 6), (5, 5), (8, 6), (11, 5)]
+    rng.shuffle(slots)
+    for x0, roof_y in slots[:rng.randrange(3, 5)]:
+        w = rng.randrange(3, 5)
+        roof_y += rng.randrange(0, 2)
+        for yy in range(roof_y, 10):
+            for xx in range(x0, min(x0 + w, 15)):
+                f = 0.8 - 0.6 * ((xx - x0) / max(w - 1, 1))
+                put(px, xx, yy, _shaded(rng, MUDBRICK, f, 0.06))
+        for xx in range(x0, min(x0 + w, 15)):
+            put(px, xx, roof_y, _shaded(rng, PLASTER, 0.9 - 0.5 * ((xx - x0) / max(w - 1, 1)), 0.05))
+    #- the wall face: stone, left-lit, crenellated crest
+    for yy in range(9, 14):
+        for xx in range(1, 15):
+            f = 0.72 - 0.08 * (yy - 9) - 0.25 * (xx / 15.0)
+            put(px, xx, yy, _shaded(rng, SITE_STONE, f, 0.06))
+    for xx in range(1, 15, 2):
+        put(px, xx, 8, _shaded(rng, SITE_STONE, 0.9, 0.04))
+    #- corner towers standing proud of the crest
+    for tx in (1, 13):
+        for yy in range(6, 9):
+            for xx in (tx, tx + 1):
+                put(px, xx, yy, _shaded(rng, SITE_STONE, 0.85 - 0.35 * (xx - tx), 0.06))
+        put(px, tx, 5, _shaded(rng, SITE_STONE, 0.95, 0.03))
+        put(px, tx + 1, 5, _shaded(rng, SITE_STONE, 0.6, 0.03))
+    #- the gate: a dark two-wide arch through the wall
+    gate = 7 + rng.randrange(-1, 2)
+    for yy in range(10, 14):
+        put(px, gate, yy, DOOR_DARK)
+        put(px, gate + 1, yy, DOOR_DARK)
+    return outline_silhouette(px, (70, 66, 58), (52, 48, 42))
+
+
+def paint_site_palace(rng):
+    """A citadel palace: cyclopean stone terrace and corner towers under a
+    plastered megaron hall -- Mycenae / Hattusa, squat and massive."""
+    px = new_canvas()
+    #- cyclopean terrace: big irregular blocks, wider at the base
+    for yy in range(9, 15):
+        xs = 2 if yy < 12 else 1
+        xe = 13 if yy < 12 else 14
+        for xx in range(xs, xe + 1):
+            block = ((xx + (yy // 2) * 2) // 3 + yy) % 3
+            f = 0.75 - 0.09 * (yy - 9) - 0.12 * block
+            put(px, xx, yy, _shaded(rng, SITE_STONE, f, 0.08))
+    #- corner towers rising from the wall line, heights jittered
+    for tx in (2, 12):
+        top = rng.randrange(6, 8)
+        for yy in range(top, 10):
+            for xx in (tx, tx + 1):
+                put(px, xx, yy, _shaded(rng, SITE_STONE, 0.8 - 0.25 * (xx - tx), 0.08))
+    #- megaron hall: plastered upper story, low dark-red gable
+    for yy in range(4, 9):
+        for xx in range(4, 12):
+            f = 0.9 - 0.7 * ((xx - 4) / 7.0)
+            put(px, xx, yy, _shaded(rng, PLASTER, f, 0.06))
+    roof = ((104, 54, 42), (134, 68, 50), (162, 86, 58))
+    for xx in range(3, 13):
+        put(px, xx, 3, _shaded(rng, roof, 0.8, 0.08))
+    for xx in range(4, 12):
+        put(px, xx, 2, _shaded(rng, roof, 0.5, 0.08))
+    #- doorway with painted columns flanking it
+    for yy in range(6, 9):
+        put(px, 7, yy, DOOR_DARK)
+        put(px, 8, yy, DOOR_DARK)
+    column = (170, 62, 44)
+    for yy in range(6, 9):
+        put(px, 5, yy, column)
+        put(px, 10, yy, column)
+    return outline_silhouette(px, (78, 74, 66), (56, 52, 46))
+
+
+def paint_site_wagon(rng):
+    """A covered steppe wagon side-on: a low felt tilt over a long plank
+    bed, two big solid disc wheels, the draft pole reaching forward --
+    home, for wagon people."""
+    px = new_canvas()
+    wood = ((92, 66, 44), (122, 90, 58), (150, 114, 74))
+    felt = ((160, 146, 120), (194, 180, 152), (220, 208, 182))
+    #- the tilt: a low arched felt cover, lit from the top-left
+    for xx in range(6, 11):
+        put(px, xx, 5, _shaded(rng, felt, 0.95 - 0.4 * ((xx - 6) / 4.0), 0.05))
+    for yy in range(6, 8):
+        for xx in range(5, 13):
+            put(px, xx, yy, _shaded(rng, felt, 0.9 - 0.55 * ((xx - 5) / 7.0) - 0.1 * (yy - 6), 0.05))
+    #- long plank bed with a darker underframe, pole angling down ahead
+    for xx in range(3, 14):
+        put(px, xx, 8, _shaded(rng, wood, 1.0 - 0.45 * ((xx - 3) / 10.0), 0.05))
+        put(px, xx, 9, _shaded(rng, wood, 0.55 - 0.35 * ((xx - 3) / 10.0), 0.05))
+    put(px, 2, 9, _shaded(rng, wood, 0.5, 0.05))
+    put(px, 1, 10, _shaded(rng, wood, 0.4, 0.05))
+    #- two big solid disc wheels: dark diamond rims, bright hubs
+    wheel_rim = (54, 40, 28)
+    for cx in (6, 11):
+        for xx in range(cx - 1, cx + 2):
+            put(px, xx, 10, wheel_rim)
+            put(px, xx, 12, wheel_rim)
+        put(px, cx - 2, 11, wheel_rim)
+        put(px, cx + 2, 11, wheel_rim)
+        put(px, cx - 1, 11, wheel_rim)
+        put(px, cx + 1, 11, wheel_rim)
+        put(px, cx, 13, wheel_rim)
+        put(px, cx, 11, (158, 122, 80))
+    return outline_silhouette(px, (66, 50, 36), (50, 38, 28))
+
+
+def paint_site_band(rng):
+    """A hunter-gatherer camp: a hide tent and a proper campfire --
+    ephemeral, no architecture."""
+    px = new_canvas()
+    hide = ((110, 82, 56), (142, 110, 74), (172, 138, 96))
+    #- hide tent: a clean lean-to triangle with a dark entrance
+    tx, tw, th = 2 + rng.randrange(0, 2), 7, 5
+    base_y = 13
+    for r in range(th):
+        half = (tw / 2.0) * (r + 1) / th
+        cx = tx + tw / 2.0
+        for xx in range(int(cx - half + 0.5), int(cx + half + 0.5) + 1):
+            f = 0.9 - 0.7 * ((xx - (cx - half)) / max(2 * half, 1))
+            put(px, xx, base_y - th + 1 + r, _shaded(rng, hide, f, 0.07))
+    put(px, tx + tw // 2, base_y, DOOR_DARK)
+    put(px, tx + tw // 2, base_y - 1, DOOR_DARK)
+    #- campfire: log base, two-wide flame, smoke drifting off the top
+    fx = 11 + rng.randrange(0, 2)
+    for xx in (fx - 1, fx, fx + 1):
+        put(px, xx, 14, (84, 62, 42))
+    put(px, fx - 1, 13, (222, 110, 36))
+    put(px, fx, 13, (236, 156, 56))
+    put(px, fx + 1, 13, (222, 110, 36))
+    put(px, fx - 1, 12, (240, 186, 76))
+    put(px, fx, 12, (248, 214, 110))
+    put(px, fx, 11, (252, 234, 156))
+    smoke = ((150, 148, 142), (176, 174, 168))
+    put(px, fx + 1, 9, smoke[0])
+    put(px, fx + 1, 8, smoke[1])
+    put(px, fx, 7, smoke[1])
+    return outline_silhouette(px, (66, 50, 36), (50, 38, 28))
+
+
+def paint_site_herders(rng):
+    """Herders on the move: a figure with a staff and their little flock."""
+    px = new_canvas()
+    skin = (146, 108, 72)
+    cloak = (104, 78, 54)
+    #- the herder: head, shouldered cloak, staff in hand
+    hx = 3 + rng.randrange(0, 2)
+    put(px, hx, 6, skin)
+    put(px, hx - 1, 7, cloak)
+    put(px, hx + 1, 7, cloak)
+    for yy in range(7, 11):
+        put(px, hx, yy, cloak)
+    for yy in range(5, 11):
+        put(px, hx + 2, yy, (150, 118, 76))
+    #- the flock: woolly bodies, dark heads, a dun cow among the sheep
+    wool = ((172, 164, 148), (206, 198, 180), (228, 222, 206))
+    dun = ((124, 96, 64), (152, 120, 80), (176, 142, 96))
+    spots = [(7, 9), (11, 8), (9, 12), (12, 12)]
+    rng.shuffle(spots)
+    herd = spots[:rng.randrange(2, 4)]
+    for idx, (ax, ay) in enumerate(sorted(herd, key=lambda s: s[1])):
+        ramp = dun if idx == 0 and rng.random() < 0.5 else wool
+        for yy in range(ay, ay + 2):
+            for xx in range(ax, ax + 3):
+                f = 0.85 - 0.5 * ((xx - ax) / 2.0) - 0.3 * (yy - ay)
+                put(px, xx, yy, _shaded(rng, ramp, f + 0.2, 0.08))
+        put(px, ax - 1, ay, (62, 50, 40))     # head, grazing forward
+        put(px, ax, ay + 2, (62, 50, 40))     # legs
+        put(px, ax + 2, ay + 2, (62, 50, 40))
+    return outline_silhouette(px, (86, 72, 56), (62, 52, 42))
+
+
+def paint_site_temple(rng):
+    """A ziggurat temple: stepped mudbrick tiers under a whitewashed
+    summit shrine, a stair climbing the front face. Each tier's top reads
+    as a sunlit horizontal over a shadowed face."""
+    px = new_canvas()
+    tiers = ((1, 14, 11, 13), (3, 12, 8, 10), (5, 10, 5, 7))  # x0, x1, y_top, y_bot
+    for x0, x1, y_top, y_bot in tiers:
+        for xx in range(x0, x1 + 1):
+            put(px, xx, y_top, _shaded(rng, MUDBRICK, 1.0 - 0.4 * ((xx - x0) / max(x1 - x0, 1)), 0.05))
+        for yy in range(y_top + 1, y_bot + 1):
+            for xx in range(x0, x1 + 1):
+                f = 0.6 - 0.45 * ((xx - x0) / max(x1 - x0, 1))
+                put(px, xx, yy, _shaded(rng, MUDBRICK, f, 0.06))
+    #- the stair: a whitewashed ramp up the front face, distinct from the
+    #  brick tiers it climbs
+    for yy in range(5, 14):
+        for xx in (7, 8):
+            put(px, xx, yy, _shaded(rng, PLASTER, 1.0 - 0.35 * (xx - 7) - 0.03 * (yy - 5), 0.04))
+    #- summit shrine: bright whitewash, a slim dark doorway, lit flat top
+    for yy in range(2, 5):
+        for xx in range(6, 10):
+            put(px, xx, yy, _shaded(rng, PLASTER, 1.0 - 0.35 * ((xx - 6) / 3.0), 0.04))
+    put(px, 7, 3, DOOR_DARK)
+    put(px, 7, 4, DOOR_DARK)
+    return outline_silhouette(px, (96, 76, 50), (74, 58, 38))
+
+
+def _mound(px, rng, cx, cy, rx, ry, ramp, dither=0.08):
+    """A smooth barrow dome, lit from the top-left."""
+    for yy in range(cy - ry, cy + 1):
+        for xx in range(cx - rx, cx + rx + 1):
+            dx = (xx - cx) / float(rx)
+            dy = (yy - cy) / float(ry)
+            if dx * dx + dy * dy > 1.0:
+                continue
+            f = 1.05 - 0.55 * (dx + 1.0) / 2.0 - 0.35 * (dy + 1.0)
+            put(px, xx, yy, _shaded(rng, ramp, f, dither))
+
+
+def paint_site_shrine(rng):
+    """A pillar shrine: a small whitewashed cella with red columns painted
+    on its facade, horns of consecration on the roofline -- Aegean.
+    Columns sit inside the opaque facade so the outline pass spares them."""
+    px = new_canvas()
+    for xx in range(3, 13):
+        put(px, xx, 12, _shaded(rng, SITE_STONE, 0.85 - 0.4 * ((xx - 3) / 9.0), 0.05))
+        put(px, xx, 13, _shaded(rng, SITE_STONE, 0.5 - 0.3 * ((xx - 3) / 9.0), 0.05))
+    for yy in range(6, 12):
+        for xx in range(4, 12):
+            put(px, xx, yy, _shaded(rng, PLASTER, 1.0 - 0.55 * ((xx - 4) / 7.0), 0.04))
+    column = (170, 62, 44)
+    for cx in (5, 10):
+        for yy in range(7, 12):
+            put(px, cx, yy, column)
+    for yy in range(8, 12):
+        put(px, 7, yy, DOOR_DARK)
+        put(px, 8, yy, DOOR_DARK)
+    for xx in range(4, 12):
+        put(px, xx, 5, _shaded(rng, PLASTER, 0.9 - 0.4 * ((xx - 4) / 7.0), 0.04))
+    #- horns of consecration: silhouette prongs at the roofline's ends
+    for hx in (4, 11):
+        put(px, hx, 4, _shaded(rng, PLASTER, 0.9, 0.03))
+        put(px, hx, 3, _shaded(rng, PLASTER, 0.95, 0.03))
+    return outline_silhouette(px, (78, 66, 54), (56, 48, 40))
+
+
+def paint_site_sanctuary(rng):
+    """A peak sanctuary: a small whitewashed shrine on a rocky knoll, a
+    worn path climbing to it."""
+    px = new_canvas()
+    _mound(px, rng, 8, 14, 7, 6, SITE_STONE, 0.14)
+    for yy in range(5, 8):
+        for xx in range(6, 11):
+            put(px, xx, yy, _shaded(rng, PLASTER, 1.0 - 0.5 * ((xx - 6) / 4.0), 0.04))
+    put(px, 8, 6, DOOR_DARK)
+    put(px, 8, 7, DOOR_DARK)
+    #- the pilgrim path, pale steps worn into the rock face
+    for sx, sy in ((7, 9), (8, 10), (7, 12), (8, 13)):
+        put(px, sx, sy, _shaded(rng, SITE_STONE, 0.95, 0.03))
+    return outline_silhouette(px, (72, 68, 60), (52, 48, 42))
+
+
+KURGAN_GRASS = ((86, 92, 54), (114, 118, 72), (140, 142, 92))
+BARROW_EARTH = ((104, 88, 58), (132, 112, 72), (158, 138, 94))
+
+
+def paint_site_kurgan(rng):
+    """A kurgan: a grassed-over steppe burial mound ringed by kerb stones,
+    a lone stela on the summit."""
+    px = new_canvas()
+    _mound(px, rng, 8, 14, 7, 6, KURGAN_GRASS)
+    #- kerb stones embedded in the mound's base row, not below it
+    for xx in range(2, 15, 2 + rng.randrange(0, 2)):
+        put(px, xx, 14, _shaded(rng, SITE_STONE, 0.5, 0.08))
+    for yy in range(6, 9):
+        put(px, 8, yy, _shaded(rng, SITE_STONE, 0.8 - 0.15 * (yy - 6), 0.05))
+    return outline_silhouette(px, (62, 66, 42), (48, 50, 34))
+
+
+def paint_site_tholos(rng):
+    """A tholos tomb: an earth dome over a monumental stone doorway with
+    its lintel and relieving triangle -- Treasury of Atreus in 16 pixels."""
+    px = new_canvas()
+    _mound(px, rng, 8, 14, 6, 7, BARROW_EARTH)
+    for yy in range(10, 15):
+        put(px, 6, yy, _shaded(rng, SITE_STONE, 0.85, 0.05))
+        put(px, 9, yy, _shaded(rng, SITE_STONE, 0.5, 0.05))
+    for xx in range(6, 10):
+        put(px, xx, 9, _shaded(rng, SITE_STONE, 0.9 - 0.4 * ((xx - 6) / 3.0), 0.04))
+    for yy in range(10, 15):
+        put(px, 7, yy, DOOR_DARK)
+        put(px, 8, yy, DOOR_DARK)
+    put(px, 7, 8, (40, 32, 24))  # relieving triangle over the lintel
+    put(px, 8, 8, (40, 32, 24))
+    return outline_silhouette(px, (74, 62, 44), (54, 46, 34))
+
+
+def paint_site_circle(rng):
+    """A stone circle: a ring of weathered monoliths of uneven height --
+    the sacred site of cultures that never built a temple. Stones are
+    self-shaded two-pixel slabs (lit left, dark right, seated foot); the
+    global outline pass would swallow shapes this thin."""
+    px = new_canvas()
+    ring = ((12, 11), (7, 13), (2, 11), (4, 8), (10, 8))
+    for sx, sy in ring:
+        if rng.random() < 0.15:
+            continue  # a fallen stone leaves a gap
+        h = rng.randrange(3, 5)
+        for step in range(h):
+            seat = 0.3 if step == 0 else 0.0
+            put(px, sx, sy - step, _shaded(rng, SITE_STONE, 0.9 - 0.12 * step - seat, 0.08))
+            put(px, sx + 1, sy - step, _shaded(rng, SITE_STONE, 0.42 - 0.08 * step - seat, 0.08))
+    return px
+
+
+SITE_VARIANTS = 4
+
+SITES = {
+    "village": paint_site_village,
+    "town": paint_site_town,
+    "palace": paint_site_palace,
+    "temple": paint_site_temple,
+    "shrine": paint_site_shrine,
+    "sanctuary": paint_site_sanctuary,
+    "kurgan": paint_site_kurgan,
+    "tholos": paint_site_tholos,
+    "circle": paint_site_circle,
+    "band": paint_site_band,
+    "herders": paint_site_herders,
+    "wagon": paint_site_wagon,
+}
+
+
 # ------------------------------------------------------------- boundaries
 #
 # Dual-grid marching-squares masks (see game/tiling.h for the taxonomy): a
@@ -925,6 +1309,19 @@ def main():
                 row.append(composed)
             sheet_rows.append((f"{name} {suffix}", row))
             print(f"{name} {suffix}: {VARIANTS} variants")
+
+    # site markers: settlements and mobile groups, previewed on plains
+    for name, painter in SITES.items():
+        row = []
+        for variant in range(SITE_VARIANTS):
+            rng = random.Random(f"site-{name}:{variant}")
+            img = to_image(painter(rng))
+            img.save(os.path.join(OUT_DIR, f"site_{name}_{variant}.png"))
+            composed = grounds["plains"].copy()
+            composed.alpha_composite(img)
+            row.append(composed)
+        sheet_rows.append((f"site {name}", row))
+        print(f"site {name}: {SITE_VARIANTS} variants")
 
     # contact sheet for eyeballing, next to the tiles but not loaded by the game
     pad = 2
