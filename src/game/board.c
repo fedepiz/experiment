@@ -52,6 +52,11 @@ internal BD_Board* bd_board_alloc(Arena* arena, I32 width, I32 height, U32 path_
   board->entries = push_array_no_zero(arena, BD_PathEntry, board->entry_cap);
   board->points = push_array_no_zero(arena, V2I, tile_count);
   board->point_cap = tile_count;
+  // ~4 tiles per bucket keeps pawn chains short at any sane density; chains
+  // degrade gracefully rather than filling up beyond that
+  board->pawn_bucket_count = 64;
+  while(board->pawn_bucket_count * 4 < tile_count) { board->pawn_bucket_count *= 2; }
+  board->pawn_buckets = push_array(arena, BD_Pawn*, board->pawn_bucket_count);
   return board;
 }
 
@@ -117,57 +122,55 @@ internal void bd_feature_disconnect(BD_Board* board, V2I p, BD_Dir dir, BD_Featu
 ////////////////////////////////
 //~ fp: Pawns
 
-internal BD_Pawn* bd_pawn_from_id(BD_PawnID id) {
-  BD_Pawn* result = &BD_NIL_PAWN;
-  if(id.ptr != 0 && id.ptr->gen == id.gen) {
-    result = id.ptr;
-  }
-  return result;
+// splitmix64 finalizer: spreads consecutive keys across the buckets
+internal U64 bd__key_hash(U64 key) {
+  key ^= key >> 30; key *= 0xbf58476d1ce4e5b9ull;
+  key ^= key >> 27; key *= 0x94d049bb133111ebull;
+  key ^= key >> 31;
+  return key;
 }
 
-internal BD_PawnID bd_pawn_create(BD_Board* board, V2I pos, U32 kind, U64 user) {
-  BD_PawnID result = {0};
-  BD_Tile* tile = bd_tile_at(board, pos);
-  if(tile != &BD_NIL_TILE) {
-    BD_Pawn* pawn = board->first_free_pawn;
-    if(pawn != 0) {
-      SLLStackPop(board->first_free_pawn);
-      U64 gen = pawn->gen; // survives the recycle: old ids must stay dead
-      MemoryZeroStruct(pawn);
-      pawn->gen = gen;
-    } else {
-      pawn = push_array(board->arena, BD_Pawn, 1);
-    }
-    pawn->pos = pos;
-    pawn->kind = kind;
-    pawn->user = user;
-    DLLPushBack(tile->first_pawn, tile->last_pawn, pawn);
+internal BD_Pawn** bd__pawn_bucket(BD_Board* board, U64 key) {
+  return &board->pawn_buckets[bd__key_hash(key) & (board->pawn_bucket_count - 1)];
+}
+
+internal BD_Pawn* bd_pawn_lookup(BD_Board* board, U64 key) {
+  BD_Pawn* pawn = *bd__pawn_bucket(board, key);
+  for(; pawn != 0 && pawn->key != key; pawn = pawn->hash_next) {}
+  return pawn != 0 ? pawn : &BD_NIL_PAWN;
+}
+
+internal void bd_pawn_place(BD_Board* board, U64 key, V2I pos) {
+  BD_Tile* dst = bd_tile_at(board, pos);
+  if(dst == &BD_NIL_TILE) { return; }
+  BD_Pawn* pawn = bd_pawn_lookup(board, key);
+  if(pawn != &BD_NIL_PAWN) {
+    BD_Tile* src = bd_tile_at(board, pawn->pos); // placed pawns are always in bounds
+    DLLRemove(src->first_pawn, src->last_pawn, pawn);
+  } else {
+    pawn = board->first_free_pawn;
+    if(pawn != 0) { SLLStackPop(board->first_free_pawn); MemoryZeroStruct(pawn); }
+    else { pawn = push_array(board->arena, BD_Pawn, 1); }
+    pawn->key = key;
+    BD_Pawn** bucket = bd__pawn_bucket(board, key);
+    pawn->hash_next = *bucket;
+    *bucket = pawn;
     board->pawn_count += 1;
-    result.ptr = pawn;
-    result.gen = pawn->gen;
   }
-  return result;
+  pawn->pos = pos;
+  DLLPushBack(dst->first_pawn, dst->last_pawn, pawn);
 }
 
-internal void bd_pawn_destroy(BD_Board* board, BD_PawnID id) {
-  BD_Pawn* pawn = bd_pawn_from_id(id);
-  if(pawn == &BD_NIL_PAWN) { return; }
-  BD_Tile* tile = bd_tile_at(board, pawn->pos); // alive pawns are always in bounds
+internal void bd_pawn_remove(BD_Board* board, U64 key) {
+  BD_Pawn** link = bd__pawn_bucket(board, key);
+  for(; *link != 0 && (*link)->key != key; link = &(*link)->hash_next) {}
+  BD_Pawn* pawn = *link;
+  if(pawn == 0) { return; }
+  *link = pawn->hash_next;
+  BD_Tile* tile = bd_tile_at(board, pawn->pos); // placed pawns are always in bounds
   DLLRemove(tile->first_pawn, tile->last_pawn, pawn);
-  pawn->gen += 1; // outstanding ids die here
   SLLStackPush(board->first_free_pawn, pawn);
   board->pawn_count -= 1;
-}
-
-internal void bd_pawn_move(BD_Board* board, BD_PawnID id, V2I to) {
-  BD_Pawn* pawn = bd_pawn_from_id(id);
-  if(pawn == &BD_NIL_PAWN) { return; }
-  BD_Tile* dst = bd_tile_at(board, to);
-  if(dst == &BD_NIL_TILE) { return; }
-  BD_Tile* src = bd_tile_at(board, pawn->pos);
-  DLLRemove(src->first_pawn, src->last_pawn, pawn);
-  DLLPushBack(dst->first_pawn, dst->last_pawn, pawn);
-  pawn->pos = to;
 }
 
 internal BD_PawnArray bd_pawns_in_rect(Arena* arena, BD_Board* board, V2I min, V2I max) {
@@ -194,6 +197,18 @@ internal BD_PawnArray bd_pawns_in_rect(Arena* arena, BD_Board* board, V2I min, V
         result.v[result.count] = pawn;
         result.count += 1;
       }
+    }
+  }
+  return result;
+}
+
+internal BD_PawnArray bd_pawns_all(Arena* arena, BD_Board* board) {
+  BD_PawnArray result = {0};
+  result.v = push_array_no_zero(arena, BD_Pawn*, board->pawn_count);
+  for(U64 bucket = 0; bucket < board->pawn_bucket_count; bucket += 1) {
+    for(BD_Pawn* pawn = board->pawn_buckets[bucket]; pawn != 0; pawn = pawn->hash_next) {
+      result.v[result.count] = pawn;
+      result.count += 1;
     }
   }
   return result;
@@ -393,6 +408,30 @@ internal F32 bd_step_cost(BD_Board* board, V2I from, V2I to) {
     }
   }
   return result;
+}
+
+internal B32 bd_tile_passable(BD_Board* board, V2I p) {
+  B32 result = bd_in_bounds(board, p);
+  if(result && board->rules.terrain_cost != 0) {
+    BD_Terrain terrain = bd_tile_at(board, p)->terrain;
+    result = terrain < board->rules.terrain_cost_count &&
+             board->rules.terrain_cost[terrain] > 0;
+  }
+  return result;
+}
+
+internal V2I bd_snap_passable(BD_Board* board, V2I want) {
+  I32 max_radius = Max(board->width, board->height);
+  for(I32 radius = 0; radius < max_radius; radius += 1) {
+    for(I32 dy = -radius; dy <= radius; dy += 1) {
+      for(I32 dx = -radius; dx <= radius; dx += 1) {
+        if(Max(dx, -dx) != radius && Max(dy, -dy) != radius) { continue; } // ring, not disc
+        V2I p = {want.x + dx, want.y + dy};
+        if(bd_tile_passable(board, p)) { return p; }
+      }
+    }
+  }
+  return want;
 }
 
 ////////////////////////////////

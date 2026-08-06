@@ -48,3 +48,7 @@ internal V2 v2_norm(V2 a, V2 fallback) {
   if(mag == 0) { return fallback; }
   return (V2){a.x / mag, a.y / mag};
 }
+
+internal V4 v4_splat(F32 v) {
+  return (V4){v, v, v, v};
+}

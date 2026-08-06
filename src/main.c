@@ -11,7 +11,9 @@
 #include "base/core.h"
 #include "base/print.h"
 #include "base/strings.h"
+#include "base/tctx.h"
 #include "game/board.h"
+#include "game/thing_db.h"
 #include "game/tiling.h"
 #include "tabula.h"
 #include "game/game.h"
@@ -23,19 +25,12 @@
 ////////////////////////////////
 //~ fp: temp: Test Map
 //
-// The world itself comes from worldgen (knobs in data/world.tabula); this
-// section is the demo glue around it: snapping demo points onto passable
-// land, one road laid along the terrain's own best path, and a debug
-// rendering -- colored tiles, line segments for rivers and roads, a rounded
-// rect per pawn.
+// The world itself is game/'s (worldgen knobs in data/world.tabula); this
+// section is the presentation glue around it: sprite assets, the tiler
+// cache, and a debug rendering -- tiles, line segments for rivers and
+// roads, a rounded rect per pawn.
 
 #define MAP_TILE 8.0f // world units per tile
-
-global V4 MAP_PAWN_COLORS[] = {
-    {0.95f, 0.80f, 0.25f, 1},
-    {0.88f, 0.32f, 0.26f, 1},
-    {0.93f, 0.93f, 0.96f, 1},
-};
 
 ////////////////////////////////
 //~ fp: temp: Map Assets
@@ -48,12 +43,17 @@ global V4 MAP_PAWN_COLORS[] = {
 
 #define MAP_SPRITE_CAP 1024
 
+#define MAP_SITE_VARIANT_CAP 8
+
 typedef struct {
   D_Sprite sprites[MAP_SPRITE_CAP]; // id 0 reserved: "no art"
   U32 sprite_count;
   TL_Config tiling;
   V4 fallback_colors[TL_CLASS_CAP]; // flat color for terrains with no ground art
   U32 class_count;
+  // GM_Sprite -> sprite ids, one per art variant; count 0 = no art yet
+  U32 gm_sprites[GM_Sprite_COUNT][MAP_SITE_VARIANT_CAP];
+  U32 gm_sprite_counts[GM_Sprite_COUNT];
 } MapAssets;
 
 internal U32 map__register(MapAssets* assets, D_Sprite sprite) {
@@ -96,20 +96,16 @@ internal MapCache map_cache_make(Arena* arena, I32 board_w, I32 board_h, TL_Conf
   return cache;
 }
 
-internal TL_Cell* map_cache_cell(MapCache* cache, BD_Board* board, V2I p) {
-  TL_Cell* cell = &cache->cells[p.y * cache->w + p.x];
+internal TL_Cell* map_cache_cell(MapCache* cache, GM_MapItem* item) {
+  TL_Cell* cell = &cache->cells[item->pos.y * cache->w + item->pos.x];
   if(cell->count == 0) {
     U32 nb[9];
-    for(I32 dy = -1; dy <= 1; dy += 1) {
-      for(I32 dx = -1; dx <= 1; dx += 1) {
-        nb[(dy + 1) * 3 + (dx + 1)] = bd_tile_at(board, v2i_add(p, (V2I){dx, dy}))->terrain;
-      }
-    }
+    for(U32 i = 0; i < 9; i += 1) { nb[i] = item->neighbours[i]; }
     U8 networks[TL_NETWORK_CAP] = {0};
     for(BD_Feature feature = 0; feature < BD_Feature_COUNT; feature += 1) {
-      networks[feature] = bd_tile_at(board, p)->features[feature];
+      networks[feature] = item->features[feature];
     }
-    *cell = tl_cell(&cache->tiling, nb, networks, p);
+    *cell = tl_cell(&cache->tiling, nb, networks, item->pos);
   }
   return cell;
 }
@@ -180,7 +176,10 @@ internal MapAssets map_assets_load(WG_Params* params) {
   }
 
   // network art, by BD_Feature id; finished pieces per connection case
-  struct { U32 network; char* name; } NETWORK_ART[] = {
+  struct {
+    U32 network;
+    char* name;
+  } NETWORK_ART[] = {
       {BD_Feature_River, "river"},
       {BD_Feature_Road, "road"},
   };
@@ -196,120 +195,149 @@ internal MapAssets map_assets_load(WG_Params* params) {
     }
   }
 
+  // item art, by GM_Sprite id -- the game names what a thing looks like,
+  // these files say how that looks. Variant-scanned like all tile art; a
+  // sprite with no files keeps count 0 and the renderer falls back to a
+  // flat shape.
+  struct {
+    GM_Sprite sprite;
+    char* name;
+  } ITEM_ART[] = {
+      {GM_Sprite_Village, "village"},
+      {GM_Sprite_Palace, "palace"},
+      {GM_Sprite_Herders, "herders"},
+      {GM_Sprite_Wagon, "wagon"},
+      {GM_Sprite_Tholos, "tholos"},
+      {GM_Sprite_Band, "band"},
+  };
+  for(U32 i = 0; i < ArrayCount(ITEM_ART); i += 1) {
+    for(U32 variant = 0; variant < MAP_SITE_VARIANT_CAP; variant += 1) {
+      String8 path = push_str8f(scratch.arena, "assets/tiles/site_%s_%u.png", ITEM_ART[i].name, variant);
+      U32 id = map__load(&assets, scratch.arena, path);
+      if(id == 0) { break; }
+      assets.gm_sprites[ITEM_ART[i].sprite][variant] = id;
+      assets.gm_sprite_counts[ITEM_ART[i].sprite] = variant + 1;
+    }
+  }
+
   d_spritesheet_end();
   arena_release_scratch(scratch);
   return assets;
 }
 
-internal B32 map_tile_passable(BD_Board* board, V2I p) {
-  BD_Terrain terrain = bd_tile_at(board, p)->terrain;
-  return terrain < board->rules.terrain_cost_count &&
-         board->rules.terrain_cost[terrain] > 0;
+
+// draw order: the tiler's layers first (a fact about how the art is built --
+// boundary tongues must not paint over overlay art), then surface items
+#define MAP_BIN_COUNT (TL_Layer_COUNT + 1)
+
+// the world-space rect of the tile at (x, y) -- fractional positions land on
+// the dual grid -- shrunk by `inset` world units per side
+internal Rect map_tile_rect(F32 x, F32 y, F32 inset) {
+  return (Rect){{x * MAP_TILE + inset, y * MAP_TILE + inset},
+                {(x + 1) * MAP_TILE - inset, (y + 1) * MAP_TILE - inset}};
 }
 
-// nearest passable tile to `want`, searching outward ring by ring; `want`
-// itself when the whole board is impassable (callers just get a dead pawn)
-internal V2I map_snap_passable(BD_Board* board, V2I want) {
-  I32 max_radius = Max(board->width, board->height);
-  for(I32 radius = 0; radius < max_radius; radius += 1) {
-    for(I32 dy = -radius; dy <= radius; dy += 1) {
-      for(I32 dx = -radius; dx <= radius; dx += 1) {
-        if(Max(dx, -dx) != radius && Max(dy, -dy) != radius) { continue; } // ring, not disc
-        V2I p = {want.x + dx, want.y + dy};
-        if(bd_in_bounds(board, p) && map_tile_passable(board, p)) { return p; }
-      }
-    }
-  }
-  return want;
-}
+internal void map_draw(GM_MapItems items, MapAssets* assets, MapCache* cache, D_Camera camera) {
+  // One resolved drawable, ready to submit. sprite 0 means "draw color".
+  typedef struct {
+    Rect rect;
+    U32 sprite; // into assets->sprites; 0 = none
+    U32 mask;   // sprite mask, 0 = none
+    V4 color;   // sprite tint (zero = as-is), or the fill when sprite == 0
+    F32 rounding;
+  } MapDrawCmd;
 
-internal BD_Board* map_create(Arena* arena, U64 seed) {
-  WG_Params params = wg_params_load(arena, str8_lit("data/world.tabula"));
-  BD_Board* board = wg_generate(arena, &params, seed);
-
-  // a road between two would-be settlements on opposite sides of the
-  // continent, following the terrain's own best path
-  {
-    V2I west = map_snap_passable(board, (V2I){board->width / 6, board->height / 2});
-    V2I east = map_snap_passable(board, (V2I){board->width * 5 / 6, board->height / 2});
-    ArenaTemp scratch = arena_get_scratch(&arena, 1);
-    BD_Path path = bd_path_find(scratch.arena, board, west, east);
-    for(U64 idx = 0; idx + 1 < path.count; idx += 1) {
-      BD_Dir dir = bd_dir_from_delta(v2i_sub(path.points[idx + 1], path.points[idx]));
-      bd_feature_connect(board, path.points[idx], dir, BD_Feature_Road);
-    }
-    arena_release_scratch(scratch);
-  }
-  return board;
-}
-
-internal void map_draw(BD_Board* board, MapAssets* assets, MapCache* cache, D_Camera camera) {
   V2 vp = wnd_size();
   d_rect((Rect){{0, 0}, {vp.x, vp.y}}, (V4){0.06f, 0.06f, 0.08f, 1});
 
-  d_camera_begin(camera);
-  {
-    // only the tiles the viewport can see
-    V2 world_min = d_camera_from_screen(camera, (V2){0, 0});
-    V2 world_max = d_camera_from_screen(camera, vp);
-    I32 x0 = ClampBot((I32)(world_min.x / MAP_TILE) - 1, 0);
-    I32 y0 = ClampBot((I32)(world_min.y / MAP_TILE) - 1, 0);
-    I32 x1 = ClampTop((I32)(world_max.x / MAP_TILE) + 1, board->width - 1);
-    I32 y1 = ClampTop((I32)(world_max.y / MAP_TILE) + 1, board->height - 1);
+  ArenaTemp scratch = arena_get_scratch(0, 0);
 
-    // every appearance decision is tl_cell's; this loop only samples the
-    // board and resolves pieces to sprites. It runs one row/column past the
-    // viewport's right/bottom because each cell owns the dual boundary cell
-    // at its NW corner, and those edge dual cells need an owner. Off-board
-    // cells read as nil (rank 0): they emit no surface of their own, only
-    // receive the neighbors' boundary spill over the world edge.
-    I32 gx1 = x1 + 1;
-    I32 gy1 = y1 + 1;
+  //- size the bins: one slot per piece / surface item. Upper bounds -- pieces
+  // that resolve to nothing leave slack. This pass also warms the cell cache,
+  // so the scatter below re-resolves for free.
+  U64 cap[MAP_BIN_COUNT] = {0};
+  for(U64 i = 0; i < items.count; i += 1) {
+    GM_MapItem* item = &items.items[i];
+    if(item->has_pawn) {
+      cap[TL_Layer_COUNT] += 1;
+      continue;
+    }
+    TL_Cell* cell = map_cache_cell(cache, item);
+    for(U32 pi = 0; pi < cell->count; pi += 1) { cap[cell->pieces[pi].layer] += 1; }
+  }
+  U64 base[MAP_BIN_COUNT];
+  U64 total = 0;
+  for(U32 bin = 0; bin < MAP_BIN_COUNT; bin += 1) {
+    base[bin] = total;
+    total += cap[bin];
+  }
+  MapDrawCmd* cmds = push_array_no_zero(scratch.arena, MapDrawCmd, total);
+  U64 count[MAP_BIN_COUNT] = {0};
 
-    // layer-grouped passes -- terrain surface, then standing objects -- so a
-    // boundary tongue can never paint over a neighbor's overlay art
-    for(TL_Layer pass = 0; pass < TL_Layer_COUNT; pass += 1) {
-      for(I32 y = y0; y <= gy1; y += 1) {
-        for(I32 x = x0; x <= gx1; x += 1) {
-          TL_Cell* cell = map_cache_cell(cache, board, (V2I){x, y});
-          B32 on_board = x < board->width && y < board->height;
-          for(U32 i = 0; i < cell->count; i += 1) {
-            TL_Piece* piece = &cell->pieces[i];
-            if(piece->layer != pass) { continue; }
-            Rect r = {{(x + piece->offset.x) * MAP_TILE, (y + piece->offset.y) * MAP_TILE},
-                      {(x + piece->offset.x + 1) * MAP_TILE, (y + piece->offset.y + 1) * MAP_TILE}};
-            if(piece->id != 0) {
-              if(piece->mask_id != 0) {
-                d_sprite_masked(assets->sprites[piece->id], assets->sprites[piece->mask_id], r, (V4){0});
-              } else {
-                d_sprite(assets->sprites[piece->id], r, (V4){0}); // zero tint = as-is
-              }
-            } else if(piece->klass != 0 && on_board) {
-              // artless terrain draws its flat color; nil (class 0) is the
-              // void and draws nothing (also keeps the sheet batch unbroken)
-              d_rect(r, assets->fallback_colors[piece->klass]);
-            }
-          }
-        }
+  //- scatter: resolve each item once, every drawable lands in its bin's slots
+  for(U64 i = 0; i < items.count; i += 1) {
+    GM_MapItem* item = &items.items[i];
+    if(item->has_pawn) {
+      MapDrawCmd* cmd = &cmds[base[TL_Layer_COUNT] + count[TL_Layer_COUNT]];
+      count[TL_Layer_COUNT] += 1;
+      U32 variant_count = assets->gm_sprite_counts[item->sprite];
+      if(variant_count > 0) {
+        // full tile; the art brings its own silhouette, the item's color
+        // rides along as tint (white = as-is). Variant hashed off the thing
+        // id: stable for the thing's whole life, varied across things.
+        U32 variant = (item->id * 2654435761u) % variant_count;
+        *cmd = (MapDrawCmd){
+            .rect = map_tile_rect(item->pos.x, item->pos.y, 0),
+            .sprite = assets->gm_sprites[item->sprite][variant],
+            .color = item->color,
+        };
+      } else {
+        F32 inset = MAP_TILE * 0.2f;
+        *cmd = (MapDrawCmd){
+            .rect = map_tile_rect(item->pos.x, item->pos.y, inset),
+            .color = item->color,
+            .rounding = (MAP_TILE - 2 * inset) * 0.35f,
+        };
+      }
+      continue;
+    }
+    TL_Cell* cell = map_cache_cell(cache, item);
+    for(U32 pi = 0; pi < cell->count; pi += 1) {
+      TL_Piece* piece = &cell->pieces[pi];
+      Rect r = map_tile_rect(item->pos.x + piece->offset.x, item->pos.y + piece->offset.y, 0);
+      MapDrawCmd* cmd = &cmds[base[piece->layer] + count[piece->layer]];
+      if(piece->id != 0) {
+        count[piece->layer] += 1;
+        *cmd = (MapDrawCmd){.rect = r, .sprite = piece->id, .mask = piece->mask_id};
+      } else if(piece->klass != 0 && item->has_terrain) {
+        // artless terrain draws its flat color; nil (class 0) is the void
+        // and draws nothing
+        count[piece->layer] += 1;
+        *cmd = (MapDrawCmd){.rect = r, .color = assets->fallback_colors[piece->klass]};
       }
     }
+  }
 
-    // pawns on top; their rects stay inside their tile, second pass keeps
-    // the layering obvious
-    F32 inset = MAP_TILE * 0.2f;
-    for(I32 y = y0; y <= y1; y += 1) {
-      for(I32 x = x0; x <= x1; x += 1) {
-        for(BD_Pawn* pawn = bd_tile_at(board, (V2I){x, y})->first_pawn;
-            pawn != 0; pawn = pawn->next) {
-          Rect r = {{x * MAP_TILE + inset, y * MAP_TILE + inset},
-                    {(x + 1) * MAP_TILE - inset, (y + 1) * MAP_TILE - inset}};
-          d_rect_rounded(r, MAP_PAWN_COLORS[pawn->kind % ArrayCount(MAP_PAWN_COLORS)],
-                         (MAP_TILE - 2 * inset) * 0.35f);
+  //- submit: bins in order, commands in scatter order
+  d_camera_begin(camera);
+  for(U32 bin = 0; bin < MAP_BIN_COUNT; bin += 1) {
+    for(U64 i = 0; i < count[bin]; i += 1) {
+      MapDrawCmd* cmd = &cmds[base[bin] + i];
+      if(cmd->sprite != 0) {
+        if(cmd->mask != 0) {
+          d_sprite_masked(assets->sprites[cmd->sprite], assets->sprites[cmd->mask], cmd->rect, cmd->color);
+        } else {
+          d_sprite(assets->sprites[cmd->sprite], cmd->rect, cmd->color);
         }
+      } else if(cmd->rounding > 0) {
+        d_rect_rounded(cmd->rect, cmd->color, cmd->rounding);
+      } else {
+        d_rect(cmd->rect, cmd->color);
       }
     }
   }
   d_camera_end();
+  arena_release_scratch(scratch);
 }
 
 ////////////////////////////////
@@ -501,80 +529,6 @@ internal void fps_draw(FPS_Counter* counter) {
 }
 
 ////////////////////////////////
-//~ fp: temp: Game State
-//
-// Everything the demo simulates, gathered on one struct: the board plus a few
-// entities wandering a waypoint loop. Entities bank movement points each tick
-// and pay the board's step cost to walk, so terrain speed is felt, not just
-// routed around: forest crossings crawl, road hops fly.
-
-typedef struct {
-  BD_PawnID id;
-  U32 goal;   // index into game->waypoints
-  F32 points; // banked movement points; steps are paid at bd_step_cost
-} Entity;
-
-typedef struct {
-  B32 initialised;
-  BD_Board* board;
-  MapCache map_cache;
-  V2I waypoints[4];
-  Entity entities[3];
-  F32 move_timer;
-} Game;
-
-internal void game_init(Arena* arena, Game* game, U64 seed) {
-  MemoryZeroStruct(game);
-  game->board = map_create(arena, seed);
-
-  // corner-ish waypoints, snapped onto whatever land this world grew there
-  V2I corners[] = {{30, 30}, {220, 40}, {210, 210}, {40, 220}};
-  StaticAssert(ArrayCount(corners) == ArrayCount(game->waypoints), waypoint_count);
-  for(U32 i = 0; i < ArrayCount(game->waypoints); i += 1) {
-    game->waypoints[i] = map_snap_passable(game->board, corners[i]);
-  }
-
-  for(U32 i = 0; i < ArrayCount(game->entities); i += 1) {
-    game->entities[i].id = bd_pawn_create(game->board, game->waypoints[i], i, 0);
-    game->entities[i].goal = (i + 1) % ArrayCount(game->waypoints);
-    game->entities[i].points = 0;
-  }
-
-  game->initialised = true;
-}
-
-internal void game_update(Game* game) {
-  game->move_timer = ClampTop(game->move_timer + wnd_frame_time(), 0.5f);
-  while(game->move_timer > 0.1f) {
-    game->move_timer -= 0.1f;
-    for(U32 i = 0; i < ArrayCount(game->entities); i += 1) {
-      Entity* entity = &game->entities[i];
-      // 1 point per tick: a plains step; banking is capped so waiting at a
-      // cheap stretch cannot buy a later teleport across an expensive one
-      entity->points = ClampTop(entity->points + 1.0f, 4.0f);
-      for(;;) {
-        BD_Pawn* pawn = bd_pawn_from_id(entity->id);
-        V2I goal = game->waypoints[entity->goal];
-        if(v2i_eq(pawn->pos, goal)) {
-          entity->goal = (entity->goal + 1) % ArrayCount(game->waypoints);
-          goal = game->waypoints[entity->goal];
-        }
-        V2I next = bd_path_next_towards(game->board, pawn->pos, goal);
-        if(v2i_eq(next, pawn->pos)) {
-          // unreachable from here: skip that waypoint
-          entity->goal = (entity->goal + 1) % ArrayCount(game->waypoints);
-          break;
-        }
-        F32 cost = bd_step_cost(game->board, pawn->pos, next);
-        if(cost <= 0 || entity->points < cost) { break; } // not affordable yet
-        entity->points -= cost;
-        bd_pawn_move(game->board, entity->id, next);
-      }
-    }
-  }
-}
-
-////////////////////////////////
 //~ fp: Entry Point
 
 ////////////////////////////////
@@ -687,7 +641,7 @@ internal void worldgen_report(I32 world_count, U64 first_seed) {
         by_terrain[idx] = (U16)(t + 1);
         by_land[idx] = (U16)land;
         by_range[idx] = t == id_mountain || t == id_snowcap;
-        by_passable[idx] = t < board->rules.terrain_cost_count && board->rules.terrain_cost[t] > 0;
+        by_passable[idx] = (U16)bd_tile_passable(board, (V2I){x, y});
         by_river[idx] = tile->features[BD_Feature_River] != 0;
         river_tiles += by_river[idx];
         if(land) {
@@ -784,9 +738,11 @@ int main(int argc, char** argv) {
   wnd_equip_gl();
   d_init();
 
-  //- fp: temp: the long-lived game state
+  //- fp: temp: the long-lived game state, and the presentation state that
+  //  shadows it (rebuilt with it on every reseed)
   Arena* game_arena = arena_alloc();
-  Game game = {0};
+  GM_Game game = {0};
+  MapCache map_cache = {0};
   U64 game_next_seed = 2704;
 
   MapAssets map_assets = {0};
@@ -828,18 +784,28 @@ int main(int argc, char** argv) {
 
     if(!game.initialised) {
       arena_clear(game_arena);
-      game_init(game_arena, &game, game_next_seed++);
-      game.map_cache = map_cache_make(game_arena, game.board->width, game.board->height, map_assets.tiling);
+      gm_init(game_arena, &game, game_next_seed++);
+      map_cache = map_cache_make(game_arena, game.board->width, game.board->height, map_assets.tiling);
       // Reset the camera
       camera.center = (V2){game.board->width * MAP_TILE / 2, game.board->height * MAP_TILE / 2};
       camera.zoom = 1.0f; // whole map in view; scroll to zoom in
     }
 
-    game_update(&game);
+    gm_update(&game, wnd_frame_time());
 
     d_frame_begin(frame_arena, wnd_size_px(), wnd_scale());
     {
-      map_draw(game.board, &map_assets, &game.map_cache, camera); // fp: parked for the pacing experiment below
+      // visible tile window, one ring past the right/bottom edge: each cell
+      // owns the dual boundary cell at its NW corner, so the far-edge duals
+      // need an owner. Board dims read off the cache (cache is board+1).
+      V2 world_min = d_camera_from_screen(camera, (V2){0, 0});
+      V2 world_max = d_camera_from_screen(camera, wnd_size());
+      V2I view_min = {ClampBot((I32)(world_min.x / MAP_TILE) - 1, 0),
+                      ClampBot((I32)(world_min.y / MAP_TILE) - 1, 0)};
+      V2I view_max = {ClampTop((I32)(world_max.x / MAP_TILE) + 1, map_cache.w - 2) + 1,
+                      ClampTop((I32)(world_max.y / MAP_TILE) + 1, map_cache.h - 2) + 1};
+      GM_MapItems map_items = gm_map_items(frame_arena, &game, view_min, view_max);
+      map_draw(map_items, &map_assets, &map_cache, camera); // fp: parked for the pacing experiment below
       // test_render(camera); // fp: parked draw-layer demo scene
 
       fps_update(&fps_counter);

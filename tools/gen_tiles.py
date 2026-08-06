@@ -1058,6 +1058,27 @@ def paint_site_circle(rng):
 
 SITE_VARIANTS = 4
 
+
+def fit_site(img, margin=1):
+    """Sites share tiles with roads drawn through the tile center, so a squat
+    sprite hugging the ground line reads as standing beside the road. Center
+    the painted silhouette on the tile and scale it up UNIFORMLY into any
+    unused border -- proportions are part of the read, so never stretch; at
+    this size wasted rows cost legibility."""
+    bb = img.getbbox()
+    if bb is None:
+        return img
+    content = img.crop(bb)
+    room = SIZE - 2 * margin
+    scale = min(room / content.width, room / content.height)
+    if scale > 1.0:
+        content = content.resize((round(content.width * scale),
+                                  round(content.height * scale)), Image.NEAREST)
+    out = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    out.paste(content, ((SIZE - content.width) // 2, (SIZE - content.height) // 2))
+    return out
+
+
 SITES = {
     "village": paint_site_village,
     "town": paint_site_town,
@@ -1315,7 +1336,7 @@ def main():
         row = []
         for variant in range(SITE_VARIANTS):
             rng = random.Random(f"site-{name}:{variant}")
-            img = to_image(painter(rng))
+            img = fit_site(to_image(painter(rng)))
             img.save(os.path.join(OUT_DIR, f"site_{name}_{variant}.png"))
             composed = grounds["plains"].copy()
             composed.alpha_composite(img)

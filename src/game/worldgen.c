@@ -694,14 +694,17 @@ internal void wg__carve_rivers(BD_Board* board, WG_Params* params, U64 seed, F32
         F32 e = off_map ? WG__ELEVATION_OFF_MAP : elevation[(U64)n.y * w + n.x];
         if(e >= here) { continue; } // only strictly downhill: no cycles
         F32 score = e + params->river_meander *
-                        (wg__noise01(seed ^ WG__MEANDER_SALT, n.x, n.y) - 0.5f);
+                            (wg__noise01(seed ^ WG__MEANDER_SALT, n.x, n.y) - 0.5f);
         if(down_dir == BD_Dir_COUNT || score < down_score) {
           down_dir = dir;
           down_score = score;
           down_off_map = off_map;
         }
       }
-      if(down_dir == BD_Dir_COUNT) { in_basin = 1; break; } // nowhere lower
+      if(down_dir == BD_Dir_COUNT) {
+        in_basin = 1;
+        break;
+      } // nowhere lower
 
       trace_pos[length] = at;
       trace_dir[length] = down_dir;
@@ -758,30 +761,10 @@ internal void wg__carve_rivers(BD_Board* board, WG_Params* params, U64 seed, F32
   arena_release_scratch(scratch);
 }
 
-////////////////////////////////
-//~ fp: Generation
-
-internal BD_Board* wg_generate(Arena* arena, WG_Params* params, U64 seed) {
-  BD_Board* board = bd_board_alloc(arena, params->width, params->height, 1024);
-
-  //- fp: travel rules from the terrain table; the cost array shares the
-  //  board's arena, so their lifetimes cannot drift apart
-  F32* terrain_cost = push_array(arena, F32, params->terrain_count);
-  for(U32 type = 0; type < params->terrain_count; type += 1) {
-    terrain_cost[type] = params->terrains[type].move_cost;
-  }
-  board->rules.terrain_cost = terrain_cost;
-  board->rules.terrain_cost_count = params->terrain_count;
-  board->rules.road_cost = params->road_cost;
-  board->rules.river_cross_cost = params->river_cross_cost;
-
-  ArenaTemp scratch = arena_get_scratch(&arena, 1);
+internal F32* wg__elevation_field(Arena* arena, U64 seed, WG_Params* params) {
   I32 w = params->width;
   I32 h = params->height;
-
-  //- fp: elevation field, kept for the whole generation -- classification
-  //  and rivers must agree on where downhill is. Tectonic uplift comes
-  //  first: every later system (rivers, snowlines) hangs off elevation.
+  ArenaTemp scratch = arena_get_scratch(&arena, 1);
   F32* uplift = push_array_no_zero(scratch.arena, F32, (U64)w * h);
   F32* rift = push_array_no_zero(scratch.arena, F32, (U64)w * h);
   F32* rim = push_array_no_zero(scratch.arena, F32, (U64)w * h);
@@ -793,16 +776,15 @@ internal BD_Board* wg_generate(Arena* arena, WG_Params* params, U64 seed) {
       elevation[i] = wg__elevation_at(params, seed, uplift[i], rift[i], rim[i], x, y);
     }
   }
+  arena_release_scratch(scratch);
+  return elevation;
+}
 
-  //- fp: rivers first: classification reads their presence, so river valleys
-  //  come out wetter than the rain alone would make them
-  wg__carve_rivers(board, params, seed, elevation);
-
-  //- fp: the sea is the border-connected body of sub-sea_level water (the
-  //  rim guarantees the border is ocean). Lakes and ponds are below sea
-  //  level too but not border-connected, so their shores never read as
-  //  coast -- beaches belong to the ocean.
-  U8* sea = push_array(scratch.arena, U8, (U64)w * h);
+internal U8* wg__determine_sea(Arena* arena, WG_Params* params, BD_Board* board, F32* elevation) {
+  I32 w = params->width;
+  I32 h = params->height;
+  ArenaTemp scratch = arena_get_scratch(&arena, 1);
+  U8* sea = push_array(arena, U8, (U64)w * h);
   {
     V2I* queue = push_array_no_zero(scratch.arena, V2I, (U64)w * h);
     I32 count = 0;
@@ -827,10 +809,16 @@ internal BD_Board* wg_generate(Arena* arena, WG_Params* params, U64 seed) {
       }
     }
   }
+  arena_release_scratch(scratch);
+  return sea;
+}
 
+internal void wg__classify_tiles(WG_Params* params, U64 seed, BD_Board* board, F32* elevation, U8* sea) {
   //- fp: classify tiles: prepare the fields, then first-match the terrain
   //  rows (see WG_TerrainDef). River banks read wetter than their moisture
   //  field says, so valleys go green or boggy.
+  I32 w = params->width;
+  I32 h = params->height;
   for(I32 y = 0; y < h; y += 1) {
     for(I32 x = 0; x < w; x += 1) {
       V2I p = {x, y};
@@ -858,9 +846,12 @@ internal BD_Board* wg_generate(Arena* arena, WG_Params* params, U64 seed) {
           (BD_Terrain)wg__classify(params, e, moisture, drainage, temperature, coast);
     }
   }
+}
 
-  //- fp: despeckle: terrain regions smaller than min_region_size dissolve
-  //  into their most common neighbor, repeated until the map is stable
+internal void wg__despeckle(WG_Params* params, BD_Board* board) {
+  I32 w = params->width;
+  I32 h = params->height;
+  ArenaTemp scratch = arena_get_scratch(0, 0);
   if(params->min_region_size > 1) {
     U8* visited = push_array_no_zero(scratch.arena, U8, (U64)w * h);
     V2I* queue = push_array_no_zero(scratch.arena, V2I, (U64)w * h);
@@ -897,7 +888,10 @@ internal BD_Board* wg_generate(Arena* arena, WG_Params* params, U64 seed) {
           U32 best = terrain;
           U32 best_votes = 0;
           for(U32 i = 0; i < params->terrain_count; i += 1) {
-            if(votes[i] > best_votes) { best = i; best_votes = votes[i]; }
+            if(votes[i] > best_votes) {
+              best = i;
+              best_votes = votes[i];
+            }
           }
           if(best_votes == 0) { continue; } // the whole map is one small region
           for(I32 i = 0; i < size; i += 1) {
@@ -909,6 +903,51 @@ internal BD_Board* wg_generate(Arena* arena, WG_Params* params, U64 seed) {
       if(!merged) { break; }
     }
   }
+  arena_release_scratch(scratch);
+}
+
+////////////////////////////////
+//~ fp: Generation
+
+internal BD_Board* wg_generate(Arena* arena, WG_Params* params, U64 seed) {
+  BD_Board* board = bd_board_alloc(arena, params->width, params->height, 1024);
+
+  //- fp: travel rules from the terrain table; the cost array shares the
+  //  board's arena, so their lifetimes cannot drift apart
+  F32* terrain_cost = push_array(arena, F32, params->terrain_count);
+  for(U32 type = 0; type < params->terrain_count; type += 1) {
+    terrain_cost[type] = params->terrains[type].move_cost;
+  }
+  board->rules.terrain_cost = terrain_cost;
+  board->rules.terrain_cost_count = params->terrain_count;
+  board->rules.road_cost = params->road_cost;
+  board->rules.river_cross_cost = params->river_cross_cost;
+
+  ArenaTemp scratch = arena_get_scratch(&arena, 1);
+
+  //- fp: elevation field, kept for the whole generation -- classification
+  //  and rivers must agree on where downhill is. Tectonic uplift comes
+  //  first: every later system (rivers, snowlines) hangs off elevation.
+  F32* elevation = wg__elevation_field(scratch.arena, seed, params);
+
+  //- fp: rivers first: classification reads their presence, so river valleys
+  //  come out wetter than the rain alone would make them
+  wg__carve_rivers(board, params, seed, elevation);
+
+  //- fp: the sea is the border-connected body of sub-sea_level water (the
+  //  rim guarantees the border is ocean). Lakes and ponds are below sea
+  //  level too but not border-connected, so their shores never read as
+  //  coast -- beaches belong to the ocean.
+  U8* sea = wg__determine_sea(scratch.arena, params, board, elevation);
+
+  //- fp: classify tiles: prepare the fields, then first-match the terrain
+  //  rows (see WG_TerrainDef). River banks read wetter than their moisture
+  //  field says, so valleys go green or boggy.
+  wg__classify_tiles(params, seed, board, elevation, sea);
+
+  //- fp: despeckle: terrain regions smaller than min_region_size dissolve
+  //  into their most common neighbor, repeated until the map is stable
+  wg__despeckle(params, board);
 
   arena_release_scratch(scratch);
   return board;

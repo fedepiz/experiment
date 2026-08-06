@@ -62,7 +62,7 @@ enum {
 //
 // One cell of the grid. Terrain is an opaque id -- the board never interprets
 // it beyond indexing travel costs with it. The pawn list is bookkept: written
-// by pawn create/move/destroy, read freely.
+// by pawn place/remove, read freely.
 
 typedef U16 BD_Terrain;
 
@@ -71,7 +71,7 @@ typedef struct {
   BD_Terrain terrain;
   U8 features[BD_Feature_COUNT]; // connection masks, bit d = toward BD_Dir d
 
-  // pawns standing here, maintained by pawn create/move/destroy
+  // pawns standing here, maintained by pawn place/remove
   BD_Pawn* first_pawn;
   BD_Pawn* last_pawn;
 } BD_Tile;
@@ -80,24 +80,20 @@ typedef struct {
 //~ fp: Pawns
 //
 // Anything that stands on a tile: settlements, armies, markers -- the board
-// neither knows nor cares, it just positions them. Pawns are referred to by
-// id, not pointer: ids survive arbitrary create/destroy traffic and a stale
-// id resolves to the nil pawn instead of a recycled stranger. The zero id is
-// nil (ZII).
-
-typedef struct {
-  BD_Pawn* ptr;
-  U64 gen;
-} BD_PawnID;
+// neither knows nor cares, it just positions them. The board does not mint
+// pawn identities: pawns are keyed by a caller-supplied U64 (opaque here; the
+// game passes its thing ids), and bd_pawn_place is an upsert, so create and
+// move are the same call. Unknown keys look up to the nil pawn.
 
 struct BD_Pawn {
-  BD_Pawn* next; // in its tile's pawn list; freelist link while destroyed
+  BD_Pawn* next; // in its tile's pawn list; freelist link while removed
   BD_Pawn* prev;
-  U64 gen; // bumps on destroy, invalidating outstanding ids
+  BD_Pawn* hash_next; // in its key bucket's chain
 
+  U64 key; // the caller's identity for this pawn; the board only indexes it.
+           // Anything else about the pawn -- looks, kind, meaning -- is the
+           // caller's to answer from this key.
   V2I pos;
-  U32 kind; // opaque to the board
-  U64 user; // opaque to the board
 };
 
 ////////////////////////////////
@@ -156,8 +152,10 @@ typedef struct {
 
   BD_TravelRules rules;
 
-  BD_Pawn* first_free_pawn; // destroyed pawns, recycled by create
-  U64 pawn_count;           // alive pawns
+  BD_Pawn* first_free_pawn; // removed pawns, recycled by place
+  U64 pawn_count;           // placed pawns
+  BD_Pawn** pawn_buckets;   // [pawn_bucket_count] key -> pawn, chained by hash_next
+  U64 pawn_bucket_count;    // power of two, sized at alloc
 
   //- fp: path cache, capacity chosen at alloc
   BD_PathEntry* entries; // [entry_cap]
@@ -206,10 +204,9 @@ internal void bd_feature_disconnect(BD_Board* board, V2I p, BD_Dir dir, BD_Featu
 //
 // Pawns on one tile read directly: bd_tile_at(...)->first_pawn, then ->next.
 
-internal BD_PawnID bd_pawn_create(BD_Board* board, V2I pos, U32 kind, U64 user); // nil id if pos out of bounds
-internal void      bd_pawn_destroy(BD_Board* board, BD_PawnID id);
-internal BD_Pawn*  bd_pawn_from_id(BD_PawnID id); // zero / stale: the nil pawn
-internal void      bd_pawn_move(BD_Board* board, BD_PawnID id, V2I to); // no-op on stale id or `to` out of bounds
+internal void      bd_pawn_place(BD_Board* board, U64 key, V2I pos); // upsert; no-op when pos is out of bounds
+internal void      bd_pawn_remove(BD_Board* board, U64 key);
+internal BD_Pawn*  bd_pawn_lookup(BD_Board* board, U64 key); // unknown key: the nil pawn
 
 typedef struct {
   BD_Pawn** v;
@@ -218,6 +215,9 @@ typedef struct {
 
 // every alive pawn standing in [min, max] (corners inclusive), pushed on `arena`
 internal BD_PawnArray bd_pawns_in_rect(Arena* arena, BD_Board* board, V2I min, V2I max);
+
+// every placed pawn, pushed on `arena`; order is arbitrary
+internal BD_PawnArray bd_pawns_all(Arena* arena, BD_Board* board);
 
 ////////////////////////////////
 //~ fp: Terrain Queries
@@ -259,6 +259,14 @@ internal BD_Path bd_path_find(Arena* arena, BD_Board* board, V2I from, V2I to);
 // that spends a budget agrees with the routes A* picks. <= 0 means the step
 // cannot be taken (out of bounds, not adjacent, impassable).
 internal F32 bd_step_cost(BD_Board* board, V2I from, V2I to);
+
+// can the tile at `p` be entered at all -- the terrain half of bd_step_cost
+// as a yes/no; false out of bounds
+internal B32 bd_tile_passable(BD_Board* board, V2I p);
+
+// nearest passable tile to `want`, searching outward ring by ring; `want`
+// itself when the whole board is impassable
+internal V2I bd_snap_passable(BD_Board* board, V2I want);
 
 // the tile after `from` on the path to `to`; `from` itself when already
 // there, or when no path exists (v2i_eq with `from` detects "not moving")

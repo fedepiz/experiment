@@ -37,6 +37,8 @@ typedef struct {
   F32 w;
 } V4;
 
+internal V4 v4_splat(F32 v);
+
 // min is the top-left corner, max the bottom-right (y grows downward in
 // window space).
 typedef struct {
