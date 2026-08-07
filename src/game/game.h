@@ -44,6 +44,7 @@ typedef struct {
 
 typedef struct {
   B32 initialised;
+  B32 paused;
   TH_Db* db;
   BD_Board* board;
   F32 move_timer;
@@ -57,10 +58,8 @@ internal void gm_update(GM_Game* game, F32 dt);
 internal void gm_select(GM_Game* game, V2I tile);
 internal void gm_deselect(GM_Game* game);
 
-// facts about the current selection as a tabula tree on `arena`: kind, name,
-// the tile's terrain and features, ... Consumers query by key (tb_get) and
-// decide presentation themselves. Nil when nothing is selected.
-internal TB_Value* gm_selection_info(Arena* arena, GM_Game* game);
+// facts extracted as a tabula
+internal TB_Value* gm_info(Arena* arena, GM_Game* game);
 
 typedef U8 GM_Sprite;
 enum {

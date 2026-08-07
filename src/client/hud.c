@@ -15,7 +15,7 @@
 ////////////////////////////////
 //~ fp: FPS Counter
 
-internal void hud_fps_update(FPS_Counter* counter) {
+internal void hcl_fps_update(CL_FPS_Counter* counter) {
   counter->accum_time += wnd_frame_time();
   counter->accum_frames += 1;
   if(counter->accum_time >= 0.25f) {
@@ -138,7 +138,7 @@ internal void hud__fact_rows(TB_Value* object, String8 omit) {
 
 // top-left panel over the current selection: curated title (thing name, or
 // the tile's terrain), then the generic fact rows
-internal void hud_selection_panel(TB_Value* info) {
+internal void hud__selection_panel(TB_Value* info) {
   if(!tb_value_is_nil(info)) {
     ui_push_padding((V2){12, 10});
     UI_Box* panel = ui_panel_begin(str8_lit("selection_panel"));
@@ -163,7 +163,7 @@ internal void hud_selection_panel(TB_Value* info) {
 
 // full-width bar along the bottom edge; the buttons are placeholders. The
 // bar is a strip, not a card: fixed height, horizontal inset only
-internal void hud_action_bar(CL_Command* cmd) {
+internal void hud__action_bar(CL_Command* cmd) {
   ui_push_padding((V2){10, 0});
   UI_Box* bar = ui_panel_begin(str8_lit("action_bar"));
   ui_pop_padding();
@@ -174,7 +174,7 @@ internal void hud_action_bar(CL_Command* cmd) {
   ui_push_pref_height(ui_size_grow(1));
   ui_push_child_align(UI_Align_Center);
   UI_Row(str8_lit("actions")) {
-    if(ui_button(str8_lit("Toggle Ifluence")).clicked) {
+    if(ui_button(str8_lit("Toggle Influence")).clicked) {
       cmd->map_mode_toggle |= GM_MapModeFlag_Influence;
     }
   }
@@ -184,25 +184,26 @@ internal void hud_action_bar(CL_Command* cmd) {
 }
 
 // top-right corner: the readout fps_update refreshes
-internal void hud_fps_panel(FPS_Counter* fps) {
+internal void hud__fps_panel(TB_Value* info) {
   ui_push_padding((V2){8, 4});
   UI_Box* panel = ui_panel_begin(str8_lit("fps_panel"));
   ui_pop_padding();
   panel->flags |= UI_BoxFlag_Floating;
   panel->floating_anchor = (V2){1, 0};
   panel->floating_pos = (V2){-12, 12};
-  ui_labelf("FPS %.1f", fps->display);
+  String8 text = tb_get_str8(info, str8_lit("fps"), str8_lit("NO FPS"));
+  ui_labelf("FPS: %S", text);
   ui_panel_end();
 }
 
-internal void hud_build(D_Font font, FPS_Counter* fps, TB_Value* info, CL_Command* cmd) {
+internal void hud_build(D_Font font, TB_Value* info, CL_Command* cmd) {
   ui_push_font(font.u64);
   ui_push_font_size(15);
   ui_push_child_gap(8);
 
-  hud_selection_panel(info);
-  hud_action_bar(cmd);
-  hud_fps_panel(fps);
+  hud__selection_panel(tb_get(info, str8_lit("selection")));
+  hud__action_bar(cmd);
+  hud__fps_panel(info);
 
   ui_pop_child_gap();
   ui_pop_font_size();

@@ -133,7 +133,7 @@ internal void pace_60fps_update(void) {
 // what keys mean is the shell's decision. The camera itself is a D_Camera
 // value the map only ever receives.
 
-internal void camera_update(D_Camera* camera, V2 translation, F32 zooming) {
+internal void camera_inertial_move(D_Camera* camera, V2 translation, F32 zooming) {
   F32 dt = wnd_frame_time();
   F32 zoom = (camera->zoom == 0) ? 1.0f : camera->zoom;
 
@@ -157,41 +157,6 @@ internal void camera_update(D_Camera* camera, V2 translation, F32 zooming) {
   camera->center = v2_scaled_add(camera->center, camera->pan_vel, dt);
   zoom *= f32_exp2(camera->zoom_vel * dt);
   camera->zoom = Clamp(0.25f, zoom, 8.0f);
-}
-
-internal void cmd_from_keyboard(CL_Command* cmd) {
-  struct {
-    WND_Key key;
-    F32 x;
-    F32 y;
-    F32 z;
-  } INTERACTIONS[] = {
-      {WND_Key_A, -1, 0, 0},
-      {WND_Key_D, 1, 0, 0},
-      {WND_Key_W, 0, -1, 0},
-      {WND_Key_S, 0, 1, 0},
-      {WND_Key_Q, 0, 0, 1},
-      {WND_Key_E, 0, 0, -1}};
-
-  V2 d_trans = {0};
-  F32 d_zoom = 0;
-
-  for(U32 i = 0; i < ArrayCount(INTERACTIONS); ++i) {
-    if(input_is_key_down((INTERACTIONS[i].key))) {
-      d_trans.x += INTERACTIONS[i].x;
-      d_trans.y += INTERACTIONS[i].y;
-      d_zoom += INTERACTIONS[i].z;
-    }
-  }
-
-  cmd->translation = v2_add(cmd->translation, d_trans);
-  cmd->zooming += d_zoom;
-  cmd->reload = input_is_key_pressed(WND_Key_R);
-  cmd->quit = input_is_key_pressed(WND_Key_Escape);
-
-  if(input_is_key_pressed(WND_Key_1)) {
-    cmd->map_mode_toggle |= GM_MapModeFlag_Influence;
-  }
 }
 
 ////////////////////////////////
@@ -248,7 +213,7 @@ int main(int argc, char** argv) {
   Map_View* map = map_init(arena_alloc()); // outlives every reseed
 
   D_Font hud_font = d_font_open(str8_lit("assets/fonts/Arial.ttf"));
-  FPS_Counter fps_counter = {0};
+  CL_FPS_Counter fps_counter = {0};
 
   D_Camera camera = {0};
   B32 hud_mouse_over = 0; // as of the last built frame
@@ -271,21 +236,30 @@ int main(int argc, char** argv) {
     input_process_events(evts);
 
     CL_Command cmd = {0};
-    cmd_from_keyboard(&cmd);
+    cl_cmd_from_keyboard(&cmd);
 
 
     UI_DrawList hud_list = {0};
     {
-      TB_Value* info = gm_selection_info(frame_arena, &game);
-      hud_fps_update(&fps_counter);
+      TB_Value* info = gm_info(frame_arena, &game);
+
+      {
+        // Add fps information
+        String8 text = push_str8f(frame_arena, "%.1f", fps_counter.display);
+        tb_add_str8(frame_arena, info, str8_lit("fps"), text);
+      }
+
+      hcl_fps_update(&fps_counter);
       ui_frame_begin(frame_arena, hud_gather_input());
-      hud_build(hud_font, &fps_counter, info, &cmd);
+      hud_build(hud_font, info, &cmd);
       hud_list = ui_frame_end();
     }
 
     if(cmd.quit) { keep_going = false; }
 
     if(cmd.reload) { game.initialised = false; }
+
+    if(cmd.toggle_pause) { game.paused ^= 1; }
 
     if(game.initialised && !hud_mouse_over) {
       if(input_is_mouse_button_pressed(WND_MouseButton_Left)) {
@@ -337,7 +311,7 @@ int main(int argc, char** argv) {
     }
     d_frame_end();
 
-    camera_update(&camera, cmd.translation, cmd.zooming); // after drawing: see the phase comment above the loop
+    camera_inertial_move(&camera, cmd.translation, cmd.zooming); // after drawing: see the phase comment above the loop
 
     wnd_swap(); // vsync: paces the loop to the display rate
     arena_clear(frame_arena);

@@ -11,7 +11,7 @@
 #include "ui.h"
 #include "client/map.h"
 
-#define MAP_SPRITE_CAP 1024
+#define MAP_SPRITE_CAP       1024
 #define MAP_PAWN_VARIANT_CAP 8
 
 struct Map_View {
@@ -346,4 +346,3 @@ internal void map_draw(Map_View* map, GM_MapItems items, D_Camera camera) {
   d_camera_end();
   arena_release_scratch(scratch);
 }
-

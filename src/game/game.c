@@ -9,6 +9,7 @@
 #include "game/board.h"
 #include "game/thing_db.h"
 #include "gfx/color.h"
+#include "tabula.h"
 
 ////////////////////////////////
 //~ fp: Game
@@ -272,12 +273,11 @@ internal void gm__tile_facts(Arena* arena, GM_Game* game, TB_Value* out, V2I pos
   }
 }
 
-internal TB_Value* gm_selection_info(Arena* arena, GM_Game* game) {
-  GM_Selection selection = game->selection;
-  if(selection.kind == GM_SelectionKind_Nil) { return &tb_nil_value; }
-
+internal void gm__selection_info(Arena* arena, GM_Game* game, TB_Value* root) {
   TH_Db* db = game->db;
-  TB_Value* info = tb_build_object(arena);
+  GM_Selection selection = game->selection;
+  if(selection.kind == GM_SelectionKind_Nil) { return; }
+  TB_Value* info = tb_add_object(arena, root, str8_lit("selection"));
   switch(selection.kind) {
     case GM_SelectionKind_Tile: {
       tb_add_str8(arena, info, str8_lit("kind"), str8_lit("tile"));
@@ -293,6 +293,11 @@ internal TB_Value* gm_selection_info(Arena* arena, GM_Game* game) {
     } break;
   }
   gm__tile_facts(arena, game, tb_add_object(arena, info, str8_lit("tile")), selection.tile);
+}
+
+internal TB_Value* gm_info(Arena* arena, GM_Game* game) {
+  TB_Value* info = tb_build_object(arena);
+  gm__selection_info(arena, game, info);
   return info;
 }
 
@@ -300,6 +305,7 @@ internal TB_Value* gm_selection_info(Arena* arena, GM_Game* game) {
 #define GM_TICK_BANK_MAX 0.5f // at most 5 banked ticks replay after a stall
 
 internal void gm_update(GM_Game* game, F32 dt) {
+  if(game->paused) { return; }
   TH_Db* db = game->db;
   game->move_timer = ClampTop(game->move_timer + dt, GM_TICK_BANK_MAX);
   while(game->move_timer > GM_TICK_DT) {
