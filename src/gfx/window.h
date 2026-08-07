@@ -4,22 +4,29 @@
 #include "base/arena.h"
 #include "base/strings.h"
 
-internal void wnd_open(String8 title, I32 w, I32 h);
+////////////////////////////////
+//~ fp: Window
+//
+// One OS window: open/close, its input events, and the GL context that
+// draws into it. Everything speaks client points, top-left origin, y-down.
+// wnd_size_px (the framebuffer in pixels) and wnd_scale (pixels per point;
+// 2 on retina) exist for the renderer's framebuffer handshake -- nothing
+// else should need them.
+
+internal void wnd_open(String8 title, I32 w, I32 h); // w, h in points
 internal void wnd_close(void);
-internal V2 wnd_size(void);
+internal V2  wnd_size(void);
+internal V2  wnd_size_px(void);
+internal F32 wnd_scale(void);
 
 ////////////////////////////////
 //~ fp: OpenGL
 //
 // The window owns the GL context: equip once after wnd_open, swap once per
 // frame (swap blocks to the display rate -- vsync paces the main loop).
-// wnd_size is points; wnd_size_px is the framebuffer in pixels; wnd_scale is
-// pixels per point (2 on retina) -- the pair r_frame_begin wants.
 
 internal void wnd_equip_gl(void);
 internal void wnd_swap(void);
-internal V2  wnd_size_px(void);
-internal F32 wnd_scale(void);
 
 // vblanks per swap: 1 (the equip default) presents every refresh; 2 locks to
 // every second one -- the hardware-paced way to run a 120Hz display at 60,
@@ -45,11 +52,18 @@ internal F32 wnd_frame_time(void);
 internal F32 wnd_frame_time_raw(void); // the unsnapped measurement, for diagnostics
 
 // refresh rate of the display the window sits on, in Hz; 0 when the backend
-// has no query yet (mac, linux), which disables the snapping above
+// has no query yet (linux), which disables the snapping above
 internal F32 wnd_refresh_rate(void);
 
 // backend contract: every wnd_swap implementation calls this after presenting
 internal void wnd__frame_mark(void);
+
+////////////////////////////////
+//~ fp: Keys & Events
+//
+// Events are transitions: a KeyDown means the key went down (backends filter
+// OS autorepeat), a MouseDown that a button was pressed. The list is rebuilt
+// on the caller's arena every wnd_get_events call.
 
 typedef U16 WND_Key;
 enum {
@@ -138,7 +152,7 @@ typedef struct WND_Event WND_Event;
 struct WND_Event {
   WND_EventType type;
   WND_Event* next;
-  V2 pos;    // mouse position, in client pixels (mouse events)
+  V2 pos;    // mouse position, in client points (mouse events)
   V2 scroll; // wheel delta (Scroll); +y is away from the user
   V2 size;   // new client size (Resize)
   WND_Modifiers modifiers; // held modifiers at event time (key + mouse events)
@@ -153,3 +167,6 @@ typedef struct {
 } WND_EventList;
 
 internal WND_EventList wnd_get_events(Arena* arena);
+
+// shared by the backends' event pumps (implemented in gfx/window.c)
+internal WND_Event* wnd__push_event(Arena* arena, WND_EventList* list, WND_EventType type);

@@ -1,6 +1,9 @@
-# UI style, read at startup into the ui module's stack defaults plus the
-# hud's widget colors (see the Debug HUD section in main.c). Colors are
-# [r g b a] in 0..1; missing keys keep built-in defaults.
+# UI theme, loaded at startup (hud_theme_load) into the ui module's tag
+# patterns: the nesting is the selector -- the path of keys down to a leaf
+# is a pattern's tag list, the leaf its color, and the deepest pattern
+# matching a box's pushed tags wins. Only colors live here; metrics
+# (sizes, paddings, radii) are plain values in code. Colors are [r g b a]
+# in 0..1; a missing pattern resolves to zero.
 #
 # Theme: 'vellum & oxblood' -- the UI as a chronicle being written:
 # parchment panels, brown-black ink, oxblood accent on highlights,
@@ -8,27 +11,26 @@
 # "Imperium -- UI color scheme proposals" artifact.
 
 style = {
-  font_size = 15
+  background = [0.91 0.86 0.74 0.97] # vellum
+  text = [0.16 0.12 0.08 1.0]        # brown-black ink
+  border = [0.45 0.36 0.24 1.0]      # aged brown outlines
 
-  # stack defaults
-  panel_background = [0.91 0.86 0.74 0.97] # vellum
-  ink = [0.16 0.12 0.08 1.0]               # brown-black text
-  outline = [0.45 0.36 0.24 1.0]           # aged brown borders
-  border_thickness = 1.0
-  panel_corner_radius = 10.0
+  # hot-clickable lift, toward white; alpha is the strength
+  hover = [1.0 1.0 1.0 0.08]
+  active = [1.0 1.0 1.0 0.07]
 
-  # named theme colors
+  # named call-site colors
   muted = [0.44 0.38 0.28 1.0]  # secondary text
   accent = [0.55 0.13 0.10 1.0] # oxblood: highlight values, badges
 
-  # buttons: aged bronze, ink text, heavy brown border
-  button_background = [0.72 0.62 0.44 1.0]
-  button_border_color = [0.45 0.36 0.24 1.0]
-  button_border_thickness = 2.0
-  button_corner_radius = 8.0
+  # buttons: aged bronze, ink text
+  button = {
+    background = [0.72 0.62 0.44 1.0]
+  }
 
   # tooltips invert: dark ink ground, pale vellum text
-  tooltip_background = [0.16 0.12 0.08 0.95]
-  tooltip_text = [0.88 0.83 0.70 1.0]
-  tooltip_corner_radius = 8.0
+  tooltip = {
+    background = [0.16 0.12 0.08 0.95]
+    text = [0.88 0.83 0.70 1.0]
+  }
 }

@@ -8,10 +8,8 @@
 
 typedef struct {
   B8 key_current[WND_Key_COUNT];
-  B8 key_prev[WND_Key_COUNT];
   B8 key_pressed[WND_Key_COUNT]; // latch: went down at any point this frame
   B8 mouse_current[WND_MouseButton_COUNT];
-  B8 mouse_prev[WND_MouseButton_COUNT];
   B8 mouse_pressed[WND_MouseButton_COUNT]; // latch, same idea
   B8 mouse_released[WND_MouseButton_COUNT]; // latch: went up at any point this frame
   V2 mouse_pos;
@@ -21,27 +19,27 @@ typedef struct {
 global Input input_state;
 
 internal B32 input_is_key_down(WND_Key key) {
-  if(key >= WND_Key_COUNT) return false;
+  Assert(key < WND_Key_COUNT);
   return input_state.key_current[key];
 }
 
 internal B32 input_is_key_pressed(WND_Key key) {
-  if(key >= WND_Key_COUNT) return false;
+  Assert(key < WND_Key_COUNT);
   return input_state.key_pressed[key];
 }
 
 internal B32 input_is_mouse_button_down(WND_MouseButton mouse) {
-  if(mouse >= WND_MouseButton_COUNT) return false;
+  Assert(mouse < WND_MouseButton_COUNT);
   return input_state.mouse_current[mouse];
 }
 
 internal B32 input_is_mouse_button_pressed(WND_MouseButton mouse) {
-  if(mouse >= WND_MouseButton_COUNT) return false;
+  Assert(mouse < WND_MouseButton_COUNT);
   return input_state.mouse_pressed[mouse];
 }
 
 internal B32 input_is_mouse_button_released(WND_MouseButton mouse) {
-  if(mouse >= WND_MouseButton_COUNT) return false;
+  Assert(mouse < WND_MouseButton_COUNT);
   return input_state.mouse_released[mouse];
 }
 
@@ -54,10 +52,8 @@ internal V2 input_scroll(void) {
 }
 
 internal void input_process_events(WND_EventList event_list) {
-  // last frame's state becomes prev, and the per-frame latches reset --
-  // BEFORE this frame's events land, or edges can never be observed
-  MemoryCopy(input_state.key_prev, input_state.key_current, sizeof(input_state.key_current));
-  MemoryCopy(input_state.mouse_prev, input_state.mouse_current, sizeof(input_state.mouse_current));
+  // the per-frame latches reset BEFORE this frame's events land, or edges
+  // can never be observed
   MemoryZeroArray(input_state.key_pressed);
   MemoryZeroArray(input_state.mouse_pressed);
   MemoryZeroArray(input_state.mouse_released);

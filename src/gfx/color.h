@@ -23,8 +23,7 @@ internal V4 col_to_hsva(V4 color);
 internal V4 col_lerp(V4 a, V4 b, F32 t); // component-wise, t clamped to 0..1
 internal V4 col_with_alpha(V4 color, F32 a);
 
-//- fp: returns a pseudo-random solid colour given a 64-bit hash.
-// Supplying 0 always returns transparent
+// a pseudo-random solid color from a 64-bit hash; 0 always returns transparent
 internal V4 col_rgb_from_hash(U64 hash);
 
 //- fp: constants

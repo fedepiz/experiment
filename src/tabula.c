@@ -387,6 +387,18 @@ internal F32 tb_get_num(TB_Value* object, String8 key, F32 fallback) {
   return tb_num_from_value(tb_get(object, key), fallback);
 }
 
+internal V4 tb_get_v4(TB_Value* object, String8 key, V4 fallback) {
+  TB_Value* list = tb_get(object, key);
+  if(list->kind != TB_ValueKind_List || list->count < 3) { return fallback; }
+  V4 result = {0, 0, 0, 1};
+  F32* comps[4] = {&result.x, &result.y, &result.z, &result.w};
+  U64 i = 0;
+  for(TB_Value* el = list->first; el != 0 && i < 4; el = el->next, i += 1) {
+    *comps[i] = tb_num_from_value(el, 0);
+  }
+  return result;
+}
+
 ////////////////////////////////
 //~ fp: Builder
 

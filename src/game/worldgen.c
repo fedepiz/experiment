@@ -22,18 +22,6 @@ internal WG_Band wg__band_from_key(TB_Value* object, String8 key) {
   return band;
 }
 
-internal V4 wg__color_from_key(TB_Value* object, String8 key, V4 fallback) {
-  V4 color = fallback;
-  TB_Value* list = tb_get(object, key);
-  if(list->kind == TB_ValueKind_List && list->count >= 3) {
-    color.x = tb_num_from_value(list->first, 0);
-    color.y = tb_num_from_value(list->first->next, 0);
-    color.z = tb_num_from_value(list->first->next->next, 0);
-    color.w = 1;
-  }
-  return color;
-}
-
 internal B32 wg__band_contains(WG_Band band, F32 v) {
   if(band.min == 0 && band.max == 0) { return 1; } // zero band = don't care
   return band.min <= v && v <= band.max;
@@ -112,6 +100,40 @@ internal void wg__terrain_name_set(WG_TerrainType* type, String8 name) {
   MemoryCopy(type->name_chars, name.str, type->name_len);
 }
 
+internal void wg_terrain_table_load(String8 path) {
+  ArenaTemp scratch = arena_get_scratch(0, 0);
+  TB_Value* root = tb_parse_file_and_report(scratch.arena, path);
+  TB_Value* world = tb_get(root, str8_lit("world"));
+
+  //- fp: terrain rows, in file order; row 0 is the baked nil. Refilled
+  //  whole, so repeated loads stay idempotent.
+  MemoryZeroArray(WG_TERRAIN_TYPES);
+  {
+    WG_TerrainType* nil_type = &WG_TERRAIN_TYPES[0];
+    wg__terrain_name_set(nil_type, str8_lit("nil"));
+    nil_type->color = (V4){1, 0, 1, 1}; // loud magenta
+    WG_TERRAIN_TYPE_COUNT = 1;
+  }
+  for(TB_Node* node = world->first_member; node != 0; node = node->next) {
+    if(!str8_match(node->key, str8_lit("terrain_type"), 0)) { continue; }
+    if(WG_TERRAIN_TYPE_COUNT >= WG_TERRAIN_CAP) {
+      eprintf_str8("%S: more than %d terrain_type entries; extras ignored\n",
+                   path, WG_TERRAIN_CAP - 1);
+      break;
+    }
+    TB_Value* src = &node->value;
+    WG_TerrainType* type = &WG_TERRAIN_TYPES[WG_TERRAIN_TYPE_COUNT];
+    WG_TERRAIN_TYPE_COUNT += 1;
+
+    wg__terrain_name_set(type, tb_get_str8(src, str8_lit("name"), str8_lit("unnamed")));
+    type->color = tb_get_v4(src, str8_lit("color"), (V4){1, 0, 1, 1}); // magenta = the loud fallback
+    type->rank = (U8)tb_get_num(src, str8_lit("rank"), 0);
+    type->overlay_density = (U32)tb_get_num(src, str8_lit("overlay_density"), 0);
+    type->move_cost = tb_get_num(src, str8_lit("move_cost"), 0); // missing = impassable, visibly
+  }
+  arena_release_scratch(scratch);
+}
+
 internal WG_Params wg_params_load(String8 path) {
   ArenaTemp scratch = arena_get_scratch(0, 0);
   TB_Value* root = tb_parse_file_and_report(scratch.arena, path);
@@ -162,35 +184,15 @@ internal WG_Params wg_params_load(String8 path) {
   params.continent_height = tb_get_num(world, str8_lit("continent_height"), 0);
   params.min_region_size = (I32)tb_get_num(world, str8_lit("min_region_size"), 0);
 
-  //- fp: terrain rows, in file order; row 0 is the baked nil. Bands go into
-  //  the params, everything else into the static type table -- refilled
-  //  whole, so repeated loads stay idempotent.
-  MemoryZeroArray(WG_TERRAIN_TYPES);
-  {
-    WG_TerrainType* nil_type = &WG_TERRAIN_TYPES[0];
-    wg__terrain_name_set(nil_type, str8_lit("nil"));
-    nil_type->color = (V4){1, 0, 1, 1}; // loud magenta
-    WG_TERRAIN_TYPE_COUNT = 1;
-    params.terrain_count = 1;
-  }
+  //- fp: classification rows, mirroring the terrain table's file order; row
+  //  0 is the baked nil (the type half lives in wg_terrain_table_load)
+  params.terrain_count = 1;
   for(TB_Node* node = world->first_member; node != 0; node = node->next) {
     if(!str8_match(node->key, str8_lit("terrain_type"), 0)) { continue; }
-    if(params.terrain_count >= WG_TERRAIN_CAP) {
-      eprintf_str8("%S: more than %d terrain_type entries; extras ignored\n",
-                   path, WG_TERRAIN_CAP - 1);
-      break;
-    }
+    if(params.terrain_count >= WG_TERRAIN_CAP) { break; } // table load reports the excess
     TB_Value* src = &node->value;
-    WG_TerrainType* type = &WG_TERRAIN_TYPES[params.terrain_count];
     WG_TerrainDef* def = &params.terrains[params.terrain_count];
     params.terrain_count += 1;
-    WG_TERRAIN_TYPE_COUNT = params.terrain_count;
-
-    wg__terrain_name_set(type, tb_get_str8(src, str8_lit("name"), str8_lit("unnamed")));
-    type->color = wg__color_from_key(src, str8_lit("color"), (V4){1, 0, 1, 1}); // magenta = the loud fallback
-    type->rank = (U8)tb_get_num(src, str8_lit("rank"), 0);
-    type->overlay_density = (U32)tb_get_num(src, str8_lit("overlay_density"), 0);
-    type->move_cost = tb_get_num(src, str8_lit("move_cost"), 0); // missing = impassable, visibly
 
     def->elevation = wg__band_from_key(src, str8_lit("elevation"));
     def->moisture = wg__band_from_key(src, str8_lit("moisture"));
@@ -210,43 +212,19 @@ internal WG_Params wg_params_load(String8 path) {
   params.road_cost = tb_get_num(world, str8_lit("road_cost"), 0);
   params.river_cross_cost = tb_get_num(world, str8_lit("river_cross_cost"), 0);
 
-  //- fp: keep downstream code out of degenerate territory, loudly. The
-  //  ceiling is the field columns' capacity (see TH_WORLD_MAX_DIM).
-  if(params.width < 1 || params.height < 1 ||
-     params.width > TH_WORLD_MAX_DIM || params.height > TH_WORLD_MAX_DIM) {
-    eprintf_str8("%S: bad world dimensions %dx%d, using %dx%d\n",
-                 path, params.width, params.height, TH_WORLD_MAX_DIM, TH_WORLD_MAX_DIM);
-    params.width = TH_WORLD_MAX_DIM;
-    params.height = TH_WORLD_MAX_DIM;
-  }
-  params.elevation_scale = ClampBot(params.elevation_scale, 1.0f);
-  params.moisture_scale = ClampBot(params.moisture_scale, 1.0f);
-  params.elevation_octaves = Clamp(1, params.elevation_octaves, 16);
-  params.moisture_octaves = Clamp(1, params.moisture_octaves, 16);
-  params.elevation_persistence = Clamp(0.05f, params.elevation_persistence, 1.0f);
-  params.elevation_amplitude = Clamp(0.0f, params.elevation_amplitude, 1.0f);
-  params.moisture_persistence = Clamp(0.05f, params.moisture_persistence, 1.0f);
-  params.temperature_scale = ClampBot(params.temperature_scale, 1.0f);
-  params.temperature_octaves = Clamp(1, params.temperature_octaves, 16);
-  params.temperature_persistence = Clamp(0.05f, params.temperature_persistence, 1.0f);
-  params.temperature_lapse_exponent = ClampBot(params.temperature_lapse_exponent, 0.1f);
-  params.plate_spacing = ClampBot(params.plate_spacing, 2.0f);
-  params.plate_fuzz = ClampBot(params.plate_fuzz, 0.0f);
-  params.plate_fuzz_scale = ClampBot(params.plate_fuzz_scale, 1.0f);
-  params.uplift_height = ClampBot(params.uplift_height, 0.0f);
-  params.uplift_width = ClampBot(params.uplift_width, 0.5f);
-  params.uplift_noise = Clamp(0.0f, params.uplift_noise, 1.0f);
-  params.uplift_noise_scale = ClampBot(params.uplift_noise_scale, 1.0f);
-  params.uplift_ridged = Clamp(0.0f, params.uplift_ridged, 1.0f);
-  params.uplift_ridged_scale = ClampBot(params.uplift_ridged_scale, 1.0f);
-  params.rift_depth = ClampBot(params.rift_depth, 0.0f);
-  params.rift_width = ClampBot(params.rift_width, 0.5f);
-  params.arc_height = ClampBot(params.arc_height, 0.0f);
-  params.continent_blend = ClampBot(params.continent_blend, 1.0f);
-  params.continent_height = Clamp(0.0f, params.continent_height, 1.0f);
-  params.river_min_length = ClampBot(params.river_min_length, 0);
-  params.river_max_tries = ClampBot(params.river_max_tries, 0);
-  params.pond_max_tiles = ClampBot(params.pond_max_tiles, 1);
+  //- fp: knobs whose zero is not just a broken world but poisoned math
+  //  (divisors, octave loop counts). Asserted, never clamped: a bad value is
+  //  an authoring mistake to fix in the file, not to quietly remedy here.
+  //  Everything else zeroes into a visibly wrong world on its own.
+  Assert(1 <= params.width && params.width <= TH_WORLD_MAX_DIM);
+  Assert(1 <= params.height && params.height <= TH_WORLD_MAX_DIM);
+  Assert(params.elevation_scale > 0 && params.elevation_octaves > 0);
+  Assert(params.moisture_scale > 0 && params.moisture_octaves > 0);
+  Assert(params.temperature_scale > 0 && params.temperature_octaves > 0);
+  Assert(params.plate_spacing > 0 && params.plate_fuzz_scale > 0);
+  Assert(params.uplift_noise_scale > 0 && params.uplift_ridged_scale > 0);
+  Assert(params.uplift_width > 0 && params.rift_width > 0);
+  Assert(params.continent_blend > 0);
   arena_release_scratch(scratch);
   return params;
 }
@@ -799,7 +777,7 @@ internal F32* wg__elevation_field(Arena* arena, U64 seed, WG_Params* params) {
   F32* rift = push_array_no_zero(scratch.arena, F32, (U64)w * h);
   F32* rim = push_array_no_zero(scratch.arena, F32, (U64)w * h);
   wg__plate_fields(params, seed, uplift, rift, rim);
-  F32* elevation = push_array_no_zero(scratch.arena, F32, (U64)w * h);
+  F32* elevation = push_array_no_zero(arena, F32, (U64)w * h);
   for(I32 y = 0; y < h; y += 1) {
     for(I32 x = 0; x < w; x += 1) {
       U64 i = (U64)y * w + x;

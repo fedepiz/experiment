@@ -3,6 +3,7 @@
 ////////////////////////////////
 //~ fp: Game Layer -- headers of the layers below, in dependency order
 
+#include "base/core.h"
 #include "base/math.h"
 #include "game/board.h"
 #include "game/worldgen.h"
@@ -16,11 +17,10 @@
 // server. The thing database is the authoritative state -- things plus the
 // world fields (terrain, feature masks); the board is derived from it, kept
 // mirrored for spatial queries and pathfinding. A few entities wander a
-// waypoint loop. Entities
-// bank movement points each tick and pay the board's step cost to walk, so
-// terrain speed is felt, not just routed around: forest crossings crawl,
-// road hops fly. Time arrives as `dt` from the caller; nothing here touches
-// the window, input, or drawing.
+// waypoint loop, banking movement points each tick and paying the board's
+// step cost to walk, so terrain speed is felt, not just routed around:
+// forest crossings crawl, road hops fly. Time arrives as `dt` from the
+// caller; nothing here touches the window, input, or drawing.
 
 ////////////////////////////////
 //~ fp: Selection
@@ -76,8 +76,12 @@ enum {
 
 // display identifier per sprite kind, indexed by the enum
 global String8 GM_SPRITE_NAMES[GM_Sprite_COUNT] = {
-    str8_lit_comp("nil"),     str8_lit_comp("band"),  str8_lit_comp("village"),
-    str8_lit_comp("palace"),  str8_lit_comp("herders"), str8_lit_comp("wagon"),
+    str8_lit_comp("nil"),
+    str8_lit_comp("band"),
+    str8_lit_comp("village"),
+    str8_lit_comp("palace"),
+    str8_lit_comp("herders"),
+    str8_lit_comp("wagon"),
     str8_lit_comp("tholos"),
 };
 
@@ -91,7 +95,7 @@ typedef struct {
   // ground cell. has_terrain is false on the off-board ring cells, which
   // receive boundary spill but paint no ground of their own.
   B8 has_terrain;
-  BD_Terrain neighbours[9]; // 3x3 around pos, row-major; off-board reads 0
+  BD_Terrain neighbours[9];      // 3x3 around pos, row-major; off-board reads 0
   U8 features[BD_Feature_COUNT]; // connection masks at pos
   // pawn standing on pos, drawn on top
   B8 has_pawn;
@@ -107,7 +111,19 @@ typedef struct {
   GM_MapItem* items;
 } GM_MapItems;
 
+typedef U32 GM_MapModeFlags;
+enum {
+  GM_MapModeFlag_Pawns = (1 << 1),
+  GM_MapModeFlag_Influence = (1 << 2),
+};
+
 // ground items for every cell of [min, max] (corners inclusive; the window
 // may extend one past the board edge for the far-edge boundary duals), then
 // surface items for the pawns standing inside it
-internal GM_MapItems gm_map_items(Arena* arena, GM_Game* game, V2I min, V2I max);
+typedef struct {
+  V2 min;
+  V2 max;
+  GM_MapModeFlags flags;
+} GM_MapMode;
+
+internal GM_MapItems gm_map_items(Arena* arena, GM_Game* game, GM_MapMode mode);

@@ -23,12 +23,15 @@
 ////////////////////////////////
 //~ fp: Terrain Types
 //
-// What a terrain *is*, apart from where generation puts it: static data,
-// filled by wg_params_load from the world file's terrain_type rows, in file
-// order -- the row index is the terrain id everywhere (TH_IField_Terrain
-// values, tiling classes, art prefixes). Row 0 is the reserved nil terrain
-// (ZII: an unpainted cell reads as nil -- impassable, loud magenta). Names
-// are copied into the rows, so the table outlives any load arena.
+// What a terrain *is*, apart from where generation puts it: the cross-module
+// terrain registry -- the row index is the terrain id everywhere
+// (TH_IField_Terrain values, tiling classes, board travel costs, art
+// prefixes, map colors). Filled whole by wg_terrain_table_load from the
+// world file's terrain_type rows, in file order, so repeated loads stay
+// idempotent; call it before anything that reads the table. Row 0 is the
+// reserved nil terrain (ZII: an unpainted cell reads as nil -- impassable,
+// loud magenta). Names are copied into the rows, so the table outlives any
+// load arena.
 
 #define WG_TERRAIN_CAP 24
 #define WG_TERRAIN_NAME_CAP 31
@@ -45,6 +48,7 @@ typedef struct {
 global WG_TerrainType WG_TERRAIN_TYPES[WG_TERRAIN_CAP];
 global U32 WG_TERRAIN_TYPE_COUNT;
 
+internal void wg_terrain_table_load(String8 path);
 internal String8 wg_terrain_name(U32 type); // empty past the count
 internal U32 wg_terrain_by_name(String8 name); // 0 (nil) when unknown
 
@@ -79,8 +83,10 @@ typedef struct {
 // Every knob the generator reads, filled from the file's `world` object. All
 // parse fallbacks are ZERO on purpose: the file is the single source of
 // truth, and a missing or misspelled key must produce an obviously broken
-// world, never a quietly substituted default. Loading still never fails
-// hard: a broken file reports to stderr (mirroring tabula itself).
+// world, never a quietly substituted default. Knobs whose zero would poison
+// the math (divisors, octave counts) are Asserted after the parse; loading
+// itself still never fails hard -- a broken file reports to stderr
+// (mirroring tabula itself).
 
 typedef struct {
   I32 width;
@@ -184,7 +190,6 @@ typedef struct {
   F32 river_cross_cost;
 } WG_Params;
 
-// also (re)fills WG_TERRAIN_TYPES from the file's terrain rows
 internal WG_Params wg_params_load(String8 path);
 
 ////////////////////////////////

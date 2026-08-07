@@ -32,8 +32,7 @@ internal V2I v2i_sub(V2I a, V2I b);
 
 // The four grid neighborhoods, clockwise from north -- shared vocabulary for
 // anything 4-connected on a V2I grid. The order is load-bearing: opposite
-// direction == +2 mod 4, and connection masks (bit d = toward direction d)
-// index bits by these.
+// direction == +2 mod 4.
 typedef U32 Dir4;
 enum {
   Dir4_N,

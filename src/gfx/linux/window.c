@@ -22,12 +22,14 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
+#include <X11/XKBlib.h>
 
 typedef struct {
   Display* display;
   Window window;
   Atom wm_delete_window;
   V2 last_size; // last size seen, to filter move-only ConfigureNotify events
+  B8 key_down[WND_Key_COUNT]; // to tell autorepeat KeyPress from fresh presses
   B32 is_open;
 } WND_State;
 
@@ -55,6 +57,11 @@ internal void wnd_open(String8 title, I32 w, I32 h) {
     XStoreName(display, window, (char*)title_z.str);
     arena_release_scratch(scratch);
   }
+
+  // autorepeat as bare KeyPress repeats, not synthetic KeyRelease/KeyPress
+  // pairs -- held keys then read as continuously down, and repeats are
+  // told apart below by the key already being down
+  XkbSetDetectableAutoRepeat(display, 1, 0);
 
   // ask the WM to tell us about the close button instead of killing us
   Atom wm_delete_window = XInternAtom(display, "WM_DELETE_WINDOW", 0);
@@ -158,14 +165,6 @@ internal WND_Modifiers wnd__modifiers_from_x11_state(unsigned int state) {
   return result;
 }
 
-internal WND_Event* wnd__push_event(Arena* arena, WND_EventList* list, WND_EventType type) {
-  WND_Event* event = push_array(arena, WND_Event, 1);
-  event->type = type;
-  SLLQueuePush(list->first, list->last, event);
-  list->count += 1;
-  return event;
-}
-
 internal WND_EventList wnd_get_events(Arena* arena) {
   WND_EventList list = {0};
   if(!wnd_state.is_open) { return list; }
@@ -179,9 +178,11 @@ internal WND_EventList wnd_get_events(Arena* arena) {
       case KeyRelease: {
         KeySym sym = XLookupKeysym(&xev.xkey, 0);
         WND_Key key = wnd__key_from_keysym(sym);
-        if(key != WND_Key_Nil) {
-          WND_EventType type = (xev.type == KeyPress) ? WND_EventType_KeyDown : WND_EventType_KeyUp;
-          WND_Event* event = wnd__push_event(arena, &list, type);
+        B32 is_down = (xev.type == KeyPress);
+        if(key != WND_Key_Nil && !(is_down && wnd_state.key_down[key])) {
+          wnd_state.key_down[key] = (B8)is_down;
+          WND_Event* event = wnd__push_event(arena, &list, is_down ?
+                                             WND_EventType_KeyDown : WND_EventType_KeyUp);
           event->key = key;
           event->modifiers = wnd__modifiers_from_x11_state(xev.xkey.state);
         }

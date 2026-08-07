@@ -9,6 +9,7 @@
 #include "base/arena.h"
 #include "base/base.h"
 #include "base/core.h"
+#include "base/math.h"
 #include "base/print.h"
 #include "base/strings.h"
 #include "base/tctx.h"
@@ -22,362 +23,10 @@
 #include "gfx/input.h"
 #include "gfx/draw.h"
 #include "ui.h"
-
-////////////////////////////////
-//~ fp: temp: Test Map
-//
-// The world itself is game/'s (worldgen knobs in data/world.tabula); this
-// section is the presentation glue around it: sprite assets, the tiler
-// cache, and a debug rendering -- tiles, line segments for rivers and
-// roads, a rounded rect per pawn.
-
-#define MAP_TILE 8.0f // world units per tile
-
-////////////////////////////////
-//~ fp: temp: Map Assets
-//
-// One flat sprite table plus the tiling registration built while filling it.
-// The loader narrates what exists to the tiler (tl_push_*); at draw time,
-// tl_cell answers in the same currency -- sprite ids -- so drawing is a
-// table lookup with no policy. Assets stay factored: ground paintings, mask
-// shapes, overlay art; never baked combinations.
-
-#define MAP_SPRITE_CAP 1024
-
-#define MAP_SITE_VARIANT_CAP 8
-
-typedef struct {
-  D_Sprite sprites[MAP_SPRITE_CAP]; // id 0 reserved: "no art"
-  U32 sprite_count;
-  TL_Config tiling;
-  V4 fallback_colors[TL_CLASS_CAP]; // flat color for terrains with no ground art
-  U32 class_count;
-  // GM_Sprite -> sprite ids, one per art variant; count 0 = no art yet
-  U32 gm_sprites[GM_Sprite_COUNT][MAP_SITE_VARIANT_CAP];
-  U32 gm_sprite_counts[GM_Sprite_COUNT];
-} MapAssets;
-
-internal U32 map__register(MapAssets* assets, D_Sprite sprite) {
-  U32 result = 0;
-  if(assets->sprite_count < MAP_SPRITE_CAP) {
-    assets->sprites[assets->sprite_count] = sprite;
-    result = assets->sprite_count;
-    assets->sprite_count += 1;
-  }
-  return result;
-}
-
-// one tile png -> sprite id; 0 = no such file, which is also the loader's
-// "stop scanning variants" signal
-internal U32 map__load(MapAssets* assets, Arena* scratch, String8 path) {
-  U32 result = 0;
-  D_Image image = d_image_load(scratch, path);
-  if(image.w != 0) {
-    result = map__register(assets, d_spritesheet_push(image));
-  }
-  return result;
-}
-
-// read-through cache around the tiler: a hit returns as-is, a miss asks the
-// tiler and keeps the answer. tl_cell always emits at least one piece, so a
-// zero cell reads as "not yet".
-typedef struct {
-  TL_Config tiling;
-  TL_Cell* cells; // (width+1) x (height+1): the ring owns far-edge dual cells
-  I32 w;
-  I32 h;
-} MapCache;
-
-internal MapCache map_cache_make(Arena* arena, I32 board_w, I32 board_h, TL_Config tiling) {
-  MapCache cache = {0};
-  cache.tiling = tiling;
-  cache.w = board_w + 1;
-  cache.h = board_h + 1;
-  cache.cells = push_array(arena, TL_Cell, (U64)cache.w * (U64)cache.h);
-  return cache;
-}
-
-internal TL_Cell* map_cache_cell(MapCache* cache, GM_MapItem* item) {
-  TL_Cell* cell = &cache->cells[item->pos.y * cache->w + item->pos.x];
-  if(cell->count == 0) {
-    U32 nb[9];
-    for(U32 i = 0; i < 9; i += 1) { nb[i] = item->neighbours[i]; }
-    U8 networks[TL_NETWORK_CAP] = {0};
-    for(BD_Feature feature = 0; feature < BD_Feature_COUNT; feature += 1) {
-      networks[feature] = item->features[feature];
-    }
-    *cell = tl_cell(&cache->tiling, nb, networks, item->pos);
-  }
-  return cell;
-}
-
-internal MapAssets map_assets_load(void) {
-  MapAssets assets = {0};
-  assets.sprite_count = 1; // id 0 = nil
-  assets.class_count = WG_TERRAIN_TYPE_COUNT;
-  ArenaTemp scratch = arena_get_scratch(0, 0);
-  d_spritesheet_begin(512, 512, D_Sampling_Smooth);
-
-  for(U32 type = 0; type < WG_TERRAIN_TYPE_COUNT; type += 1) {
-    WG_TerrainType* def = &WG_TERRAIN_TYPES[type];
-    String8 name = wg_terrain_name(type);
-    assets.fallback_colors[type] = def->color;
-    tl_class_set(&assets.tiling, type, def->rank, def->overlay_density);
-
-    // ground: one torus painting per terrain, cut into 4x4 windows on the
-    // OFFSET grid -- each half a tile past the painting's own grid, since
-    // the tiler draws ground on dual cells (see tiling.h). The wrap margin
-    // keeps every offset window one contiguous crop; push_window fills each
-    // window's atlas gutter with its true neighbor texels, so windows butt
-    // seamlessly on screen.
-    String8 ground_path = push_str8f(scratch.arena, "assets/tiles/%S_ground.png", name);
-    D_Image torus = d_image_load(scratch.arena, ground_path);
-    if(torus.w > 0) {
-      I32 tw = torus.w / TL_TORUS_GRID;
-      I32 th = torus.h / TL_TORUS_GRID;
-      D_Image ext = d_image_create(scratch.arena, torus.w + tw, torus.h + th, (V4){0});
-      d_image_blit(ext, 0, 0, torus);
-      d_image_blit(ext, torus.w, 0, torus); // wrap margins; blit clips
-      d_image_blit(ext, 0, torus.h, torus);
-      d_image_blit(ext, torus.w, torus.h, torus);
-      for(U32 gy = 0; gy < TL_TORUS_GRID; gy += 1) {
-        for(U32 gx = 0; gx < TL_TORUS_GRID; gx += 1) {
-          I32 wx0 = (I32)gx * tw + tw / 2;
-          I32 wy0 = (I32)gy * th + th / 2;
-          Rect window = {{(F32)wx0, (F32)wy0}, {(F32)(wx0 + tw), (F32)(wy0 + th)}};
-          tl_push_ground(&assets.tiling, type, gx, gy,
-                         map__register(&assets, d_spritesheet_push_window(ext, window)));
-        }
-      }
-    }
-
-    for(U32 variant = 0;; variant += 1) {
-      String8 path = push_str8f(scratch.arena, "assets/tiles/%S_overlay_%u.png", name, variant);
-      U32 id = map__load(&assets, scratch.arena, path);
-      if(id == 0) { break; }
-      tl_push_overlay(&assets.tiling, type, id);
-    }
-    for(U32 variant = 0;; variant += 1) {
-      String8 path = push_str8f(scratch.arena, "assets/tiles/%S_edge_%u.png", name, variant);
-      U32 id = map__load(&assets, scratch.arena, path);
-      if(id == 0) { break; }
-      tl_push_edge_overlay(&assets.tiling, type, id);
-    }
-  }
-
-  // boundary masks are class-agnostic: cases 1..14 (0 and 15 are the
-  // trivial empty/full cases and have no files)
-  for(U32 code = 1; code < 15; code += 1) {
-    for(U32 variant = 0;; variant += 1) {
-      String8 path = push_str8f(scratch.arena, "assets/tiles/mask_%u_%u.png", code, variant);
-      U32 id = map__load(&assets, scratch.arena, path);
-      if(id == 0) { break; }
-      tl_push_mask(&assets.tiling, code, id);
-    }
-  }
-
-  // network art, by BD_Feature id; finished pieces per connection case
-  struct {
-    U32 network;
-    char* name;
-  } NETWORK_ART[] = {
-      {BD_Feature_River, "river"},
-      {BD_Feature_Road, "road"},
-  };
-  for(U32 i = 0; i < ArrayCount(NETWORK_ART); i += 1) {
-    for(U32 code = 1; code < 16; code += 1) {
-      for(U32 variant = 0;; variant += 1) {
-        String8 path = push_str8f(scratch.arena, "assets/tiles/%s_%u_%u.png",
-                                  NETWORK_ART[i].name, code, variant);
-        U32 id = map__load(&assets, scratch.arena, path);
-        if(id == 0) { break; }
-        tl_push_network(&assets.tiling, NETWORK_ART[i].network, code, id);
-      }
-    }
-  }
-
-  // item art, by GM_Sprite id -- the game names what a thing looks like,
-  // these files say how that looks. Variant-scanned like all tile art; a
-  // sprite with no files keeps count 0 and the renderer falls back to a
-  // flat shape.
-  struct {
-    GM_Sprite sprite;
-    char* name;
-  } ITEM_ART[] = {
-      {GM_Sprite_Village, "village"},
-      {GM_Sprite_Palace, "palace"},
-      {GM_Sprite_Herders, "herders"},
-      {GM_Sprite_Wagon, "wagon"},
-      {GM_Sprite_Tholos, "tholos"},
-      {GM_Sprite_Band, "band"},
-  };
-  for(U32 i = 0; i < ArrayCount(ITEM_ART); i += 1) {
-    for(U32 variant = 0; variant < MAP_SITE_VARIANT_CAP; variant += 1) {
-      String8 path = push_str8f(scratch.arena, "assets/tiles/site_%s_%u.png", ITEM_ART[i].name, variant);
-      U32 id = map__load(&assets, scratch.arena, path);
-      if(id == 0) { break; }
-      assets.gm_sprites[ITEM_ART[i].sprite][variant] = id;
-      assets.gm_sprite_counts[ITEM_ART[i].sprite] = variant + 1;
-    }
-  }
-
-  d_spritesheet_end();
-  arena_release_scratch(scratch);
-  return assets;
-}
-
-
-// draw order: the tiler's layers first (a fact about how the art is built --
-// boundary tongues must not paint over overlay art), then surface items,
-// then highlights above everything
-#define MAP_LAYER_SURFACE   TL_Layer_COUNT
-#define MAP_LAYER_HIGHLIGHT (TL_Layer_COUNT + 1)
-#define MAP_LAYER_COUNT     (TL_Layer_COUNT + 2)
-
-// the world-space rect of the tile at (x, y) -- fractional positions land on
-// the dual grid -- shrunk by `inset` world units per side
-internal Rect map_tile_rect(F32 x, F32 y, F32 inset) {
-  return (Rect){{x * MAP_TILE + inset, y * MAP_TILE + inset},
-                {(x + 1) * MAP_TILE - inset, (y + 1) * MAP_TILE - inset}};
-}
-
-// the tile cell under a screen position, taken in client pixels as
-// input_mouse_pos gives them. Floors, so cells west/north of the board come
-// back negative -- callers bounds-check against the board.
-internal V2I map_tile_from_screen(D_Camera camera, V2 screen_px) {
-  F32 scale = wnd_scale();
-  if(scale == 0) { scale = 1; }
-  V2 world = d_camera_from_screen(camera, v2_scale(screen_px, 1.0f / scale));
-  V2I tile = {(I32)(world.x / MAP_TILE), (I32)(world.y / MAP_TILE)};
-  tile.x -= (F32)tile.x * MAP_TILE > world.x;
-  tile.y -= (F32)tile.y * MAP_TILE > world.y;
-  return tile;
-}
-
-internal void map_draw(GM_MapItems items, MapAssets* assets, MapCache* cache, D_Camera camera) {
-  // One resolved drawable, ready to submit. sprite 0 means "draw color".
-  typedef struct {
-    Rect rect;
-    U32 sprite; // into assets->sprites; 0 = none
-    U32 mask;   // sprite mask, 0 = none
-    V4 color;   // sprite tint (zero = as-is), or the fill when sprite == 0
-    F32 rounding;
-    F32 outline; // > 0: outline of this thickness (world units) instead of a fill
-  } MapDrawCmd;
-
-  V2 vp = wnd_size();
-  d_rect((Rect){{0, 0}, {vp.x, vp.y}}, (V4){0.06f, 0.06f, 0.08f, 1});
-
-  ArenaTemp scratch = arena_get_scratch(0, 0);
-
-  //- size the layers: one slot per piece / surface item. Upper bounds --
-  // pieces that resolve to nothing leave slack. This pass also warms the cell
-  // cache, so the scatter below re-resolves for free.
-  U64 cap[MAP_LAYER_COUNT] = {0};
-  for(U64 i = 0; i < items.count; i += 1) {
-    GM_MapItem* item = &items.items[i];
-    if(item->has_highlight) {
-      cap[MAP_LAYER_HIGHLIGHT] += 1;
-      continue;
-    }
-    if(item->has_pawn) {
-      cap[MAP_LAYER_SURFACE] += 1;
-      continue;
-    }
-    TL_Cell* cell = map_cache_cell(cache, item);
-    for(U32 pi = 0; pi < cell->count; pi += 1) { cap[cell->pieces[pi].layer] += 1; }
-  }
-  U64 base[MAP_LAYER_COUNT];
-  U64 total = 0;
-  for(U32 layer = 0; layer < MAP_LAYER_COUNT; layer += 1) {
-    base[layer] = total;
-    total += cap[layer];
-  }
-  MapDrawCmd* cmds = push_array_no_zero(scratch.arena, MapDrawCmd, total);
-  U64 count[MAP_LAYER_COUNT] = {0};
-
-  //- scatter: resolve each item once, every drawable lands in its layer's slots
-  for(U64 i = 0; i < items.count; i += 1) {
-    GM_MapItem* item = &items.items[i];
-    if(item->has_highlight) {
-      MapDrawCmd* cmd = &cmds[base[MAP_LAYER_HIGHLIGHT] + count[MAP_LAYER_HIGHLIGHT]];
-      count[MAP_LAYER_HIGHLIGHT] += 1;
-      *cmd = (MapDrawCmd){
-          .rect = map_tile_rect(item->pos.x, item->pos.y, 0),
-          .color = ui_theme()->accent_color,
-          .outline = 1.0f,
-      };
-      continue;
-    }
-    if(item->has_terrain) {
-      TL_Cell* cell = map_cache_cell(cache, item);
-      for(U32 pi = 0; pi < cell->count; pi += 1) {
-        TL_Piece* piece = &cell->pieces[pi];
-
-        V4 color = {0};
-        if(piece->id != 0) {
-          color = item->color;
-        }
-
-        Rect r = map_tile_rect(item->pos.x + piece->offset.x, item->pos.y + piece->offset.y, 0);
-        MapDrawCmd* cmd = &cmds[base[piece->layer] + count[piece->layer]];
-        *cmd = (MapDrawCmd){.rect = r, .sprite = piece->id, .color = color, .mask = piece->mask_id};
-        count[piece->layer] += 1;
-      }
-    }
-
-    if(item->has_pawn) {
-      U32 variant_count = assets->gm_sprite_counts[item->sprite];
-
-      F32 inset = 0.0;
-      F32 rounding = 0.0;
-      U32 sprite = 0;
-
-      if(variant_count > 0) {
-        // full tile; the art brings its own silhouette, the item's color
-        // rides along as tint (white = as-is). Variant hashed off the thing
-        // id: stable for the thing's whole life, varied across things.
-        U32 variant = (item->id * 2654435761u) % variant_count;
-        sprite = assets->gm_sprites[item->sprite][variant];
-      } else {
-        inset = MAP_TILE * 0.2f;
-        rounding = (MAP_TILE - 2 * inset) * 0.35f;
-      }
-
-      MapDrawCmd* cmd = &cmds[base[MAP_LAYER_SURFACE] + count[MAP_LAYER_SURFACE]];
-      count[MAP_LAYER_SURFACE] += 1;
-      *cmd = (MapDrawCmd){
-          .rect = map_tile_rect(item->pos.x, item->pos.y, inset),
-          .sprite = sprite,
-          .rounding = rounding,
-          .color = item->color,
-      };
-    }
-  }
-
-  //- submit: layers in order, commands in scatter order
-  d_camera_begin(camera);
-  for(U32 layer = 0; layer < MAP_LAYER_COUNT; layer += 1) {
-    for(U64 i = 0; i < count[layer]; i += 1) {
-      MapDrawCmd* cmd = &cmds[base[layer] + i];
-      if(cmd->sprite != 0) {
-        if(cmd->mask != 0) {
-          d_sprite_masked(assets->sprites[cmd->sprite], assets->sprites[cmd->mask], cmd->rect, cmd->color);
-        } else {
-          d_sprite(assets->sprites[cmd->sprite], cmd->rect, cmd->color);
-        }
-      } else if(cmd->outline > 0) {
-        d_rect_outline(cmd->rect, cmd->color, cmd->outline);
-      } else if(cmd->rounding > 0) {
-        d_rect_rounded(cmd->rect, cmd->color, cmd->rounding);
-      } else {
-        d_rect(cmd->rect, cmd->color);
-      }
-    }
-  }
-  d_camera_end();
-  arena_release_scratch(scratch);
-}
+#include "client/client.h"
+#include "client/map.h"
+#include "client/hud.h"
+#include "client/report.h"
 
 ////////////////////////////////
 //~ fp: temp: Test Render
@@ -452,57 +101,8 @@ internal void test_render(D_Camera camera) {
   }
 }
 
-internal void camera_update(D_Camera* camera) {
-  struct {
-    WND_Key key;
-    F32 x;
-    F32 y;
-    F32 z;
-  } INTERACTIONS[] = {
-      {WND_Key_A, -1, 0, 0},
-      {WND_Key_D, 1, 0, 0},
-      {WND_Key_W, 0, -1, 0},
-      {WND_Key_S, 0, 1, 0},
-      {WND_Key_Q, 0, 0, 1},
-      {WND_Key_E, 0, 0, -1}};
-
-  V2 d_trans = {0};
-  F32 d_zoom = 0;
-
-  for(U32 i = 0; i < ArrayCount(INTERACTIONS); ++i) {
-    if(input_is_key_down((INTERACTIONS[i].key))) {
-      d_trans.x += INTERACTIONS[i].x;
-      d_trans.y += INTERACTIONS[i].y;
-      d_zoom += INTERACTIONS[i].z;
-    }
-  }
-  F32 dt = wnd_frame_time();
-  F32 zoom = (camera->zoom == 0) ? 1.0f : camera->zoom;
-
-  //- inertial movement: the keys steer a target velocity, and the camera's
-  //  velocity exponentially chases it -- the same curve accelerates on press
-  //  and glides to a stop on release. `blend` is the fraction of the
-  //  remaining gap closed this frame; putting dt in the exponent makes two
-  //  half-frames compose to exactly one whole one, so the feel survives any
-  //  framerate. Bigger rate = snappier (velocity half-life = 1/rate seconds).
-  F32 blend = 1.0f - f32_exp2(-8.0f * dt);
-
-  // pan target is world-units-per-second scaled by 1/zoom, so panning covers
-  // a constant fraction of the screen at any zoom level; the zoom target is
-  // in doublings per second -- exponential, so it reads as the same speed at
-  // every level (the 1/zoom factor belongs to panning alone)
-  V2 pan_target = v2_scale(d_trans, 400.0f / zoom);
-  F32 zoom_target = 3.0f * d_zoom;
-  camera->pan_vel = v2_add(camera->pan_vel, v2_scale(v2_sub(pan_target, camera->pan_vel), blend));
-  camera->zoom_vel += (zoom_target - camera->zoom_vel) * blend;
-
-  camera->center = v2_scaled_add(camera->center, camera->pan_vel, dt);
-  zoom *= f32_exp2(camera->zoom_vel * dt);
-  camera->zoom = Clamp(0.25f, zoom, 8.0f);
-}
-
 ////////////////////////////////
-//~ fp: temp: 60fps Present Pacing
+//~ fp: 60fps Present Pacing
 //
 // Hardware-paces presentation to 60fps: when the monitor runs at a whole
 // multiple of 60 (60Hz, 120Hz, ...), present every Nth vblank -- the display
@@ -527,453 +127,87 @@ internal void pace_60fps_update(void) {
 }
 
 ////////////////////////////////
-//~ fp: temp: FPS Counter
+//~ fp: Camera
 //
-// Rides on wnd_frame_time(): update once per frame, draw whenever. The
-// readout refreshes four times a second -- instantaneous 1/dt flickers too
-// fast to read. ZII, except that a font must be assigned for draw to show
-// anything.
+// Steering lives here, not in client/map: the map is pure presentation, and
+// what keys mean is the shell's decision. The camera itself is a D_Camera
+// value the map only ever receives.
 
-typedef struct {
-  D_Font font;
-  F32 accum_time;
-  U32 accum_frames;
-  F32 display; // frames per second, as of the last refresh
-} FPS_Counter;
+internal void camera_update(D_Camera* camera, V2 translation, F32 zooming) {
+  F32 dt = wnd_frame_time();
+  F32 zoom = (camera->zoom == 0) ? 1.0f : camera->zoom;
 
-internal void fps_update(FPS_Counter* counter) {
-  counter->accum_time += wnd_frame_time();
-  counter->accum_frames += 1;
-  if(counter->accum_time >= 0.25f) {
-    counter->display = (F32)counter->accum_frames / counter->accum_time;
-    counter->accum_time = 0;
-    counter->accum_frames = 0;
-  }
+  //- inertial movement: the keys steer a target velocity, and the camera's
+  //  velocity exponentially chases it -- the same curve accelerates on press
+  //  and glides to a stop on release. `blend` is the fraction of the
+  //  remaining gap closed this frame; putting dt in the exponent makes two
+  //  half-frames compose to exactly one whole one, so the feel survives any
+  //  framerate. Bigger rate = snappier (velocity half-life = 1/rate seconds).
+  F32 blend = 1.0f - f32_exp2(-8.0f * dt);
+
+  // pan target is world-units-per-second scaled by 1/zoom, so panning covers
+  // a constant fraction of the screen at any zoom level; the zoom target is
+  // in doublings per second -- exponential, so it reads as the same speed at
+  // every level (the 1/zoom factor belongs to panning alone)
+  V2 pan_target = v2_scale(translation, 400.0f / zoom);
+  F32 zoom_target = 3.0f * zooming;
+  camera->pan_vel = v2_add(camera->pan_vel, v2_scale(v2_sub(pan_target, camera->pan_vel), blend));
+  camera->zoom_vel += (zoom_target - camera->zoom_vel) * blend;
+
+  camera->center = v2_scaled_add(camera->center, camera->pan_vel, dt);
+  zoom *= f32_exp2(camera->zoom_vel * dt);
+  camera->zoom = Clamp(0.25f, zoom, 8.0f);
 }
 
-// black box, white text, top-center of the window
-internal void fps_draw(FPS_Counter* counter) {
-  ArenaTemp scratch = arena_get_scratch(0, 0);
-  String8 text = push_str8f(scratch.arena, "FPS %.1f", counter->display);
-  F32 text_size = 16;
-  V2 pad = {8, 4};
-  V2 dim = d_text_dim(counter->font, text_size, text);
-  V2 vp = wnd_size();
-  Rect box = {{(vp.x - dim.x) / 2 - pad.x, 8},
-              {(vp.x + dim.x) / 2 + pad.x, 8 + dim.y + 2 * pad.y}};
-  d_rect_rounded(box, (V4){0, 0, 0, 1}, 6);
-  d_text(counter->font, text_size, (V2){box.min.x + pad.x, box.min.y + pad.y},
-         Col_White, text);
-  arena_release_scratch(scratch);
-}
+internal void cmd_from_keyboard(CL_Command* cmd) {
+  struct {
+    WND_Key key;
+    F32 x;
+    F32 y;
+    F32 z;
+  } INTERACTIONS[] = {
+      {WND_Key_A, -1, 0, 0},
+      {WND_Key_D, 1, 0, 0},
+      {WND_Key_W, 0, -1, 0},
+      {WND_Key_S, 0, 1, 0},
+      {WND_Key_Q, 0, 0, 1},
+      {WND_Key_E, 0, 0, -1}};
 
-////////////////////////////////
-//~ fp: temp: Debug HUD
-//
-// The seam between the pure UI core and gfx: text callbacks answered by
-// draw, input gathered into a UI_Input, the frame's draw list replayed
-// through d_* calls. Fonts cross the boundary as D_Font.u64. hud_build is
-// the demo panel: FPS readout, wrapped text, a reseed button with a tooltip.
+  V2 d_trans = {0};
+  F32 d_zoom = 0;
 
-// a color is a [r g b a] list; shorter lists keep alpha 1, misses keep fallback
-internal V4 hud__color(TB_Value* object, String8 key, V4 fallback) {
-  TB_Value* list = tb_get(object, key);
-  if(list->kind != TB_ValueKind_List || list->count < 3) {
-    return fallback;
-  }
-  V4 color = {0, 0, 0, 1};
-  F32* comps[4] = {&color.x, &color.y, &color.z, &color.w};
-  U64 i = 0;
-  for(TB_Value* el = list->first; el != 0 && i < 4; el = el->next, i += 1) {
-    *comps[i] = tb_num_from_value(el, 0);
-  }
-  return color;
-}
-
-// data/ui.tabula -> UI_Theme: the chronicle surface (panel_background / ink /
-// outline) becomes the Default and Panel roles, button_* and tooltip_* their
-// roles; missing keys keep the built-in theme
-internal UI_Theme hud_theme_load(String8 path) {
-  UI_Theme theme = ui_default_theme();
-  ArenaTemp scratch = arena_get_scratch(0, 0);
-  TB_Value* root = tb_parse_file_and_report(scratch.arena, path);
-  TB_Value* style = tb_get(root, str8_lit("style"));
-  theme.font_size = tb_get_num(style, str8_lit("font_size"), theme.font_size);
-
-  UI_RoleStyle base = theme.roles[UI_Role_Default];
-  base.background_color = hud__color(style, str8_lit("panel_background"), base.background_color);
-  base.text_color = hud__color(style, str8_lit("ink"), base.text_color);
-  base.border_color = hud__color(style, str8_lit("outline"), base.border_color);
-  base.border_thickness = tb_get_num(style, str8_lit("border_thickness"), base.border_thickness);
-  base.corner_radius = 0;
-  theme.roles[UI_Role_Default] = base;
-
-  theme.roles[UI_Role_Panel] = base;
-  theme.roles[UI_Role_Panel].corner_radius = tb_get_num(style, str8_lit("panel_corner_radius"), 0);
-
-  theme.roles[UI_Role_Button] = base;
-  theme.roles[UI_Role_Button].background_color = hud__color(style, str8_lit("button_background"), base.background_color);
-  theme.roles[UI_Role_Button].border_color = hud__color(style, str8_lit("button_border_color"), base.border_color);
-  theme.roles[UI_Role_Button].border_thickness = tb_get_num(style, str8_lit("button_border_thickness"), base.border_thickness);
-  theme.roles[UI_Role_Button].corner_radius = tb_get_num(style, str8_lit("button_corner_radius"), 0);
-
-  theme.roles[UI_Role_Tooltip] = base;
-  theme.roles[UI_Role_Tooltip].background_color = hud__color(style, str8_lit("tooltip_background"), base.text_color);
-  theme.roles[UI_Role_Tooltip].text_color = hud__color(style, str8_lit("tooltip_text"), base.background_color);
-  theme.roles[UI_Role_Tooltip].corner_radius = tb_get_num(style, str8_lit("tooltip_corner_radius"), 8);
-
-  theme.muted_color = hud__color(style, str8_lit("muted"), base.text_color);
-  theme.accent_color = hud__color(style, str8_lit("accent"), base.text_color);
-  arena_release_scratch(scratch);
-  return theme;
-}
-
-internal V2 hud_measure_text(void* user, U64 font, F32 size, String8 text) {
-  Unused(user);
-  return d_text_dim((D_Font){font}, size, text);
-}
-
-internal UI_FontMetrics hud_font_metrics(void* user, U64 font, F32 size) {
-  Unused(user);
-  D_FontMetrics m = d_font_metrics((D_Font){font}, size);
-  return (UI_FontMetrics){m.ascent, m.descent, m.line_advance};
-}
-
-// the mouse arrives in client pixels; the UI, like draw, speaks points
-internal UI_Input hud_gather_input(void) {
-  UI_Input in = {0};
-  F32 scale = wnd_scale();
-  if(scale == 0) { scale = 1; }
-  in.mouse = v2_scale(input_mouse_pos(), 1.0f / scale);
-  WND_MouseButton buttons[UI_MouseButton_COUNT] = {
-      WND_MouseButton_Left, WND_MouseButton_Right, WND_MouseButton_Middle};
-  for(U32 i = 0; i < UI_MouseButton_COUNT; i += 1) {
-    in.down[i] = (B8)input_is_mouse_button_down(buttons[i]);
-    in.pressed[i] = (B8)input_is_mouse_button_pressed(buttons[i]);
-    in.released[i] = (B8)input_is_mouse_button_released(buttons[i]);
-  }
-  in.scroll = input_scroll();
-  in.dt = wnd_frame_time();
-  in.window = wnd_size();
-  return in;
-}
-
-internal void hud_replay_draw_list(UI_DrawList list) {
-  for(U64 i = 0; i < list.count; i += 1) {
-    UI_DrawCommand* cmd = &list.commands[i];
-    switch(cmd->kind) {
-      case UI_DrawCommandKind_Rect: {
-        D_RectParams params = {0};
-        params.rect = cmd->rect;
-        for(Corner c = 0; c < Corner_COUNT; c += 1) {
-          params.colors[c] = cmd->colors[c];
-          params.corner_radii[c] = cmd->corner_radii[c];
-        }
-        params.border_thickness = cmd->border_thickness;
-        params.edge_softness = cmd->edge_softness;
-        d_rect_ex(&params);
-      } break;
-      case UI_DrawCommandKind_Text: {
-        d_text((D_Font){cmd->font}, cmd->font_size, cmd->pos, cmd->color, cmd->text);
-      } break;
-      case UI_DrawCommandKind_ClipPush: {
-        d_push_clip(cmd->rect);
-      } break;
-      case UI_DrawCommandKind_ClipPop: {
-        d_pop_clip();
-      } break;
-      default: break;
+  for(U32 i = 0; i < ArrayCount(INTERACTIONS); ++i) {
+    if(input_is_key_down((INTERACTIONS[i].key))) {
+      d_trans.x += INTERACTIONS[i].x;
+      d_trans.y += INTERACTIONS[i].y;
+      d_zoom += INTERACTIONS[i].z;
     }
   }
-}
 
-// one label/value line: label in ink at the left, value at the right
-internal void hud__stat_row(String8 label, String8 value, V4 value_color) {
-  ui_push_pref_width(ui_size_pct(1, 0));
-  UI_Box* row = ui_row_begin(label);
-  ui_pop_pref_width();
-  Unused(row);
-  ui_label(label);
-  ui_spacer(ui_size_grow(1));
-  ui_push_text_color(value_color);
-  ui_label(value);
-  ui_pop_text_color();
-  ui_row_end();
-}
+  cmd->translation = v2_add(cmd->translation, d_trans);
+  cmd->zooming += d_zoom;
+  cmd->reload = input_is_key_pressed(WND_Key_R);
+  cmd->quit = input_is_key_pressed(WND_Key_Escape);
 
-// the generic tier of the selection panel: any member of the fact tree
-// renders without hud changes. Scalars become stat rows (numbers in accent),
-// lists join into one value, nested objects become muted section headers
-// followed by their own rows. `omit` skips one top-level key (the curated
-// title). Strings live on the caller's arena for the duration of the build.
-internal void hud__fact_rows(Arena* arena, TB_Value* object, String8 omit) {
-  UI_Theme* theme = ui_theme();
-  for(TB_Node* node = object->first_member; node != 0; node = node->next) {
-    if(omit.size > 0 && str8_match(node->key, omit, 0)) { continue; }
-    TB_Value* value = &node->value;
-    switch(value->kind) {
-      case TB_ValueKind_Identifier:
-      case TB_ValueKind_String: {
-        hud__stat_row(node->key, value->text, theme->roles[UI_Role_Default].text_color);
-      } break;
-      case TB_ValueKind_Number: {
-        hud__stat_row(node->key, value->text, theme->accent_color);
-      } break;
-      case TB_ValueKind_List: {
-        String8List parts = {0};
-        for(TB_Value* el = value->first; el != 0; el = el->next) {
-          str8_list_push(arena, &parts, el->text);
-        }
-        StringJoin join = {str8_lit(""), str8_lit(", "), str8_lit("")};
-        hud__stat_row(node->key, str8_list_join(arena, parts, &join),
-                      theme->roles[UI_Role_Default].text_color);
-      } break;
-      case TB_ValueKind_Object: {
-        ui_spacer(ui_size_px(2, 1));
-        ui_push_text_color(theme->muted_color);
-        ui_label(node->key);
-        ui_pop_text_color();
-        hud__fact_rows(arena, value, str8_lit(""));
-      } break;
-      default: break;
-    }
+  if(input_is_key_pressed(WND_Key_1)) {
+    cmd->map_mode_toggle |= GM_MapModeFlag_Influence;
   }
-}
-
-// top-right panel over the current selection: curated title (thing name, or
-// the tile's terrain), then the generic fact rows
-internal void hud_selection_panel(GM_Game* game) {
-  ArenaTemp scratch = arena_get_scratch(0, 0);
-  TB_Value* info = gm_selection_info(scratch.arena, game);
-  if(!tb_value_is_nil(info)) {
-    ui_push_padding((V2){12, 10});
-    UI_Box* panel = ui_panel_begin(str8_lit("selection_panel"));
-    ui_pop_padding();
-    panel->flags |= UI_BoxFlag_Floating;
-    panel->floating_anchor = (V2){0, 0};
-    panel->floating_pos = (V2){12, 12};
-    panel->pref_size[UI_Axis_X] = ui_size_px(240, 1);
-    {
-      String8 title = tb_get_str8(info, str8_lit("name"), str8_lit(""));
-      if(title.size == 0) {
-        title = tb_get_str8(tb_get(info, str8_lit("tile")), str8_lit("terrain"), str8_lit("tile"));
-      }
-      ui_push_font_size(19);
-      ui_label(title);
-      ui_pop_font_size();
-      hud__fact_rows(scratch.arena, info, str8_lit("name"));
-    }
-    ui_panel_end();
-  }
-  {
-    UI_Box* panel = ui_panel_begin(str8_lit("panel2"));
-    panel->flags |= UI_BoxFlag_Floating;
-    panel->floating_anchor = (V2){0, 1};
-    panel->pref_size[UI_Axis_X] = ui_size_pct(1, 1);
-    panel->pref_size[UI_Axis_Y] = ui_size_px(40, 1);
-    ui_push_pref_height(ui_size_grow(1));
-    ui_push_child_align(UI_Align_Center);
-    ui_push_padding((V2){10, 0});
-    UI_Row(str8_lit("row1")) {
-      ui_button(str8_lit("Button #1"));
-      ui_button(str8_lit("Button #2"));
-      ui_button(str8_lit("Button #3"));
-      ui_button(str8_lit("Button #4"));
-    }
-    ui_pop_padding();
-    ui_pop_child_align();
-    ui_pop_pref_height();
-    ui_panel_end();
-  }
-  arena_release_scratch(scratch);
-}
-
-internal void hud_build(FPS_Counter* fps, GM_Game* game) {
-  ui_push_font(fps->font.u64);
-  ui_push_child_gap(8);
-
-  hud_selection_panel(game);
-
-  ui_pop_child_gap();
-  ui_pop_font();
 }
 
 ////////////////////////////////
 //~ fp: Entry Point
 
-////////////////////////////////
-//~ fp: temp: Worldgen Report
-//
-// `app worlds N [first_seed]`: generate N worlds headless and print one CSV
-// row of metrics per world to stdout, for offline analysis.
-
-typedef struct {
-  U16 group;
-  U16 touches_border;
-  I32 size;
-} Report_Component;
-
-// 4-connected components of equal group values; group 0 tiles are skipped
-internal I32 report__components(Arena* arena, U16* groups, I32 w, I32 h,
-                                Report_Component* out) {
-  U8* visited = push_array(arena, U8, (U64)w * h);
-  V2I* queue = push_array_no_zero(arena, V2I, (U64)w * h);
-  I32 count = 0;
-  for(I32 y = 0; y < h; y += 1) {
-    for(I32 x = 0; x < w; x += 1) {
-      U64 idx = (U64)y * w + x;
-      if(visited[idx] || groups[idx] == 0) { continue; }
-      Report_Component comp = {groups[idx], 0, 0};
-      visited[idx] = 1;
-      queue[0] = (V2I){x, y};
-      I32 queue_count = 1;
-      for(I32 head = 0; head < queue_count; head += 1) {
-        V2I p = queue[head];
-        comp.size += 1;
-        if(p.x == 0 || p.y == 0 || p.x == w - 1 || p.y == h - 1) { comp.touches_border = 1; }
-        for(Dir4 dir = 0; dir < Dir4_COUNT; dir += 1) {
-          V2I n = v2i_add(p, dir4_delta(dir));
-          if(n.x < 0 || n.y < 0 || n.x >= w || n.y >= h) { continue; }
-          U64 nidx = (U64)n.y * w + n.x;
-          if(visited[nidx] || groups[nidx] != comp.group) { continue; }
-          visited[nidx] = 1;
-          queue[queue_count] = n;
-          queue_count += 1;
-        }
-      }
-      out[count] = comp;
-      count += 1;
-    }
+// decimal digits only -- anything else is a usage error, not a number
+internal B32 main__parse_u64(String8 s, U64* out) {
+  if(s.size == 0) { return 0; }
+  U64 value = 0;
+  for(U64 i = 0; i < s.size; i += 1) {
+    U8 c = s.str[i];
+    if(c < '0' || c > '9') { return 0; }
+    value = value * 10 + (c - '0');
   }
-  return count;
-}
-
-internal void worldgen_report(I32 world_count, U64 first_seed) {
-  WG_Params params = wg_params_load(str8_lit("data/world.tabula"));
-
-  // the report knows some terrains by role; ids resolve by name so the file
-  // stays free to reorder
-  U32 id_water = wg_terrain_by_name(str8_lit("water"));
-  U32 id_ocean = wg_terrain_by_name(str8_lit("ocean"));
-  U32 id_ice = wg_terrain_by_name(str8_lit("ice"));
-  U32 id_beach = wg_terrain_by_name(str8_lit("beach"));
-  U32 id_mountain = wg_terrain_by_name(str8_lit("mountain"));
-  U32 id_snowcap = wg_terrain_by_name(str8_lit("snowcap"));
-  B32 is_hot[WG_TERRAIN_CAP] = {0};
-  B32 is_cold[WG_TERRAIN_CAP] = {0};
-  is_hot[wg_terrain_by_name(str8_lit("desert"))] = 1;
-  is_hot[wg_terrain_by_name(str8_lit("badlands"))] = 1;
-  is_hot[wg_terrain_by_name(str8_lit("savanna"))] = 1;
-  is_hot[wg_terrain_by_name(str8_lit("jungle"))] = 1;
-  is_cold[id_ice] = 1;
-  is_cold[id_snowcap] = 1;
-  is_cold[wg_terrain_by_name(str8_lit("tundra"))] = 1;
-  is_cold[wg_terrain_by_name(str8_lit("taiga"))] = 1;
-
-  printf_str8("seed");
-  for(U32 i = 1; i < params.terrain_count; i += 1) { printf_str8(",%S", wg_terrain_name(i)); }
-  printf_str8(",land,landmasses,largest_landmass,ranges,largest_range,specks,lakes"
-              ",river_tiles,river_nets,coast,beach_on_coast,hot_cold,nil,passable_largest\n");
-
-  Arena* world_arena = arena_alloc();
-  for(I32 world = 0; world < world_count; world += 1) {
-    arena_clear(world_arena);
-    U64 seed = first_seed + (U64)world;
-    TH_Db* db = th_init_db(world_arena);
-    wg_generate(db, &params, seed);
-    I32 w = params.width;
-    I32 h = params.height;
-    U64 tiles = (U64)w * h;
-
-    U32 counts[WG_TERRAIN_CAP] = {0};
-    U16* by_terrain = push_array_no_zero(world_arena, U16, tiles); // terrain+1: no group 0
-    U16* by_land = push_array(world_arena, U16, tiles);
-    U16* by_range = push_array(world_arena, U16, tiles);
-    U16* by_passable = push_array(world_arena, U16, tiles);
-    U16* by_river = push_array(world_arena, U16, tiles);
-    U64 river_tiles = 0;
-    U64 coast = 0;
-    U64 hot_cold = 0;
-    for(I32 y = 0; y < h; y += 1) {
-      for(I32 x = 0; x < w; x += 1) {
-        U64 idx = (U64)y * w + x;
-        V2I p = {x, y};
-        U32 t = (U32)th_ifield_get(db, p, TH_IField_Terrain);
-        counts[t] += 1;
-        B32 land = t != 0 && t != id_water && t != id_ocean && t != id_ice;
-        by_terrain[idx] = (U16)(t + 1);
-        by_land[idx] = (U16)land;
-        by_range[idx] = t == id_mountain || t == id_snowcap;
-        by_passable[idx] = t < WG_TERRAIN_TYPE_COUNT && WG_TERRAIN_TYPES[t].move_cost > 0;
-        by_river[idx] = th_ifield_get(db, p, TH_IField_RiverMask) != 0;
-        river_tiles += by_river[idx];
-        if(land) {
-          B32 sea_beside = 0;
-          for(Dir4 dir = 0; dir < Dir4_COUNT; dir += 1) {
-            V2I n = v2i_add(p, dir4_delta(dir));
-            U32 nt = (U32)th_ifield_get(db, n, TH_IField_Terrain);
-            sea_beside |= th_world_in_bounds(db, n) && (nt == id_water || nt == id_ocean);
-          }
-          coast += sea_beside;
-        }
-        // unordered adjacent pairs: only look right and down
-        for(U32 pair = 0; pair < 2; pair += 1) {
-          V2I n = pair == 0 ? (V2I){x + 1, y} : (V2I){x, y + 1};
-          if(!th_world_in_bounds(db, n)) { continue; }
-          U32 nt = (U32)th_ifield_get(db, n, TH_IField_Terrain);
-          hot_cold += (is_hot[t] && is_cold[nt]) || (is_cold[t] && is_hot[nt]);
-        }
-      }
-    }
-
-    Report_Component* comps = push_array_no_zero(world_arena, Report_Component, tiles);
-    I32 speck_count = 0;
-    I32 lake_count = 0;
-    I32 comp_count = report__components(world_arena, by_terrain, w, h, comps);
-    for(I32 i = 0; i < comp_count; i += 1) {
-      U32 t = (U32)comps[i].group - 1;
-      speck_count += comps[i].size <= 2;
-      lake_count += (t == id_water || t == id_ocean) && !comps[i].touches_border;
-    }
-    I32 landmass_count = report__components(world_arena, by_land, w, h, comps);
-    I32 largest_landmass = 0;
-    U64 land_tiles = 0;
-    for(I32 i = 0; i < landmass_count; i += 1) {
-      largest_landmass = Max(largest_landmass, comps[i].size);
-      land_tiles += (U64)comps[i].size;
-    }
-    I32 range_count = report__components(world_arena, by_range, w, h, comps);
-    I32 largest_range = 0;
-    for(I32 i = 0; i < range_count; i += 1) { largest_range = Max(largest_range, comps[i].size); }
-    I32 passable_count = report__components(world_arena, by_passable, w, h, comps);
-    U64 passable_tiles = 0;
-    I32 largest_passable = 0;
-    for(I32 i = 0; i < passable_count; i += 1) {
-      largest_passable = Max(largest_passable, comps[i].size);
-      passable_tiles += (U64)comps[i].size;
-    }
-    I32 river_net_count = report__components(world_arena, by_river, w, h, comps);
-
-    printf_str8("%llu", (unsigned long long)seed);
-    for(U32 i = 1; i < params.terrain_count; i += 1) {
-      printf_str8(",%.4f", (F32)counts[i] / (F32)tiles);
-    }
-    printf_str8(",%.4f,%d,%.4f,%d,%d,%d,%d,%llu,%d,%llu,%.4f,%llu,%u,%.4f\n",
-                (F32)land_tiles / (F32)tiles,
-                landmass_count,
-                land_tiles > 0 ? (F32)largest_landmass / (F32)land_tiles : 0.0f,
-                range_count,
-                largest_range,
-                speck_count,
-                lake_count,
-                (unsigned long long)river_tiles,
-                river_net_count,
-                (unsigned long long)coast,
-                coast > 0 ? (F32)counts[id_beach] / (F32)coast : 0.0f,
-                (unsigned long long)hot_cold,
-                counts[0],
-                passable_tiles > 0 ? (F32)largest_passable / (F32)passable_tiles : 0.0f);
-  }
+  *out = value;
+  return 1;
 }
 
 int main(int argc, char** argv) {
@@ -982,16 +216,16 @@ int main(int argc, char** argv) {
 
   //- fp: temp: headless report mode exits before any window exists
   if(argc >= 3 && str8_match(str8_cstring(argv[1]), str8_lit("worlds"), 0)) {
-    I32 world_count = 0;
-    String8 count_arg = str8_cstring(argv[2]);
-    for(U64 i = 0; i < count_arg.size; i += 1) { world_count = world_count * 10 + (count_arg.str[i] - '0'); }
+    U64 world_count = 0;
     U64 first_seed = 1;
-    if(argc >= 4) {
-      first_seed = 0;
-      String8 seed_arg = str8_cstring(argv[3]);
-      for(U64 i = 0; i < seed_arg.size; i += 1) { first_seed = first_seed * 10 + (U64)(seed_arg.str[i] - '0'); }
+    B32 ok = main__parse_u64(str8_cstring(argv[2]), &world_count);
+    if(argc >= 4) { ok = ok && main__parse_u64(str8_cstring(argv[3]), &first_seed); }
+    if(!ok) {
+      eprintf_str8("usage: %s worlds N [first_seed]\n", argv[0]);
+      tctx_release();
+      return 1;
     }
-    worldgen_report(world_count, first_seed);
+    report_worldgen((I32)world_count, first_seed);
     tctx_release();
     return 0;
   }
@@ -1001,30 +235,31 @@ int main(int argc, char** argv) {
   wnd_equip_gl();
   d_init();
   ui_init(hud_measure_text, hud_font_metrics, 0);
-  ui_set_theme(hud_theme_load(str8_lit("data/ui.tabula")));
+  ui_set_theme(ui_theme_load(arena_alloc(), str8_lit("data/ui.tabula")));
 
-  //- fp: temp: the long-lived game state, and the presentation state that
-  //  shadows it (rebuilt with it on every reseed)
+  //- fp: the long-lived game state; the map view shadows it (its cell cache
+  //  is rebuilt with it on every reseed)
   Arena* game_arena = arena_alloc();
   GM_Game game = {0};
-  MapCache map_cache = {0};
   U64 game_next_seed = 2704;
 
-  MapAssets map_assets = {0};
-  {
-    // the terrain type table drives asset naming and tiling registration;
-    // loading the params fills it
-    wg_params_load(str8_lit("data/world.tabula"));
-    map_assets = map_assets_load();
-  }
+  // the terrain table drives asset naming and tiling registration
+  wg_terrain_table_load(str8_lit("data/world.tabula"));
+  Map_View* map = map_init(arena_alloc()); // outlives every reseed
 
-  //- fp: temp: fps overlay
+  D_Font hud_font = d_font_open(str8_lit("assets/fonts/Arial.ttf"));
   FPS_Counter fps_counter = {0};
-  fps_counter.font = d_font_open(str8_lit("assets/fonts/Arial.ttf"));
 
   D_Camera camera = {0};
   B32 hud_mouse_over = 0; // as of the last built frame
 
+  GM_MapModeFlags map_mode_flags = GM_MapModeFlag_Pawns;
+
+  // the frame, in phases: pump events -> input digest -> key/click handling
+  // -> pacing -> lazy (re)init -> sim -> draw (map, then HUD) -> camera ->
+  // swap. camera_update runs AFTER drawing on purpose: a frame draws with
+  // the same camera value the click handling above saw, one frame stale --
+  // the hud_mouse_over convention.
   for(B32 keep_going = true; keep_going;) {
     WND_EventList evts = wnd_get_events(frame_arena);
     for(WND_Event* evt = evts.first; evt; evt = evt->next) {
@@ -1035,9 +270,22 @@ int main(int argc, char** argv) {
 
     input_process_events(evts);
 
-    if(input_is_key_down(WND_Key_Escape)) {
-      keep_going = false;
+    CL_Command cmd = {0};
+    cmd_from_keyboard(&cmd);
+
+
+    UI_DrawList hud_list = {0};
+    {
+      TB_Value* info = gm_selection_info(frame_arena, &game);
+      hud_fps_update(&fps_counter);
+      ui_frame_begin(frame_arena, hud_gather_input());
+      hud_build(hud_font, &fps_counter, info, &cmd);
+      hud_list = ui_frame_end();
     }
+
+    if(cmd.quit) { keep_going = false; }
+
+    if(cmd.reload) { game.initialised = false; }
 
     if(game.initialised && !hud_mouse_over) {
       if(input_is_mouse_button_pressed(WND_MouseButton_Left)) {
@@ -1048,12 +296,14 @@ int main(int argc, char** argv) {
       }
     }
 
+    map_mode_flags ^= cmd.map_mode_toggle;
+
     pace_60fps_update();
 
     if(!game.initialised) {
       arena_clear(game_arena);
       gm_init(game_arena, &game, game_next_seed++);
-      map_cache = map_cache_make(game_arena, game.board->width, game.board->height, map_assets.tiling);
+      map_world_changed(map, game_arena, game.board->width, game.board->height);
       // Reset the camera
       camera.center = (V2){game.board->width * MAP_TILE / 2, game.board->height * MAP_TILE / 2};
       camera.zoom = 1.0f; // whole map in view; scroll to zoom in
@@ -1063,35 +313,31 @@ int main(int argc, char** argv) {
 
     d_frame_begin(frame_arena, wnd_size_px(), wnd_scale());
     {
-      // visible tile window, one ring past the right/bottom edge: each cell
-      // owns the dual boundary cell at its NW corner, so the far-edge duals
-      // need an owner. Board dims read off the cache (cache is board+1).
-      V2 world_min = d_camera_from_screen(camera, (V2){0, 0});
-      V2 world_max = d_camera_from_screen(camera, wnd_size());
-      V2I view_min = {ClampBot((I32)(world_min.x / MAP_TILE) - 1, 0),
-                      ClampBot((I32)(world_min.y / MAP_TILE) - 1, 0)};
-      V2I view_max = {ClampTop((I32)(world_max.x / MAP_TILE) + 1, map_cache.w - 2) + 1,
-                      ClampTop((I32)(world_max.y / MAP_TILE) + 1, map_cache.h - 2) + 1};
-      GM_MapItems map_items = gm_map_items(frame_arena, &game, view_min, view_max);
-      map_draw(map_items, &map_assets, &map_cache, camera); // fp: parked for the pacing experiment below
+      GM_MapMode mode = {0};
+      // visible tile window: the cells under the screen corners, padded one
+      // ring out. The far edge takes one MORE ring: each cell owns the dual
+      // boundary cell at its NW corner (tiling.h), so the duals past the
+      // last board column/row need an owner -- the trailing +1 lands on the
+      // ring cells gm_map_items emits for exactly that.
+      I32 board_w = game.board->width;
+      I32 board_h = game.board->height;
+      V2I tile_min = map_tile_from_screen(camera, (V2){0, 0});
+      V2I tile_max = map_tile_from_screen(camera, wnd_size());
+      mode.min = (V2){ClampBot(tile_min.x - 1, 0), ClampBot(tile_min.y - 1, 0)};
+      mode.max = (V2){ClampTop(tile_max.x + 1, board_w - 1) + 1,
+                      ClampTop(tile_max.y + 1, board_h - 1) + 1};
+
+      mode.flags = map_mode_flags;
+      GM_MapItems map_items = gm_map_items(frame_arena, &game, mode);
+      map_draw(map, map_items, camera);
       // test_render(camera); // fp: parked draw-layer demo scene
 
-      fps_update(&fps_counter);
-
-      ui_frame_begin(frame_arena, hud_gather_input());
-      hud_build(&fps_counter, &game);
-      UI_DrawList hud_list = ui_frame_end();
       hud_replay_draw_list(hud_list);
       hud_mouse_over = hud_list.mouse_over_ui;
     }
     d_frame_end();
 
-    // Camera movmements
-    camera_update(&camera);
-
-    if(input_is_key_pressed(WND_Key_R)) {
-      game.initialised = false;
-    }
+    camera_update(&camera, cmd.translation, cmd.zooming); // after drawing: see the phase comment above the loop
 
     wnd_swap(); // vsync: paces the loop to the display rate
     arena_clear(frame_arena);
@@ -1109,3 +355,4 @@ int main(int argc, char** argv) {
 #include "game/tiling.c"
 #include "game/game.c"
 #include "gfx/gfx.c"
+#include "client/client.c"

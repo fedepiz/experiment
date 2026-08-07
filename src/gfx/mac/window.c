@@ -177,14 +177,6 @@ internal WND_Modifiers wnd__modifiers_from_cocoa(unsigned int mods) {
   return result;
 }
 
-internal WND_Event* wnd__push_event(Arena* arena, WND_EventList* list, WND_EventType type) {
-  WND_Event* event = push_array(arena, WND_Event, 1);
-  event->type = type;
-  SLLQueuePush(list->first, list->last, event);
-  list->count += 1;
-  return event;
-}
-
 internal WND_EventList wnd_get_events(Arena* arena) {
   WND_EventList list = {0};
   cocoa_pump_events();

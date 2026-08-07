@@ -147,7 +147,9 @@ internal void gm_init(Arena* arena, GM_Game* game, U64 seed) {
   MemoryZeroStruct(game);
   game->db = th_init_db(arena);
 
-  //- fp: the world: generated into the fields, then mirrored into the board
+  //- fp: the world: terrain registry and knobs from the file, generated
+  //  into the fields, then mirrored into the board
+  wg_terrain_table_load(str8_lit("data/world.tabula"));
   WG_Params params = wg_params_load(str8_lit("data/world.tabula"));
   wg_generate(game->db, &params, seed);
   game->board = bd_board_alloc(arena, params.width, params.height, 1024);
@@ -294,11 +296,14 @@ internal TB_Value* gm_selection_info(Arena* arena, GM_Game* game) {
   return info;
 }
 
+#define GM_TICK_DT       0.1f // seconds of sim per tick; every rate below is per-tick
+#define GM_TICK_BANK_MAX 0.5f // at most 5 banked ticks replay after a stall
+
 internal void gm_update(GM_Game* game, F32 dt) {
   TH_Db* db = game->db;
-  game->move_timer = ClampTop(game->move_timer + dt, 0.5f);
-  while(game->move_timer > 0.1f) {
-    game->move_timer -= 0.1f;
+  game->move_timer = ClampTop(game->move_timer + dt, GM_TICK_BANK_MAX);
+  while(game->move_timer > GM_TICK_DT) {
+    game->move_timer -= GM_TICK_DT;
 
     for(TH_Id this = th_first_flagged(db, TH_Flag_Placed);
         this != 0; this = th_next_flagged(db, TH_Flag_Placed, this)) {
@@ -340,7 +345,10 @@ internal void gm_update(GM_Game* game, F32 dt) {
   gm__selection_refresh(game);
 }
 
-internal GM_MapItems gm_map_items(Arena* arena, GM_Game* game, V2I min, V2I max) {
+internal GM_MapItems gm_map_items(Arena* arena, GM_Game* game, GM_MapMode mode) {
+  V2 min = mode.min;
+  V2 max = mode.max;
+
   TH_Db* db = game->db;
   BD_Board* board = game->board;
   GM_MapItems out = {0};
@@ -359,8 +367,10 @@ internal GM_MapItems gm_map_items(Arena* arena, GM_Game* game, V2I min, V2I max)
       item->pos = (V2I){x, y};
       item->has_terrain = bd_in_bounds(board, item->pos);
 
-      TH_Id home = th_field_ref_get(db, TH_FieldRef_Home, item->pos);
-      item->color = col_rgb_from_hash(home);
+      if(mode.flags & GM_MapModeFlag_Influence) {
+        TH_Id home = th_field_ref_get(db, TH_FieldRef_Home, item->pos);
+        item->color = col_rgb_from_hash(home);
+      }
 
       for(I32 dy = -1; dy <= 1; dy += 1) {
         for(I32 dx = -1; dx <= 1; dx += 1) {
@@ -376,7 +386,8 @@ internal GM_MapItems gm_map_items(Arena* arena, GM_Game* game, V2I min, V2I max)
   }
 
   //- fp: surface segment: pawns standing inside the window, after the ground
-  for(U64 idx = 0; idx < pawns.count; idx++) {
+  U64 num_pawns_to_show = mode.flags & GM_MapModeFlag_Pawns ? pawns.count : 0;
+  for(U64 idx = 0; idx < num_pawns_to_show; idx++) {
     BD_Pawn* pawn = pawns.elems[idx];
     if(pawn->pos.x < min.x || pawn->pos.x > max.x ||
        pawn->pos.y < min.y || pawn->pos.y > max.y) { continue; }

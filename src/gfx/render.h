@@ -29,17 +29,14 @@
 ////////////////////////////////
 //~ fp: Handles
 //
-// Opaque, ZII: nil is {0}, as for every type -- deliberately no _nil()
-// constructor and no is_nil() predicate, so nil can never drift away from
-// zero. Nil-check by comparing against a zero literal:
-// r_handle_eq(h, (R_Handle){0}). A struct rather than a bare U64 so handle
-// types don't cross-convert.
+// Opaque in meaning, transparent in shape: the value is the renderer's
+// business, but nil is {0} as for every type, and h.u64 == 0 is the nil
+// check. A struct rather than a bare U64 so handle types don't
+// cross-convert.
 
 typedef struct {
   U64 u64;
 } R_Handle;
-
-internal B32 r_handle_eq(R_Handle a, R_Handle b);
 
 ////////////////////////////////
 //~ fp: Textures
@@ -86,9 +83,9 @@ typedef struct {
   F32 border_thickness;             // points; 0 = filled, else outline
   F32 edge_softness;                // points of fade at edges; 0 = hard, ~1 = antialiased
 
-  F32 rotation; // radians, counter-clockwise, about the center of dst; for
-                // textured sprites. Corner radii and borders assume an
-                // axis-aligned quad and are ignored when rotation != 0.
+  F32 rotation; // radians, counter-clockwise, about the center of dst.
+                // Corner radii and borders live in the quad's local space,
+                // so they rotate with it.
 
   Rect clip; // points; pixels outside are dropped shader-side (no batch
              // break). Zero rect = no clipping.
@@ -101,6 +98,6 @@ internal void r_init(void);
 
 // frame_arena backs everything pushed this frame; the caller clears it after
 // frame_end, per the usual per-frame arena discipline.
-internal void r_frame_begin(Arena* frame_arena, V2 framebuffer_size_px, F32 points_to_pixels);
+internal void r_frame_begin(Arena* frame_arena, V2 framebuffer_size_px, F32 points_to_pixels); // scale > 0: the caller resolves ZII defaults
 internal void r_push_quad(R_Quad* quad);
-internal void r_frame_end(void); // sort into batches, upload, draw
+internal void r_frame_end(void); // upload and draw the batches r_push_quad built

@@ -5,7 +5,7 @@
 #include "base/arena.h"
 
 // Max number of things that can possibly exist
-#define TH_NUM_THINGS 65000
+#define TH_THING_CAP 65000
 
 // Max world dimensions: fields (per-position facts, below) are fixed columns
 // of TH_WORLD_MAX_DIM^2 cells, so the world can never outgrow them. World
@@ -25,13 +25,18 @@ typedef U32 TH_Id;
 
 // Reads are total: nil and stale ids resolve to shared nil objects, read-only
 // by convention -- nothing may ever write through a nil.
+//
+// Two halves share this file: database mechanism (spawn/commit, iteration,
+// words, the accessors), and the game's fact schema -- the members of the
+// enums below (labels, flags, vars, fields, relations). Extend the schema
+// freely by adding members; the mechanism does not care what they mean.
 
 internal TH_Db* th_init_db(Arena* arena);
 
 // A spawned thing exists at once -- its id is valid and writable -- but stays
 // invisible to iteration until th_commit. Despawn only marks: the thing stays
 // live until th_commit destroys it (edges dropped, rows zeroed, id stale).
-internal TH_Id th_spawn(TH_Db* db); // nil when all TH_NUM_THINGS slots are live
+internal TH_Id th_spawn(TH_Db* db); // nil when all TH_THING_CAP slots are live
 internal void th_despawn_mark(TH_Db* db, TH_Id id);
 internal void th_commit(TH_Db* db);
 

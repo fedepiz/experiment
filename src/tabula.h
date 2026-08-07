@@ -1,13 +1,17 @@
 #pragma once
 
 #include "base/core.h"
+#include "base/math.h"
 #include "base/strings.h"
 
-// The 'tabula' format is a data format similar to JSON or Metadesk, but that uses the syntax of paradox scripting languages.
-// "Objects" are delimited via { }, and contains lists of key-value pairs of the form key = value. values can be identifiers, string literals, numbers, objects or
-// lists (delimited by [ ], content space-separated)
+// The 'tabula' format is a data format similar to JSON or Metadesk, using the
+// syntax of paradox scripting languages. Objects are delimited by { } and hold
+// key = value pairs; keys are identifiers or quoted strings; values are
+// identifiers, string literals, numbers, objects, or lists (delimited by [ ],
+// content space-separated). # starts a line comment.
 //
-// Parsing a file yields a signle synthetic Node, whose members are the top-level key-value declarations
+// Parsing a file yields a synthetic root Object whose members are the
+// top-level key = value declarations.
 
 ////////////////////////////////
 //~ fp: Values
@@ -135,6 +139,9 @@ internal B32       tb_has(TB_Value* object, String8 key);
 //- fp: keyed reads with fallbacks
 internal String8 tb_get_str8(TB_Value* object, String8 key, String8 fallback); // String or Identifier
 internal F32     tb_get_num(TB_Value* object, String8 key, F32 fallback);
+// a color-style [r g b a] list; a 3-element list is opaque (alpha 1). Missing
+// key, wrong kind, or fewer than 3 elements yield the fallback whole.
+internal V4      tb_get_v4(TB_Value* object, String8 key, V4 fallback);
 
 //- fp: coercions on a value in hand (list elements, tb_get results)
 internal String8 tb_str8_from_value(TB_Value* value, String8 fallback);

@@ -179,6 +179,8 @@ void cocoa_pump_events(void) {
         case NSEventTypeKeyUp: {
           // swallowed: forwarding a keyDown nothing responds to makes Cocoa beep
           forward = 0;
+          // autorepeats are not fresh presses; a KeyDown event means a transition
+          if([ev type] == NSEventTypeKeyDown && [ev isARepeat]) { break; }
           Cocoa_Event e = {0};
           e.kind = ([ev type] == NSEventTypeKeyDown) ? Cocoa_EventKind_KeyDown : Cocoa_EventKind_KeyUp;
           e.keycode = [ev keyCode];

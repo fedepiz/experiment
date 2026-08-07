@@ -112,14 +112,6 @@ internal WND_Modifiers wnd__modifiers_now(void) {
   return result;
 }
 
-internal WND_Event* wnd__push_event(Arena* arena, WND_EventList* list, WND_EventType type) {
-  WND_Event* event = push_array(arena, WND_Event, 1);
-  event->type = type;
-  SLLQueuePush(list->first, list->last, event);
-  list->count += 1;
-  return event;
-}
-
 internal LRESULT CALLBACK wnd__window_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
   Arena* arena = wnd_state.evt_arena;
   WND_EventList* list = wnd_state.evt_list;
@@ -133,8 +125,11 @@ internal LRESULT CALLBACK wnd__window_proc(HWND hwnd, UINT msg, WPARAM wparam, L
     case WM_SYSKEYDOWN:
     case WM_SYSKEYUP: {
       WND_Key key = wnd__key_from_vk((U32)wparam);
-      if(key != WND_Key_Nil) {
-        B32 is_down = (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN);
+      B32 is_down = (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN);
+      // lparam bit 30 set on a down means the key was already down: an
+      // autorepeat, not a transition -- KeyDown events mean transitions
+      B32 is_repeat = is_down && (lparam & (1 << 30));
+      if(key != WND_Key_Nil && !is_repeat) {
         WND_Event* event = wnd__push_event(arena, list, is_down ?
                                            WND_EventType_KeyDown : WND_EventType_KeyUp);
         event->key = key;
@@ -155,6 +150,10 @@ internal LRESULT CALLBACK wnd__window_proc(HWND hwnd, UINT msg, WPARAM wparam, L
                                (msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP) ? WND_MouseButton_Right :
                                                                                 WND_MouseButton_Middle;
       B32 is_down = (msg == WM_LBUTTONDOWN || msg == WM_RBUTTONDOWN || msg == WM_MBUTTONDOWN);
+      // capture while any button is held so an up after dragging out of the
+      // window still arrives (X11 grabs implicitly, mac filters in cocoa)
+      if(is_down) { SetCapture(hwnd); }
+      else if((wparam & (MK_LBUTTON | MK_RBUTTON | MK_MBUTTON)) == 0) { ReleaseCapture(); }
       WND_Event* event = wnd__push_event(arena, list, is_down ?
                                          WND_EventType_MouseDown : WND_EventType_MouseUp);
       event->button = button;

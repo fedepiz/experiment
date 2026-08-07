@@ -57,7 +57,8 @@ internal U64 os_now_us(void) {
 
 internal void os_console_write(String8 s, B32 to_stderr) {
   int fd = to_stderr ? 2 : 1;
-  // write(2) may write fewer bytes than asked (signals, pipe buffers) -- loop
+  // write(2) may write fewer bytes than asked (pipe buffers) -- loop on the
+  // remainder; any error (EINTR included) abandons the tail, it's console text
   U64 written = 0;
   while(written < s.size) {
     ssize_t ret = write(fd, s.str + written, s.size - written);

@@ -63,7 +63,8 @@ internal void tl_push_network(TL_Config* config, U32 network, U32 code, U32 id) 
 
 // position-keyed noise: pure hash of (seed, position, stream), so appearance
 // never flickers frame to frame. `stream` decorrelates the module's separate
-// random decisions at one position.
+// random decisions at one position; the allocation: 0 overlay pick, 1
+// density roll, 2..2+TL_CLASS_CAP mask variants (by class), networks after.
 internal U32 tl__noise(U64 seed, V2I p, U32 stream) {
   U64 h = seed ^ ((U64)(U32)p.x * 374761393u) ^ ((U64)(U32)p.y * 668265263u) ^
           ((U64)stream * 0x9E3779B97F4A7C15ull);
@@ -157,7 +158,7 @@ internal TL_Cell tl_cell(TL_Config* config, U32 neighborhood[9],
     if(count == 0) { continue; }
     TL_Piece* piece = &result.pieces[result.count];
     result.count += 1;
-    piece->id = config->network_ids[n][code][tl__noise(config->seed, p, 8 + n) % count];
+    piece->id = config->network_ids[n][code][tl__noise(config->seed, p, 2 + TL_CLASS_CAP + n) % count];
     piece->klass = klass;
     piece->layer = TL_Layer_Network;
   }

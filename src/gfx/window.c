@@ -1,5 +1,6 @@
 #include "base/core.h"
 #include "base/math.h"
+#include "base/arena.h"
 #include "base/os.h"
 #include "gfx/window.h"
 
@@ -45,6 +46,17 @@ internal F32 wnd_frame_time(void) {
 
 internal F32 wnd_frame_time_raw(void) {
   return wnd__frame_dt_raw;
+}
+
+////////////////////////////////
+//~ fp: Events
+
+internal WND_Event* wnd__push_event(Arena* arena, WND_EventList* list, WND_EventType type) {
+  WND_Event* event = push_array(arena, WND_Event, 1);
+  event->type = type;
+  SLLQueuePush(list->first, list->last, event);
+  list->count += 1;
+  return event;
 }
 
 ////////////////////////////////

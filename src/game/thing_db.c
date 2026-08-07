@@ -11,14 +11,14 @@
 // facts, index-linked pools for the sparse parts (words, edges). No pointers
 // anywhere inside, so the whole TH_Db is relocatable and saves as one blob.
 
-#define TH_BITSET_WORDS    ((TH_NUM_THINGS + 63) / 64)
-#define TH_MAX_WORDS       8192
-#define TH_WORD_HASH_SLOTS 16384 // power of two, > 2x TH_MAX_WORDS: never fills
+#define TH_BITSET_WORDS    ((TH_THING_CAP + 63) / 64)
+#define TH_WORD_CAP       8192
+#define TH_WORD_HASH_SLOTS 16384 // power of two, > 2x TH_WORD_CAP: never fills
 #define TH_WORD_CHARS      KB(256)
-#define TH_MAX_EDGES       (1 << 18)
+#define TH_EDGE_CAP       (1 << 18)
 
 StaticAssert(IsPow2(TH_WORD_HASH_SLOTS), th_word_hash_pow2);
-StaticAssert(TH_WORD_HASH_SLOTS >= 2 * TH_MAX_WORDS, th_word_hash_room);
+StaticAssert(TH_WORD_HASH_SLOTS >= 2 * TH_WORD_CAP, th_word_hash_room);
 
 typedef struct {
   U16 rel; // TH_Relation_Nil marks a free entry
@@ -34,15 +34,15 @@ struct TH_Db {
   U64 alive[TH_BITSET_WORDS];
   U64 nascent[TH_BITSET_WORDS];
   U64 doomed[TH_BITSET_WORDS];
-  U16 generation[TH_NUM_THINGS];
-  U16 free_next[TH_NUM_THINGS]; // freelist links through despawned slots
+  U16 generation[TH_THING_CAP];
+  U16 free_next[TH_THING_CAP]; // freelist links through despawned slots
   U16 first_free;               // 0 = empty; slot 0 is never on the list
   U16 watermark;                // first never-used slot
   U16 doomed_count;             // marks since the last commit
 
   //- fp: words. Interned once, never freed; word 0 is nil.
-  U32 word_offset[TH_MAX_WORDS];
-  U8 word_len[TH_MAX_WORDS];
+  U32 word_offset[TH_WORD_CAP];
+  U8 word_len[TH_WORD_CAP];
   U16 word_hash[TH_WORD_HASH_SLOTS]; // open-addressed word ids; 0 = empty
   U8 word_chars[TH_WORD_CHARS];
   U32 word_count;
@@ -50,16 +50,16 @@ struct TH_Db {
 
   //- fp: facts, dense: table[kind][slot]. Kind 0 rows sit unused so kinds
   // index directly; untouched rows cost only zero pages.
-  TH_Phrase labels[TH_Label_COUNT][TH_NUM_THINGS];
+  TH_Phrase labels[TH_Label_COUNT][TH_THING_CAP];
   U64 flags[TH_Flag_COUNT][TH_BITSET_WORDS];
-  F32 vars[TH_Var_COUNT][TH_NUM_THINGS];
-  I32 ivars[TH_IVar_COUNT][TH_NUM_THINGS];
-  TH_Id refs[TH_Ref_COUNT][TH_NUM_THINGS];
+  F32 vars[TH_Var_COUNT][TH_THING_CAP];
+  I32 ivars[TH_IVar_COUNT][TH_THING_CAP];
+  TH_Id refs[TH_Ref_COUNT][TH_THING_CAP];
 
   //- fp: edges, pooled: per-(rel, source) lists threaded by index. Edge 0 is
   // the nil entry, so 0 terminates lists.
-  TH__Edge edges[TH_MAX_EDGES];
-  U32 edge_first[TH_Relation_COUNT][TH_NUM_THINGS];
+  TH__Edge edges[TH_EDGE_CAP];
+  U32 edge_first[TH_Relation_COUNT][TH_THING_CAP];
   U32 edge_free;
   U32 edge_watermark;
 
@@ -102,7 +102,7 @@ internal void th__bit_set(U64* bits, U32 idx, B32 value) {
 // live slot for id -- alive now, generation matches; 0 for nil / stale
 internal U32 th__slot(TH_Db* db, TH_Id id) {
   U32 slot = id >> 16;
-  if(slot == 0 || slot >= TH_NUM_THINGS) { return 0; }
+  if(slot == 0 || slot >= TH_THING_CAP) { return 0; }
   if(!th__bit_get(db->alive, slot)) { return 0; }
   if(db->generation[slot] != (U16)(id & 0xFFFF)) { return 0; }
   return slot;
@@ -141,7 +141,7 @@ internal TH_Id th_spawn(TH_Db* db) {
   U32 slot = db->first_free;
   if(slot != 0) {
     db->first_free = db->free_next[slot];
-  } else if(db->watermark < TH_NUM_THINGS) {
+  } else if(db->watermark < TH_THING_CAP) {
     slot = db->watermark;
     db->watermark += 1;
   } else {
@@ -248,7 +248,7 @@ internal TH_Word th_define_word(TH_Db* db, String8 source) {
   for(U32 probe = (U32)th__hash_str8(source) & mask;; probe = (probe + 1) & mask) {
     TH_Word word = db->word_hash[probe];
     if(word == 0) {
-      if(db->word_count >= TH_MAX_WORDS) { return 0; }
+      if(db->word_count >= TH_WORD_CAP) { return 0; }
       if(db->word_chars_used + source.size > TH_WORD_CHARS) { return 0; }
       word = (TH_Word)db->word_count;
       db->word_count += 1;
@@ -422,7 +422,7 @@ internal void th_edge_set(TH_Db* db, TH_Relation rel, TH_Id source, TH_Id target
   U32 e = db->edge_free;
   if(e != 0) {
     db->edge_free = db->edges[e].next;
-  } else if(db->edge_watermark < TH_MAX_EDGES) {
+  } else if(db->edge_watermark < TH_EDGE_CAP) {
     e = db->edge_watermark;
     db->edge_watermark += 1;
   } else {

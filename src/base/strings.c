@@ -158,18 +158,20 @@ internal String8 str8_list_join(Arena* arena, String8List list, StringJoin* opti
   result.size = join.pre.size + list.total_size + sep_count * join.sep.size + join.post.size;
   result.str = push_array_no_zero(arena, U8, result.size + 1);
 
+  // pre/sep/post are nil unless asked for: skip the copy, memmove from a
+  // nil str is UB even for zero bytes
   U8* at = result.str;
-  MemoryCopy(at, join.pre.str, join.pre.size);
+  if(join.pre.size) { MemoryCopy(at, join.pre.str, join.pre.size); }
   at += join.pre.size;
   for(String8Node* node = list.first; node != 0; node = node->next) {
     MemoryCopy(at, node->string.str, node->string.size);
     at += node->string.size;
-    if(node->next != 0) {
+    if(node->next != 0 && join.sep.size) {
       MemoryCopy(at, join.sep.str, join.sep.size);
       at += join.sep.size;
     }
   }
-  MemoryCopy(at, join.post.str, join.post.size);
+  if(join.post.size) { MemoryCopy(at, join.post.str, join.post.size); }
   at += join.post.size;
   *at = 0;
   Assert((U64)(at - result.str) == result.size);

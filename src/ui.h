@@ -75,7 +75,7 @@ typedef struct {
   F32 strictness;
 } UI_Size;
 
-internal UI_Size ui_size_px(F32 points, F32 strictness);
+internal UI_Size ui_size_points(F32 points, F32 strictness);
 internal UI_Size ui_size_pct(F32 pct, F32 strictness);
 internal UI_Size ui_size_text(F32 strictness);
 internal UI_Size ui_size_children(F32 strictness);
@@ -91,15 +91,15 @@ internal UI_Size ui_size_grow(F32 weight);
 
 typedef U32 UI_BoxFlags;
 enum {
-  UI_BoxFlag_Clickable      = (1 << 0), // hit-testable; hover/press animate
+  UI_BoxFlag_Clickable = (1 << 0), // hit-testable; hover/press animate
   UI_BoxFlag_DrawBackground = (1 << 1),
-  UI_BoxFlag_DrawBorder     = (1 << 2),
-  UI_BoxFlag_DrawText       = (1 << 3),
-  UI_BoxFlag_TextWrap       = (1 << 4), // wrap text to the solved width;
-                                        // without it text breaks on '\n' only
-  UI_BoxFlag_Clip           = (1 << 5), // clip children and text to the box
-  UI_BoxFlag_Floating       = (1 << 6), // out of layout flow: positioned at
-                                        // floating_pos relative to the parent
+  UI_BoxFlag_DrawBorder = (1 << 2),
+  UI_BoxFlag_DrawText = (1 << 3),
+  UI_BoxFlag_TextWrap = (1 << 4), // wrap text to the solved width;
+                                  // without it text breaks on '\n' only
+  UI_BoxFlag_Clip = (1 << 5),     // clip children and text to the box
+  UI_BoxFlag_Floating = (1 << 6), // out of layout flow: positioned at
+                                  // floating_pos relative to the parent
 };
 
 typedef U32 UI_TextAlign;
@@ -133,6 +133,8 @@ struct UI_Box {
   UI_Key key; // 0 = transient
   UI_BoxFlags flags;
   String8 string; // display part, copied to the frame arena
+  U64 tags_key;   // names the pushed-tag set at build; colors resolve
+                  // against it, including after the tag stack unwinds
 
   //- style, captured from the stacks at build
   UI_Size pref_size[UI_Axis_COUNT];
@@ -208,46 +210,40 @@ typedef V2 UI_MeasureTextFunc(void* user, U64 font, F32 size, String8 text);
 typedef UI_FontMetrics UI_FontMetricsFunc(void* user, U64 font, F32 size);
 
 ////////////////////////////////
-//~ fp: Roles / Theme
+//~ fp: Tags / Theme
 //
-// Widgets style themselves by role: the theme holds one UI_RoleStyle per
-// role, installed together via ui_set_theme (typically loaded from data at
-// startup; ui_init installs ui_default_theme). Per property, precedence at
-// box build is: a style stack pushed above its default depth trumps the
-// role; an untouched stack defers to it; fields written on the returned box
-// afterwards trump both. The stacks' own defaults are the Default role's
-// values, so plain boxes and role boxes read identically until something is
-// pushed.
-
-typedef U32 UI_Role;
-enum {
-  UI_Role_Default = 0, // plain boxes, labels; also seeds the stack defaults
-  UI_Role_Panel,
-  UI_Role_Button,
-  UI_Role_Tooltip,
-  UI_Role_COUNT,
-};
+// Colors resolve CSS-selector style; nothing else is themed -- metrics
+// (sizes, paddings, radii) are plain values in code. Call sites push tags,
+// plain strings naming what is being built ("button", "accent"), and any
+// color a box does not get from a pushed stack resolves against the theme:
+// a flat list of patterns, each a tag list plus a color. A pattern applies
+// when every one of its tags appears in the box's pushed tags + the queried
+// color name ("background", "text", "border"; "hover"/"active" for the hot
+// lift on clickables), and the name itself is among them; the pattern with
+// the most tags wins. No match resolves to zero, an obviously unstyled
+// look.
+//
+// The theme is dumb data installed whole and read by reference -- the
+// caller keeps the pattern memory alive (typically loaded from data at
+// startup). Matching is cached by tag-set hash, so the pattern scan runs
+// once per distinct (tag set, name) pair, not per box.
 
 typedef struct {
-  V4 background_color;
-  V4 text_color;
-  V4 border_color;
-  F32 border_thickness;
-  F32 corner_radius;
-} UI_RoleStyle;
+  String8* tags;
+  U64 count;
+  V4 color;
+} UI_ThemePattern;
 
 typedef struct {
-  F32 font_size; // ambient, not per-role
-  UI_RoleStyle roles[UI_Role_COUNT];
-  // named colors no widget reads; for call sites (highlight values,
-  // secondary text, ...)
-  V4 accent_color;
-  V4 muted_color;
+  UI_ThemePattern* patterns;
+  U64 count;
 } UI_Theme;
 
-internal UI_Theme  ui_default_theme(void);
-internal void      ui_set_theme(UI_Theme theme);
-internal UI_Theme* ui_theme(void); // the installed theme, for call-site reads
+internal UI_Theme ui_theme_load(Arena* arena, String8 path);
+internal void ui_set_theme(UI_Theme theme);
+internal void ui_push_tag(String8 tag);
+internal void ui_pop_tag(void);
+internal V4 ui_color_from_name(String8 name); // resolve under the current tags
 
 ////////////////////////////////
 //~ fp: Draw Commands
@@ -294,12 +290,12 @@ typedef struct {
 ////////////////////////////////
 //~ fp: Frame Lifecycle
 
-internal void        ui_init(UI_MeasureTextFunc* measure, UI_FontMetricsFunc* metrics, void* user);
-internal void        ui_frame_begin(Arena* frame_arena, UI_Input input);
+internal void ui_init(UI_MeasureTextFunc* measure, UI_FontMetricsFunc* metrics, void* user);
+internal void ui_frame_begin(Arena* frame_arena, UI_Input input);
 internal UI_DrawList ui_frame_end(void);
 
-internal UI_Box* ui_root(void);  // the window-sized root box of this frame
-internal V2      ui_mouse(void); // this frame's mouse, in points
+internal UI_Box* ui_root(void); // the window-sized root box of this frame
+internal V2 ui_mouse(void);     // this frame's mouse, in points
 
 ////////////////////////////////
 //~ fp: Style Stacks
@@ -312,6 +308,7 @@ internal void ui_push_parent(UI_Box* box);
 internal void ui_pop_parent(void);
 internal void ui_push_seed(U64 seed);
 internal void ui_pop_seed(void);
+// ui_push_tag / ui_pop_tag live in the Tags / Theme section above
 internal void ui_push_pref_width(UI_Size size);
 internal void ui_pop_pref_width(void);
 internal void ui_push_pref_height(UI_Size size);
@@ -360,34 +357,37 @@ typedef struct {
   V2 drag_delta; // mouse minus press position, while held
 } UI_Signal;
 
-internal UI_Box*   ui_box(UI_BoxFlags flags, String8 string); // Default role
-internal UI_Box*   ui_box_role(UI_Role role, UI_BoxFlags flags, String8 string);
-internal UI_Box*   ui_boxf(UI_BoxFlags flags, char* fmt, ...);
+internal UI_Box* ui_box(UI_BoxFlags flags, String8 string);
+internal UI_Box* ui_boxf(UI_BoxFlags flags, char* fmt, ...);
 internal UI_Signal ui_signal(UI_Box* box);
 
 ////////////////////////////////
 //~ fp: Widgets
 //
 // Thin compositions of ui_box; the expected call sites for common cases.
+// Buttons, panels, and tooltips push their name as a tag around their box
+// (a panel's tag spans its children), so the theme can address them; their
+// shape metrics are plain values here, tweakable on the returned box.
 // Labels and buttons size to their text; wrapped text fills the parent's
 // width and grows downward. The begin/end pairs push/pop the parent stack --
 // the UI_* macros wrap them in defer-loops.
 
-internal void      ui_label(String8 string);
-internal void      ui_labelf(char* fmt, ...);
-internal void      ui_text_wrapped(String8 string);
+internal void ui_label(String8 string);
+internal void ui_labelf(char* fmt, ...);
+internal void ui_text_wrapped(String8 string);
 internal UI_Signal ui_button(String8 string);
-internal void      ui_spacer(UI_Size size); // along the parent's child axis
-internal void      ui_tooltip(String8 string);
+internal void ui_spacer(UI_Size size); // along the parent's child axis
+internal void ui_tooltip(String8 string);
 
-internal UI_Box* ui_row_begin(String8 string);    // children lay out along X
-internal void    ui_row_end(void);
+internal UI_Box* ui_row_begin(String8 string); // children lay out along X
+internal void ui_row_end(void);
 internal UI_Box* ui_column_begin(String8 string); // children lay out along Y
-internal void    ui_column_end(void);
-internal UI_Box* ui_panel_begin(String8 string);  // background+border+clip column
-internal void    ui_panel_end(void);
+internal void ui_column_end(void);
+internal UI_Box* ui_panel_begin(String8 string); // background+border+clip column
+internal void ui_panel_end(void);
 
-#define UI_Parent(box)   DeferLoop(ui_push_parent(box), ui_pop_parent())
-#define UI_Row(string)   DeferLoop(ui_row_begin(string), ui_row_end())
+#define UI_Tag(string)    DeferLoop(ui_push_tag(string), ui_pop_tag())
+#define UI_Parent(box)    DeferLoop(ui_push_parent(box), ui_pop_parent())
+#define UI_Row(string)    DeferLoop(ui_row_begin(string), ui_row_end())
 #define UI_Column(string) DeferLoop(ui_column_begin(string), ui_column_end())
-#define UI_Panel(string) DeferLoop(ui_panel_begin(string), ui_panel_end())
+#define UI_Panel(string)  DeferLoop(ui_panel_begin(string), ui_panel_end())

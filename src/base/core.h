@@ -115,9 +115,9 @@ typedef double F64;
 #define GB(n) (((U64)(n)) << 30)
 #define TB(n) (((U64)(n)) << 40)
 
-#define Thousand(n) ((n) * 1000)
-#define Million(n)  ((n) * 1000000)
-#define Billion(n)  ((n) * 1000000000)
+#define Thousand(n) (((U64)(n)) * 1000)
+#define Million(n)  (((U64)(n)) * 1000000)
+#define Billion(n)  (((U64)(n)) * 1000000000)
 
 ////////////////////////////////
 //~ fp: Token Pasting / Stringification

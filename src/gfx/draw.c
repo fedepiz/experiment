@@ -15,8 +15,10 @@
 // The only file that talks to render. Sheets are the resource backbone:
 // sprite sheets pack via an incremental shelf packer (positions final at
 // push, as the API promises), and the glyph atlas is one more sheet that
-// simply never closes. Everything drawn funnels through d__emit, where the
-// camera transform and the current clip land on the quad.
+// simply never closes. Everything drawn funnels through d__emit_screen,
+// where the current clip lands on the quad; d__emit is the rect-shaped
+// entry that applies the camera transform first (d_line skips it: a line's
+// quad can only be built after its endpoints transform).
 
 // stbtt/stbi use malloc internally for their temporaries -- contained
 // third-party internals; everything of ours rides arenas as usual
@@ -43,7 +45,6 @@
 
 typedef struct {
   B32 used;
-  B32 open; // being built between begin/end (the glyph sheet stays open forever)
   R_Handle tex;
   I32 w;
   I32 h;
@@ -373,9 +374,6 @@ internal void d_spritesheet_begin(I32 w, I32 h, D_Sampling sampling) {
   if(w == 0) { w = D_SHEET_DEFAULT_DIM; } // ZII: 0 reads as the default
   if(h == 0) { h = D_SHEET_DEFAULT_DIM; }
   d_state.open_sheet = d__sheet_create(w, h, R_TexFormat_RGBA8, sampling, 0);
-  if(d_state.open_sheet != 0) {
-    d__sheet_from_id(d_state.open_sheet)->open = 1;
-  }
 }
 
 internal D_Sprite d_spritesheet_push(D_Image image) {
@@ -455,7 +453,6 @@ internal D_SpriteSheet d_spritesheet_end(void) {
   D_SpriteSheet result = {0};
   D_Sheet* sheet = d__sheet_from_id(d_state.open_sheet);
   if(sheet != 0) {
-    sheet->open = 0;
     result.u64 = d_state.open_sheet;
   }
   d_state.open_sheet = 0;
@@ -746,7 +743,6 @@ internal D_Glyph* d__glyph(D_FontSlot* font, U32 codepoint, I32 size_px) {
     if(w > 0 && h > 0) {
       if(d_state.glyph_sheet == 0) {
         d_state.glyph_sheet = d__sheet_create(D_SHEET_DEFAULT_DIM, D_SHEET_DEFAULT_DIM, R_TexFormat_R8, D_Sampling_Smooth, 0);
-        if(d_state.glyph_sheet != 0) { d__sheet_from_id(d_state.glyph_sheet)->open = 1; }
       }
       D_Sheet* sheet = d__sheet_from_id(d_state.glyph_sheet);
       I32 px = 0, py = 0;
@@ -781,21 +777,24 @@ internal F32 d__text_walk(D_Font font, F32 size, V2 pos, V4 color, String8 text,
     I32 size_px = (I32)(size * to_px + 0.5f);
     F32 scale_px = stbtt_ScaleForPixelHeight(&slot->info, (F32)size_px);
 
-    // pos is the box's top-left; glyphs hang from the baseline
-    F32 baseline_px = (pos.y + d_font_metrics(font, size).ascent) * to_px;
-    F32 pen_px = pos.x * to_px;
+    // the walk runs in point*scale units -- true pixels for screen-space
+    // text; under an active camera these are world units and the pixel-grid
+    // snap below is only approximate. pos is the box's top-left; glyphs
+    // hang from the baseline
+    F32 baseline = (pos.y + d_font_metrics(font, size).ascent) * to_px;
+    F32 pen = pos.x * to_px;
     U32 prev_cp = 0;
     for(U64 off = 0; off < text.size;) {
       U32 cp = d__utf8_next(text, &off);
       if(prev_cp != 0) {
-        pen_px += (F32)stbtt_GetCodepointKernAdvance(&slot->info, (int)prev_cp, (int)cp) * scale_px;
+        pen += (F32)stbtt_GetCodepointKernAdvance(&slot->info, (int)prev_cp, (int)cp) * scale_px;
       }
       D_Glyph* glyph = d__glyph(slot, cp, size_px);
       if(emit && glyph->has_bitmap && d_state.frame_arena != 0) {
         // snap to the pixel grid: glyph texels land 1:1 on pixels, which is
         // what keeps text sharp under linear sampling
-        F32 gx = roundf(pen_px + glyph->xoff_px);
-        F32 gy = roundf(baseline_px + glyph->yoff_px);
+        F32 gx = roundf(pen + glyph->xoff_px);
+        F32 gy = roundf(baseline + glyph->yoff_px);
         R_Quad quad = {0};
         quad.dst = (Rect){{gx / to_px, gy / to_px},
                           {(gx + glyph->w_px) / to_px, (gy + glyph->h_px) / to_px}};
@@ -804,10 +803,10 @@ internal F32 d__text_walk(D_Font font, F32 size, V2 pos, V4 color, String8 text,
         for(U32 corner = 0; corner < Corner_COUNT; corner += 1) { quad.colors[corner] = color; }
         d__emit(&quad);
       }
-      pen_px += glyph->advance_px;
+      pen += glyph->advance_px;
       prev_cp = cp;
     }
-    result = pen_px / to_px;
+    result = pen / to_px;
   }
   return result;
 }

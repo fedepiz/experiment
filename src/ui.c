@@ -1,8 +1,10 @@
 #include "base/core.h"
 #include "base/math.h"
 #include "base/arena.h"
+#include "base/tctx.h"
 #include "base/strings.h"
 #include "ui.h"
+#include "tabula.h"
 
 ////////////////////////////////
 //~ fp: UI State
@@ -13,9 +15,11 @@
 // module's whole life. Box states not touched for a frame are recycled
 // through a free list at the next ui_frame_begin.
 
-#define UI_STACK_CAP        64
-#define UI_STATE_BUCKETS    256  // power of two
-#define UI_TEXT_CACHE_SLOTS 4096 // power of two
+#define UI_STACK_CAP         64
+#define UI_STATE_BUCKETS     256  // power of two
+#define UI_TEXT_CACHE_SLOTS  4096 // power of two
+#define UI_TAG_SET_BUCKETS   64   // power of two
+#define UI_COLOR_CACHE_SLOTS 1024 // power of two
 
 struct UI_BoxState {
   UI_BoxState* hash_next; // bucket chain, or free-list link when recycled
@@ -33,14 +37,34 @@ typedef struct {
   V2 dim;
 } UI_TextCacheSlot;
 
+// tag-set key -> the pushed-tag strings it stands for, recorded at
+// ui_push_tag on the persistent arena so any later resolution can decode a
+// box's tags_key back into strings for pattern matching
+typedef struct UI_TagSetNode UI_TagSetNode;
+struct UI_TagSetNode {
+  UI_TagSetNode* next;
+  U64 key;
+  String8* tags;
+  U64 count;
+};
+
+// direct-mapped (tag set, color name) -> color cache; a colliding key
+// overwrites the slot. Cleared whole by ui_set_theme.
+typedef struct {
+  U64 key; // 0 = empty
+  V4 color;
+} UI_ColorCacheSlot;
+
 typedef struct {
   //- init-time
   Arena* persist;
   UI_MeasureTextFunc* measure;
   UI_FontMetricsFunc* metrics;
   void* user;
-  UI_Theme theme;
-  UI_TextCacheSlot* text_cache; // [UI_TEXT_CACHE_SLOTS]
+  UI_Theme theme;                 // caller-owned pattern memory, installed by ui_set_theme
+  UI_TextCacheSlot* text_cache;   // [UI_TEXT_CACHE_SLOTS]
+  UI_ColorCacheSlot* color_cache; // [UI_COLOR_CACHE_SLOTS]
+  UI_TagSetNode* tag_set_buckets[UI_TAG_SET_BUCKETS];
   UI_BoxState* state_buckets[UI_STATE_BUCKETS];
   UI_BoxState* state_free;
 
@@ -72,6 +96,14 @@ typedef struct {
     U64 items[UI_STACK_CAP];
     U64 top;
   } seed_stack;
+  struct {
+    String8 items[UI_STACK_CAP];
+    U64 top;
+  } tag_stack;
+  struct { // running hash of tag_stack's contents, entry for entry
+    U64 items[UI_STACK_CAP];
+    U64 top;
+  } tag_key_stack;
   struct {
     UI_Size items[UI_STACK_CAP];
     U64 top;
@@ -243,7 +275,7 @@ internal UI_BoxState* ui__state_for_key(UI_Key key) {
 ////////////////////////////////
 //~ fp: Sizes
 
-internal UI_Size ui_size_px(F32 points, F32 strictness) {
+internal UI_Size ui_size_points(F32 points, F32 strictness) {
   return (UI_Size){UI_SizeKind_Points, points, strictness};
 }
 
@@ -364,36 +396,155 @@ internal void ui_pop_child_gap(void) {
 }
 
 ////////////////////////////////
-//~ fp: Frame Lifecycle
-
-internal UI_Theme ui_default_theme(void) {
-  UI_Theme theme = {0};
-  theme.font_size = 16;
-  UI_RoleStyle base = {0};
-  base.background_color = (V4){0.13f, 0.14f, 0.18f, 0.95f};
-  base.text_color = (V4){1, 1, 1, 1};
-  base.border_color = (V4){1, 1, 1, 0.18f};
-  base.border_thickness = 1;
-  base.corner_radius = 0;
-  for(UI_Role role = 0; role < UI_Role_COUNT; role += 1) {
-    theme.roles[role] = base;
-  }
-  theme.roles[UI_Role_Button].background_color = (V4){0.23f, 0.26f, 0.34f, 1};
-  theme.roles[UI_Role_Button].corner_radius = 6;
-  theme.roles[UI_Role_Tooltip].background_color = (V4){0.05f, 0.05f, 0.07f, 0.98f};
-  theme.roles[UI_Role_Tooltip].corner_radius = 6;
-  theme.accent_color = (V4){1, 1, 1, 1};
-  theme.muted_color = (V4){0.70f, 0.70f, 0.75f, 1};
-  return theme;
-}
+//~ fp: Tags / Theme
 
 internal void ui_set_theme(UI_Theme theme) {
   ui_state.theme = theme;
+  MemoryZero(ui_state.color_cache, sizeof(UI_ColorCacheSlot) * UI_COLOR_CACHE_SLOTS);
 }
 
-internal UI_Theme* ui_theme(void) {
-  return &ui_state.theme;
+// data/ui.tabula -> UI_Theme: the nesting is the selector. The path of keys
+// down to each color leaf becomes a pattern's tag list -- style.button.background
+// reads as ["button" "background"] -- so no key name is known here; the
+// vocabulary lives in the file and at the call sites that push the tags.
+// Leaves must be [r g b (a)] colors (metrics are not themed, asserted); a
+// missing pattern resolves to zero in the ui module, an obviously unstyled
+// look, never a quietly substituted default. The theme's memory lives on
+// `arena`, which must outlive the ui module's use of it.
+typedef struct UI_ThemeNode UI_ThemeNode;
+struct UI_ThemeNode {
+  UI_ThemeNode* next;
+  UI_ThemePattern pattern;
+};
+
+internal void ui__theme_walk(Arena* arena, Arena* scratch, TB_Value* object,
+                             String8* path, U64 depth,
+                             UI_ThemeNode** first, U64* count) {
+  for(TB_Node* node = object->first_member; node != 0; node = node->next) {
+    Assert(depth < 8); // path[]'s capacity
+    path[depth] = node->key;
+    if(node->value.kind == TB_ValueKind_Object) {
+      ui__theme_walk(arena, scratch, &node->value, path, depth + 1, first, count);
+    } else {
+      TB_Value* list = &node->value;
+      Assert(list->kind == TB_ValueKind_List && list->count >= 3);
+      V4 color = {0, 0, 0, 1};
+      F32* comps[4] = {&color.x, &color.y, &color.z, &color.w};
+      U64 ci = 0;
+      for(TB_Value* el = list->first; el != 0 && ci < 4; el = el->next, ci += 1) {
+        *comps[ci] = tb_num_from_value(el, 0);
+      }
+      UI_ThemeNode* n = push_array(scratch, UI_ThemeNode, 1);
+      n->pattern.count = depth + 1;
+      n->pattern.tags = push_array(arena, String8, n->pattern.count);
+      for(U64 i = 0; i < n->pattern.count; i += 1) {
+        n->pattern.tags[i] = push_str8_copy(arena, path[i]);
+      }
+      n->pattern.color = color;
+      n->next = *first;
+      *first = n;
+      *count += 1;
+    }
+  }
 }
+
+internal UI_Theme ui_theme_load(Arena* arena, String8 path) {
+  UI_Theme theme = {0};
+  ArenaTemp scratch = arena_get_scratch(&arena, 1);
+  TB_Value* root = tb_parse_file_and_report(scratch.arena, path);
+  TB_Value* style = tb_get(root, str8_lit("style"));
+  String8 tag_path[8] = {0};
+  UI_ThemeNode* first = 0;
+  ui__theme_walk(arena, scratch.arena, style, tag_path, 0, &first, &theme.count);
+  theme.patterns = push_array(arena, UI_ThemePattern, theme.count);
+  U64 idx = 0;
+  for(UI_ThemeNode* n = first; n != 0; n = n->next, idx += 1) {
+    theme.patterns[idx] = n->pattern;
+  }
+  arena_release_scratch(scratch);
+  return theme;
+}
+
+
+// pushing chains the running hash; the first sight of a tag set copies its
+// strings to the persistent arena, so a key decodes back to strings for as
+// long as the module lives
+internal void ui_push_tag(String8 tag) {
+  UI_State* s = &ui_state;
+  U64 key = ui__mix64(ui__hash_str8(ui__top(tag_key_stack), tag));
+  if(key == 0) { key = 1; }
+  ui__push(tag_stack, tag);
+  ui__push(tag_key_stack, key);
+  U64 bucket = key & (UI_TAG_SET_BUCKETS - 1);
+  UI_TagSetNode* node = s->tag_set_buckets[bucket];
+  for(; node != 0 && node->key != key; node = node->next) {}
+  if(node == 0) {
+    node = push_array(s->persist, UI_TagSetNode, 1);
+    node->key = key;
+    node->count = s->tag_stack.top - 1; // the entries above the empty bottom
+    node->tags = push_array(s->persist, String8, node->count);
+    for(U64 i = 0; i < node->count; i += 1) {
+      node->tags[i] = push_str8_copy(s->persist, s->tag_stack.items[i + 1]);
+    }
+    node->next = s->tag_set_buckets[bucket];
+    s->tag_set_buckets[bucket] = node;
+  }
+}
+
+internal void ui_pop_tag(void) {
+  ui__pop(tag_stack);
+  ui__pop(tag_key_stack);
+}
+
+// most specific matching pattern wins: every pattern tag present in the
+// set + name, the name itself among them, highest tag count first
+internal V4 ui__color_from_key_name(U64 tags_key, String8 name) {
+  UI_State* s = &ui_state;
+  U64 final_key = ui__mix64(ui__hash_str8(tags_key, name));
+  if(final_key == 0) { final_key = 1; }
+  UI_ColorCacheSlot* slot = &s->color_cache[final_key & (UI_COLOR_CACHE_SLOTS - 1)];
+  if(slot->key != final_key) {
+    String8* tags = 0;
+    U64 tag_count = 0;
+    for(UI_TagSetNode* n = s->tag_set_buckets[tags_key & (UI_TAG_SET_BUCKETS - 1)];
+        n != 0; n = n->next) {
+      if(n->key == tags_key) {
+        tags = n->tags;
+        tag_count = n->count;
+        break;
+      }
+    }
+    V4 color = {0};
+    U64 best = 0;
+    for(U64 i = 0; i < s->theme.count; i += 1) {
+      UI_ThemePattern* p = &s->theme.patterns[i];
+      B32 has_name = 0;
+      B32 all_present = 1;
+      for(U64 t = 0; t < p->count && all_present; t += 1) {
+        B32 present = str8_match(p->tags[t], name, 0);
+        has_name |= present;
+        for(U64 k = 0; !present && k < tag_count; k += 1) {
+          present = str8_match(p->tags[t], tags[k], 0);
+        }
+        all_present = present;
+      }
+      if(has_name && all_present && p->count > best) {
+        best = p->count;
+        color = p->color;
+      }
+    }
+    slot->key = final_key;
+    slot->color = color;
+  }
+  return slot->color;
+}
+
+internal V4 ui_color_from_name(String8 name) {
+  return ui__color_from_key_name(ui__top(tag_key_stack), name);
+}
+
+////////////////////////////////
+//~ fp: Frame Lifecycle
 
 internal void ui_init(UI_MeasureTextFunc* measure, UI_FontMetricsFunc* metrics, void* user) {
   MemoryZeroStruct(&ui_state);
@@ -401,8 +552,8 @@ internal void ui_init(UI_MeasureTextFunc* measure, UI_FontMetricsFunc* metrics, 
   ui_state.measure = measure;
   ui_state.metrics = metrics;
   ui_state.user = user;
-  ui_state.theme = ui_default_theme();
   ui_state.text_cache = push_array(ui_state.persist, UI_TextCacheSlot, UI_TEXT_CACHE_SLOTS);
+  ui_state.color_cache = push_array(ui_state.persist, UI_ColorCacheSlot, UI_COLOR_CACHE_SLOTS);
 }
 
 internal UI_Box* ui_root(void) {
@@ -445,15 +596,18 @@ internal void ui_frame_begin(Arena* frame_arena, UI_Input input) {
 
   //- window-sized root; transient (key 0), outside every stack
   UI_Box* root = push_array(s->arena, UI_Box, 1);
-  root->pref_size[UI_Axis_X] = ui_size_px(input.window.x, 1);
-  root->pref_size[UI_Axis_Y] = ui_size_px(input.window.y, 1);
+  root->pref_size[UI_Axis_X] = ui_size_points(input.window.x, 1);
+  root->pref_size[UI_Axis_Y] = ui_size_points(input.window.y, 1);
   root->child_axis = UI_Axis_Y;
   s->root = root;
   s->box_count = 1;
 
-  //- reset the stacks to their defaults
+  //- reset the stacks to their defaults; the color stacks' bottoms are
+  //  never read -- a color stack left unpushed resolves from the theme
   s->parent_stack.top = 0;
   s->seed_stack.top = 0;
+  s->tag_stack.top = 0;
+  s->tag_key_stack.top = 0;
   s->pref_width_stack.top = 0;
   s->pref_height_stack.top = 0;
   s->font_stack.top = 0;
@@ -470,17 +624,18 @@ internal void ui_frame_begin(Arena* frame_arena, UI_Input input) {
   s->child_gap_stack.top = 0;
   ui__push(parent_stack, root);
   ui__push(seed_stack, 0);
+  ui__push(tag_stack, str8_lit(""));
+  ui__push(tag_key_stack, 0);
   ui__push(pref_width_stack, ui_size_children(0));
   ui__push(pref_height_stack, ui_size_children(0));
-  UI_RoleStyle* base = &s->theme.roles[UI_Role_Default];
   ui__push(font_stack, 0);
-  ui__push(font_size_stack, s->theme.font_size);
-  ui__push(text_color_stack, base->text_color);
+  ui__push(font_size_stack, 16.0f);
+  ui__push(text_color_stack, ((V4){0}));
   ui__push(text_align_stack, UI_TextAlign_Left);
-  ui__push(background_color_stack, base->background_color);
-  ui__push(border_color_stack, base->border_color);
-  ui__push(border_thickness_stack, base->border_thickness);
-  ui__push(corner_radius_stack, base->corner_radius);
+  ui__push(background_color_stack, ((V4){0}));
+  ui__push(border_color_stack, ((V4){0}));
+  ui__push(border_thickness_stack, 1.0f);
+  ui__push(corner_radius_stack, 0.0f);
   ui__push(child_axis_stack, UI_Axis_Y);
   ui__push(child_align_stack, UI_Align_Start);
   ui__push(padding_stack, ((V2){0, 0}));
@@ -490,7 +645,7 @@ internal void ui_frame_begin(Arena* frame_arena, UI_Input input) {
 ////////////////////////////////
 //~ fp: Building / Signals
 
-internal UI_Box* ui_box_role(UI_Role role, UI_BoxFlags flags, String8 string) {
+internal UI_Box* ui_box(UI_BoxFlags flags, String8 string) {
   UI_State* s = &ui_state;
   UI_Box* parent = ui__top(parent_stack);
   UI_Box* box = push_array(s->arena, UI_Box, 1);
@@ -513,26 +668,22 @@ internal UI_Box* ui_box_role(UI_Role role, UI_BoxFlags flags, String8 string) {
   box->child_axis = ui__top(child_axis_stack);
   box->child_align = ui__top(child_align_stack);
   box->font = ui__top(font_stack);
-  box->font_size = ui__top(font_size_stack);
   box->text_align = ui__top(text_align_stack);
+  box->font_size = ui__top(font_size_stack);
+  box->border_thickness = ui__top(border_thickness_stack);
+  box->corner_radius = ui__top(corner_radius_stack);
   box->padding = ui__top(padding_stack);
   box->child_gap = ui__top(child_gap_stack);
 
-  //- role style, per property; a pushed stack trumps it
-  UI_RoleStyle* role_style = &s->theme.roles[role < UI_Role_COUNT ? role : UI_Role_Default];
-  box->text_color = ui__pushed(text_color_stack) ? ui__top(text_color_stack) : role_style->text_color;
-  box->background_color = ui__pushed(background_color_stack) ? ui__top(background_color_stack) : role_style->background_color;
-  box->border_color = ui__pushed(border_color_stack) ? ui__top(border_color_stack) : role_style->border_color;
-  box->border_thickness = ui__pushed(border_thickness_stack) ? ui__top(border_thickness_stack) : role_style->border_thickness;
-  box->corner_radius = ui__pushed(corner_radius_stack) ? ui__top(corner_radius_stack) : role_style->corner_radius;
+  //- colors: a pushed stack trumps the theme
+  box->tags_key = ui__top(tag_key_stack);
+  box->text_color = ui__pushed(text_color_stack) ? ui__top(text_color_stack) : ui__color_from_key_name(box->tags_key, str8_lit("text"));
+  box->background_color = ui__pushed(background_color_stack) ? ui__top(background_color_stack) : ui__color_from_key_name(box->tags_key, str8_lit("background"));
+  box->border_color = ui__pushed(border_color_stack) ? ui__top(border_color_stack) : ui__color_from_key_name(box->tags_key, str8_lit("border"));
 
   box->parent = parent;
   DLLPushBack(parent->first, parent->last, box);
   return box;
-}
-
-internal UI_Box* ui_box(UI_BoxFlags flags, String8 string) {
-  return ui_box_role(UI_Role_Default, flags, string);
 }
 
 internal UI_Box* ui_boxf(UI_BoxFlags flags, char* fmt, ...) {
@@ -803,7 +954,8 @@ internal void ui__layout_position(UI_Box* box) {
   UI_Axis on = box->child_axis;
   UI_Axis off = (on == UI_Axis_X) ? UI_Axis_Y : UI_Axis_X;
   F32 align = (box->child_align == UI_Align_Center) ? 0.5f
-            : (box->child_align == UI_Align_End) ? 1.0f : 0.0f;
+              : (box->child_align == UI_Align_End)  ? 1.0f
+                                                    : 0.0f;
   F32 off_content = box->fixed_size[off] - 2 * ui__v2_axis(box->padding, off);
   V2 cursor = v2_add(box->rect.min, box->padding);
   for(UI_Box* child = box->first; child != 0; child = child->next) {
@@ -816,10 +968,16 @@ internal void ui__layout_position(UI_Box* box) {
       // cross-axis alignment: children keep the padding edge only when
       // aligned Start; oversized children stay pinned to it
       F32 slack = ClampBot(off_content - child->fixed_size[off], 0) * align;
-      if(off == UI_Axis_X) { p.x += slack; }
-      else { p.y += slack; }
-      if(on == UI_Axis_X) { cursor.x += child->fixed_size[UI_Axis_X] + box->child_gap; }
-      else { cursor.y += child->fixed_size[UI_Axis_Y] + box->child_gap; }
+      if(off == UI_Axis_X) {
+        p.x += slack;
+      } else {
+        p.y += slack;
+      }
+      if(on == UI_Axis_X) {
+        cursor.x += child->fixed_size[UI_Axis_X] + box->child_gap;
+      } else {
+        cursor.y += child->fixed_size[UI_Axis_Y] + box->child_gap;
+      }
     }
     child->rect = (Rect){p, {p.x + child->fixed_size[UI_Axis_X], p.y + child->fixed_size[UI_Axis_Y]}};
     ui__layout_position(child);
@@ -870,11 +1028,17 @@ internal void ui__emit(UI_Box* box) {
   if(box->flags & UI_BoxFlag_DrawBackground) {
     V4 bg = box->background_color;
     if((box->flags & UI_BoxFlag_Clickable) && box->state != 0) {
-      // brightens toward white as the box heats up / is held
-      F32 f = 0.08f * box->state->hot_t + 0.07f * box->state->active_t;
-      bg.x += (1 - bg.x) * f;
-      bg.y += (1 - bg.y) * f;
-      bg.z += (1 - bg.z) * f;
+      // the theme's hover/active colors pull the background toward
+      // themselves as the box heats up / is held; alpha is the strength.
+      // Resolved here, after the tag stack unwound -- the box's tags_key
+      // still names the context it was built under
+      V4 hover = ui__color_from_key_name(box->tags_key, str8_lit("hover"));
+      V4 active = ui__color_from_key_name(box->tags_key, str8_lit("active"));
+      F32 fh = hover.w * box->state->hot_t;
+      F32 fa = active.w * box->state->active_t;
+      bg.x += (hover.x - bg.x) * fh + (active.x - bg.x) * fa;
+      bg.y += (hover.y - bg.y) * fh + (active.y - bg.y) * fa;
+      bg.z += (hover.z - bg.z) * fh + (active.z - bg.z) * fa;
     }
     UI_DrawCommand* cmd = ui__push_cmd(UI_DrawCommandKind_Rect);
     cmd->rect = box->rect;
@@ -991,13 +1155,16 @@ internal void ui_text_wrapped(String8 string) {
 }
 
 internal UI_Signal ui_button(String8 string) {
-  UI_Box* box = ui_box_role(UI_Role_Button,
-                            UI_BoxFlag_Clickable | UI_BoxFlag_DrawBackground |
-                                UI_BoxFlag_DrawBorder | UI_BoxFlag_DrawText,
-                            string);
+  ui_push_tag(str8_lit("button"));
+  UI_Box* box = ui_box(UI_BoxFlag_Clickable | UI_BoxFlag_DrawBackground |
+                           UI_BoxFlag_DrawBorder | UI_BoxFlag_DrawText,
+                       string);
+  ui_pop_tag();
   box->pref_size[UI_Axis_X] = ui_size_text(0);
   box->pref_size[UI_Axis_Y] = ui_size_text(1);
   box->padding = (V2){10, 5};
+  box->corner_radius = 8;
+  box->border_thickness = 2;
   box->text_align = UI_TextAlign_Center;
   return ui_signal(box);
 }
@@ -1007,16 +1174,23 @@ internal void ui_spacer(UI_Size size) {
   UI_Box* box = ui_box(0, str8_lit(""));
   UI_Axis off = (parent->child_axis == UI_Axis_X) ? UI_Axis_Y : UI_Axis_X;
   box->pref_size[parent->child_axis] = size;
-  box->pref_size[off] = ui_size_px(0, 0);
+  box->pref_size[off] = ui_size_points(0, 0);
 }
 
 internal void ui_tooltip(String8 string) {
-  UI_Box* tip = ui_box_role(UI_Role_Tooltip,
-                            UI_BoxFlag_DrawBackground | UI_BoxFlag_DrawBorder |
-                                UI_BoxFlag_DrawText | UI_BoxFlag_Floating,
-                            string);
+  // parented to the root: floating_pos is parent-relative, and the mouse is
+  // window-space -- only the root's origin makes those coincide. Also keeps
+  // the tip clear of any panel clip.
+  ui_push_parent(ui_root());
+  ui_push_tag(str8_lit("tooltip"));
+  UI_Box* tip = ui_box(UI_BoxFlag_DrawBackground | UI_BoxFlag_DrawBorder |
+                           UI_BoxFlag_DrawText | UI_BoxFlag_Floating,
+                       string);
+  ui_pop_tag();
+  ui_pop_parent();
   tip->floating_pos = v2_add(ui_mouse(), (V2){16, 18});
   tip->padding = (V2){8, 6};
+  tip->corner_radius = 8;
   tip->pref_size[UI_Axis_X] = ui_size_text(1);
   tip->pref_size[UI_Axis_Y] = ui_size_text(1);
 }
@@ -1044,13 +1218,15 @@ internal void ui_column_end(void) {
 }
 
 internal UI_Box* ui_panel_begin(String8 string) {
-  UI_Box* box = ui_box_role(UI_Role_Panel,
-                            UI_BoxFlag_DrawBackground | UI_BoxFlag_DrawBorder | UI_BoxFlag_Clip, string);
+  ui_push_tag(str8_lit("panel")); // spans the children until ui_panel_end
+  UI_Box* box = ui_box(UI_BoxFlag_DrawBackground | UI_BoxFlag_DrawBorder | UI_BoxFlag_Clip, string);
   box->child_axis = UI_Axis_Y;
+  box->corner_radius = 10;
   ui_push_parent(box);
   return box;
 }
 
 internal void ui_panel_end(void) {
   ui_pop_parent();
+  ui_pop_tag();
 }
