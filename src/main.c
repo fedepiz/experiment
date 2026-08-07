@@ -13,15 +13,13 @@
 #include "base/print.h"
 #include "base/strings.h"
 #include "base/tctx.h"
+#include "gfx/color.h"
+#include "gfx/window.h"
+#include "gfx/draw.h"
 #include "game/board.h"
 #include "game/thing_db.h"
 #include "game/tiling.h"
-#include "tabula.h"
 #include "game/game.h"
-#include "gfx/color.h"
-#include "gfx/window.h"
-#include "gfx/input.h"
-#include "gfx/draw.h"
 #include "ui.h"
 #include "client/client.h"
 #include "client/map.h"
@@ -220,20 +218,14 @@ int main(int argc, char** argv) {
 
   GM_MapModeFlags map_mode_flags = GM_MapModeFlag_Pawns;
 
-  // the frame, in phases: pump events -> input digest -> key/click handling
-  // -> pacing -> lazy (re)init -> sim -> draw (map, then HUD) -> camera ->
-  // swap. camera_update runs AFTER drawing on purpose: a frame draws with
-  // the same camera value the click handling above saw, one frame stale --
-  // the hud_mouse_over convention.
-  for(B32 keep_going = true; keep_going;) {
-    WND_EventList evts = wnd_get_events(frame_arena);
-    for(WND_Event* evt = evts.first; evt; evt = evt->next) {
-      if(evt->type == WND_EventType_CloseRequested) {
-        keep_going = false;
-      }
-    }
-
-    input_process_events(evts);
+  // the frame, in phases: poll -> key/click handling -> pacing -> lazy
+  // (re)init -> sim -> draw (map, then HUD) -> camera -> swap. camera_update
+  // runs AFTER drawing on purpose: a frame draws with the same camera value
+  // the click handling above saw, one frame stale -- the hud_mouse_over
+  // convention. A close request still finishes its frame; the loop condition
+  // catches it at the top of the next one.
+  for(B32 keep_going = true; keep_going && !wnd_close_requested();) {
+    wnd_poll();
 
     CL_Command cmd = {0};
     cl_cmd_from_keyboard(&cmd);
@@ -262,10 +254,10 @@ int main(int argc, char** argv) {
     if(cmd.toggle_pause) { game.paused ^= 1; }
 
     if(game.initialised && !hud_mouse_over) {
-      if(input_is_mouse_button_pressed(WND_MouseButton_Left)) {
-        gm_select(&game, map_tile_from_screen(camera, input_mouse_pos()));
+      if(wnd_mouse_pressed(WND_MouseButton_Left)) {
+        gm_select(&game, map_tile_from_screen(camera, wnd_mouse_pos()));
       }
-      if(input_is_mouse_button_pressed(WND_MouseButton_Right)) {
+      if(wnd_mouse_pressed(WND_MouseButton_Right)) {
         gm_deselect(&game);
       }
     }

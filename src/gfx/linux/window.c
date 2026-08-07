@@ -165,7 +165,7 @@ internal WND_Modifiers wnd__modifiers_from_x11_state(unsigned int state) {
   return result;
 }
 
-internal WND_EventList wnd_get_events(Arena* arena) {
+internal WND_EventList wnd__get_events(Arena* arena) {
   WND_EventList list = {0};
   if(!wnd_state.is_open) { return list; }
 

@@ -62,8 +62,11 @@ internal void wnd__frame_mark(void);
 //~ fp: Keys & Events
 //
 // Events are transitions: a KeyDown means the key went down (backends filter
-// OS autorepeat), a MouseDown that a button was pressed. The list is rebuilt
-// on the caller's arena every wnd_get_events call.
+// OS autorepeat), a MouseDown that a button was pressed. The list is the
+// backend-to-digest contract, rebuilt on the caller's arena every
+// wnd__get_events call; callers read the digest below. Anything ordered that
+// the digest cannot represent -- typed text, replay recording -- belongs at
+// this tier.
 
 typedef U16 WND_Key;
 enum {
@@ -166,7 +169,28 @@ typedef struct {
   WND_Event* last;
 } WND_EventList;
 
-internal WND_EventList wnd_get_events(Arena* arena);
+// backend contract: pumps the OS and returns the events it produced
+internal WND_EventList wnd__get_events(Arena* arena);
 
 // shared by the backends' event pumps (implemented in gfx/window.c)
 internal WND_Event* wnd__push_event(Arena* arena, WND_EventList* list, WND_EventType type);
+
+////////////////////////////////
+//~ fp: Input
+//
+// Frame-coherent digest of the event stream: wnd_poll pumps once, then held
+// state and edges read the same anywhere, all frame long. Pressed and
+// released are latches -- a button that went down at any point in the frame
+// reads as pressed even if it came back up within that same frame. Every
+// query answers as of the last wnd_poll; nothing else pumps the OS.
+
+internal void wnd_poll(void); // once per frame, before anything queries below
+
+internal B32 wnd_close_requested(void); // close button hit during this frame
+internal B32 wnd_key_down(WND_Key key);
+internal B32 wnd_key_pressed(WND_Key key);
+internal B32 wnd_mouse_down(WND_MouseButton button);
+internal B32 wnd_mouse_pressed(WND_MouseButton button);
+internal B32 wnd_mouse_released(WND_MouseButton button);
+internal V2  wnd_mouse_pos(void);
+internal V2  wnd_scroll(void); // wheel delta accumulated over this frame; +y away from the user

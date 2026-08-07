@@ -3,6 +3,5 @@
 
 #include "gfx/color.c"
 #include "gfx/window.c"
-#include "gfx/input.c"
 #include "gfx/render.c"
 #include "gfx/draw.c"

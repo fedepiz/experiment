@@ -210,7 +210,7 @@ internal Rect map_tile_rect(F32 x, F32 y, F32 inset) {
 }
 
 // the tile cell under a screen position, taken in client points as
-// input_mouse_pos gives them. Floors, so cells west/north of the board come
+// wnd_mouse_pos gives them. Floors, so cells west/north of the board come
 // back negative -- callers bounds-check against the board.
 internal V2I map_tile_from_screen(D_Camera camera, V2 screen) {
   V2 world = d_camera_from_screen(camera, screen);

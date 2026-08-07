@@ -19,7 +19,7 @@
 //~ fp: Win32 Backend
 //
 // One window, message-pump driven. The WndProc can only hand events somewhere
-// while wnd_get_events is pumping, so the state carries the pump's arena and
+// while wnd__get_events is pumping, so the state carries the pump's arena and
 // list for exactly that duration; messages arriving outside a pump (during
 // CreateWindowEx, mostly) fall through to DefWindowProc untranslated.
 //
@@ -32,7 +32,7 @@ typedef struct {
   HWND hwnd;
   HDC hdc;     // CS_OWNDC: private, stable for the GL context's lifetime
   HGLRC hglrc;
-  Arena* evt_arena;        // non-zero only while wnd_get_events pumps
+  Arena* evt_arena;        // non-zero only while wnd__get_events pumps
   WND_EventList* evt_list;
   HMONITOR refresh_monitor; // cache key for refresh_hz: re-query on change
   F32 refresh_hz;
@@ -209,7 +209,7 @@ internal LRESULT CALLBACK wnd__window_proc(HWND hwnd, UINT msg, WPARAM wparam, L
   return result;
 }
 
-internal WND_EventList wnd_get_events(Arena* arena) {
+internal WND_EventList wnd__get_events(Arena* arena) {
   WND_EventList list = {0};
   if(!wnd_state.is_open) { return list; }
   wnd_state.evt_arena = arena;

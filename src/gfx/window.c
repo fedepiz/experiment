@@ -1,6 +1,7 @@
 #include "base/core.h"
 #include "base/math.h"
 #include "base/arena.h"
+#include "base/tctx.h"
 #include "base/os.h"
 #include "gfx/window.h"
 
@@ -57,6 +58,108 @@ internal WND_Event* wnd__push_event(Arena* arena, WND_EventList* list, WND_Event
   SLLQueuePush(list->first, list->last, event);
   list->count += 1;
   return event;
+}
+
+////////////////////////////////
+//~ fp: Input
+//
+// The digest the frontier reads. Events live only for the length of a poll:
+// they are pumped onto scratch, folded in here, and dropped.
+
+typedef struct {
+  B8 key_down[WND_Key_COUNT];
+  B8 key_pressed[WND_Key_COUNT]; // latch: went down at any point this frame
+  B8 mouse_down[WND_MouseButton_COUNT];
+  B8 mouse_pressed[WND_MouseButton_COUNT];  // latch, same idea
+  B8 mouse_released[WND_MouseButton_COUNT]; // latch: went up at any point this frame
+  B8 close_requested;
+  V2 mouse_pos;
+  V2 scroll; // accumulated over the frame: several wheel events sum
+} WND_InputState;
+
+global WND_InputState wnd__input;
+
+internal B32 wnd_close_requested(void) {
+  return wnd__input.close_requested;
+}
+
+internal B32 wnd_key_down(WND_Key key) {
+  Assert(key < WND_Key_COUNT);
+  return wnd__input.key_down[key];
+}
+
+internal B32 wnd_key_pressed(WND_Key key) {
+  Assert(key < WND_Key_COUNT);
+  return wnd__input.key_pressed[key];
+}
+
+internal B32 wnd_mouse_down(WND_MouseButton button) {
+  Assert(button < WND_MouseButton_COUNT);
+  return wnd__input.mouse_down[button];
+}
+
+internal B32 wnd_mouse_pressed(WND_MouseButton button) {
+  Assert(button < WND_MouseButton_COUNT);
+  return wnd__input.mouse_pressed[button];
+}
+
+internal B32 wnd_mouse_released(WND_MouseButton button) {
+  Assert(button < WND_MouseButton_COUNT);
+  return wnd__input.mouse_released[button];
+}
+
+internal V2 wnd_mouse_pos(void) {
+  return wnd__input.mouse_pos;
+}
+
+internal V2 wnd_scroll(void) {
+  return wnd__input.scroll;
+}
+
+internal void wnd_poll(void) {
+  ArenaTemp scratch = arena_get_scratch(0, 0);
+  WND_EventList events = wnd__get_events(scratch.arena);
+
+  // the per-frame latches reset BEFORE this frame's events land, or edges
+  // can never be observed
+  MemoryZeroArray(wnd__input.key_pressed);
+  MemoryZeroArray(wnd__input.mouse_pressed);
+  MemoryZeroArray(wnd__input.mouse_released);
+  MemoryZeroStruct(&wnd__input.scroll);
+  wnd__input.close_requested = 0;
+
+  for(WND_Event* evt = events.first; evt; evt = evt->next) {
+    switch(evt->type) {
+      case WND_EventType_KeyDown:
+        wnd__input.key_down[evt->key] = true;
+        wnd__input.key_pressed[evt->key] = true; // survives a same-frame KeyUp
+        break;
+      case WND_EventType_KeyUp:
+        wnd__input.key_down[evt->key] = false;
+        break;
+      case WND_EventType_MouseDown:
+        wnd__input.mouse_down[evt->button] = true;
+        wnd__input.mouse_pressed[evt->button] = true; // survives a same-frame MouseUp
+        break;
+      case WND_EventType_MouseUp:
+        wnd__input.mouse_down[evt->button] = false;
+        wnd__input.mouse_released[evt->button] = true; // survives a same-frame MouseDown
+        break;
+      case WND_EventType_MouseMoved:
+        wnd__input.mouse_pos = evt->pos;
+        break;
+      case WND_EventType_Scroll:
+        wnd__input.scroll = v2_add(wnd__input.scroll, evt->scroll);
+        break;
+      case WND_EventType_CloseRequested:
+        wnd__input.close_requested = 1;
+        break;
+      default:
+        break;
+    }
+  }
+
+  arena_release_scratch(scratch);
 }
 
 ////////////////////////////////

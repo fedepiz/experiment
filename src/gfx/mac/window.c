@@ -177,7 +177,7 @@ internal WND_Modifiers wnd__modifiers_from_cocoa(unsigned int mods) {
   return result;
 }
 
-internal WND_EventList wnd_get_events(Arena* arena) {
+internal WND_EventList wnd__get_events(Arena* arena) {
   WND_EventList list = {0};
   cocoa_pump_events();
   for(Cocoa_Event cev = {0}; cocoa_next_event(&cev);) {

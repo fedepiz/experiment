@@ -6,7 +6,6 @@
 #include "tabula.h"
 #include "game/game.h"
 #include "gfx/window.h"
-#include "gfx/input.h"
 #include "gfx/draw.h"
 #include "ui.h"
 #include "client/client.h"
@@ -41,15 +40,15 @@ internal UI_FontMetrics hud_font_metrics(void* user, U64 font, F32 size) {
 // the mouse arrives in client points, the UI's native unit
 internal UI_Input hud_gather_input(void) {
   UI_Input in = {0};
-  in.mouse = input_mouse_pos();
+  in.mouse = wnd_mouse_pos();
   WND_MouseButton buttons[UI_MouseButton_COUNT] = {
       WND_MouseButton_Left, WND_MouseButton_Right, WND_MouseButton_Middle};
   for(U32 i = 0; i < UI_MouseButton_COUNT; i += 1) {
-    in.down[i] = (B8)input_is_mouse_button_down(buttons[i]);
-    in.pressed[i] = (B8)input_is_mouse_button_pressed(buttons[i]);
-    in.released[i] = (B8)input_is_mouse_button_released(buttons[i]);
+    in.down[i] = (B8)wnd_mouse_down(buttons[i]);
+    in.pressed[i] = (B8)wnd_mouse_pressed(buttons[i]);
+    in.released[i] = (B8)wnd_mouse_released(buttons[i]);
   }
-  in.scroll = input_scroll();
+  in.scroll = wnd_scroll();
   in.dt = wnd_frame_time();
   in.window = wnd_size();
   return in;
