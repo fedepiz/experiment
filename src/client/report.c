@@ -53,7 +53,7 @@ internal I32 report__components(Arena* arena, U16* groups, I32 w, I32 h,
 }
 
 internal void report_worldgen(I32 world_count, U64 first_seed) {
-  wg_terrain_table_load(str8_lit("data/world.tabula"));
+  wg_terrain_table_load(str8_lit("data/terrain_types.tabula"));
   WG_Params params = wg_params_load(str8_lit("data/world.tabula"));
 
   // the report knows some terrains by role; ids resolve by name so the file
@@ -76,7 +76,7 @@ internal void report_worldgen(I32 world_count, U64 first_seed) {
   is_cold[wg_terrain_by_name(str8_lit("taiga"))] = 1;
 
   printf_str8("seed");
-  for(U32 i = 1; i < params.terrain_count; i += 1) { printf_str8(",%S", wg_terrain_name(i)); }
+  for(U32 i = 1; i < WG_TERRAIN_TYPE_COUNT; i += 1) { printf_str8(",%S", wg_terrain_name(i)); }
   printf_str8(",land,landmasses,largest_landmass,ranges,largest_range,specks,lakes"
               ",river_tiles,river_nets,coast,beach_on_coast,hot_cold,nil,passable_largest\n");
 
@@ -160,7 +160,7 @@ internal void report_worldgen(I32 world_count, U64 first_seed) {
     I32 river_net_count = report__components(world_arena, by_river, w, h, comps);
 
     printf_str8("%llu", (unsigned long long)seed);
-    for(U32 i = 1; i < params.terrain_count; i += 1) {
+    for(U32 i = 1; i < WG_TERRAIN_TYPE_COUNT; i += 1) {
       printf_str8(",%.4f", (F32)counts[i] / (F32)tiles);
     }
     printf_str8(",%.4f,%d,%.4f,%d,%d,%d,%d,%llu,%d,%llu,%.4f,%llu,%u,%.4f\n",

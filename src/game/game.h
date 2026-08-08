@@ -52,6 +52,7 @@ typedef struct {
 typedef struct {
   B32 initialised;
   B32 paused;
+  U64 tick_num;
   TH_Db* db;
   GM_Defs defs;
   BD_Board* board;

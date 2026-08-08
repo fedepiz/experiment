@@ -2,12 +2,14 @@
 //~ fp: Game Layer -- implementations of the layers below, in dependency order
 
 #include "game/game.h"
+#include "base/arena.h"
 #include "base/core.h"
 #include "base/math.h"
 #include "base/strings.h"
 #include "base/tctx.h"
 #include "game/board.h"
 #include "game/thing_db.h"
+#include "game/worldgen.h"
 #include "gfx/color.h"
 #include "tabula.h"
 
@@ -69,6 +71,98 @@ internal void gm__xy_set(TH_Db* db, TH_Id id, V2I pos) {
   th_ivar_set(db, id, TH_IVar_Y, pos.y);
 }
 
+/////// Semantic spatial search
+//
+//
+
+typedef struct {
+  V2I coords;
+} GM_TileHit;
+
+typedef struct {
+  GM_TileHit* tiles;
+  U32 count;
+} GM_TilesHits;
+
+typedef U16 GM_QueryTilesFlags;
+
+enum {
+  GM_QueryTilesFlag_Unclaimed = (1 << 0),
+};
+
+typedef struct {
+  V2I focus;
+  I32 radius_min;
+  I32 radius_max;
+  WG_TerrainFlags terrain_flags_any;
+  WG_TerrainFlags terrain_flags_all;
+  GM_QueryTilesFlags query_flags_all;
+} GM_QueryTiles;
+
+
+internal GM_QueryTiles gm__query_tiles_make(V2I focus, I32 range) {
+  GM_QueryTiles query = {0};
+  query.focus = focus;
+  query.radius_max = range;
+  return query;
+}
+
+internal GM_TilesHits gm__query_tiles_run(Arena* arena, GM_Game* game, GM_QueryTiles query) {
+  BD_Board* board = game->board;
+  TH_Db* db = game->db;
+  GM_TilesHits out = {0};
+  // a negative outer radius reaches nothing, and would invert the extents below
+  if(query.radius_max < 0) { return out; }
+
+  // Calculate extents
+  I32 x_min = Clamp(0, query.focus.x - query.radius_max, board->width - 1);
+  I32 y_min = Clamp(0, query.focus.y - query.radius_max, board->height - 1);
+  I32 x_max = Clamp(0, query.focus.x + query.radius_max, board->width - 1);
+  I32 y_max = Clamp(0, query.focus.y + query.radius_max, board->height - 1);
+
+  U32 hits_cap = (x_max - x_min + 1) * (y_max - y_min + 1);
+  out.tiles = push_array_no_zero(arena, GM_TileHit, hits_cap);
+  out.count = 0;
+
+  // ring bounds, squared once so the per-tile test needs no sqrt. A negative
+  // radius_min must not square back into an exclusion.
+  I32 radius_max_sq = query.radius_max * query.radius_max;
+  I32 radius_min_sq = query.radius_min > 0 ? query.radius_min * query.radius_min : 0;
+
+  for(I32 y = y_min; y <= y_max; ++y) {
+    for(I32 x = x_min; x <= x_max; ++x) {
+      // euclidean, inclusive at both ends -- the same distance influence uses.
+      // Tested before the tile is fetched: it rejects the ~21% of the bounding
+      // box outside the disc, plus whatever radius_min carves out.
+      I32 dx = x - query.focus.x;
+      I32 dy = y - query.focus.y;
+      I32 dist_sq = dx * dx + dy * dy;
+      if(dist_sq > radius_max_sq || dist_sq < radius_min_sq) { continue; }
+
+      V2I pos = {x, y};
+      BD_Tile* tile = bd_tile_at(board, pos);
+      const WG_TerrainType* terrain_type = wg_terrain_type_get(tile->terrain);
+
+      if(query.terrain_flags_any != 0 && (terrain_type->flags & query.terrain_flags_any) == 0) {
+        continue;
+      }
+
+      if((terrain_type->flags & query.terrain_flags_all) != query.terrain_flags_all) {
+        continue;
+      }
+
+      if(query.query_flags_all & GM_QueryTilesFlag_Unclaimed) {
+        if(th_field_ref_get(db, TH_FieldRef_Home, pos) != 0) continue;
+      }
+
+      Assert(out.count < hits_cap);
+      GM_TileHit* hit = &out.tiles[out.count++];
+      hit->coords = pos;
+    }
+  }
+  return out;
+}
+
 // extraction: project db facts into the derived layers, in full, every tick.
 // Today that is only the board; future extractions (indices, rosters, render
 // data) hang off the same single pass over every thing, each checking the
@@ -106,7 +200,7 @@ internal void gm__extract(GM_Game* game) {
 // distance alone settles a border. Unlike extraction this writes the db, so
 // it runs after it, on the pawn positions extraction just reconciled.
 #define GM_INFLUENCE_STRENGTH 1.0f
-#define GM_INFLUENCE_RANGE    6.0f
+#define GM_INFLUENCE_RANGE    4.0f
 #define GM_INFLUENCE_DECAY    BD_InfluenceDecay_Linear
 internal void gm__home_derive(GM_Game* game) {
   TH_Db* db = game->db;
@@ -150,7 +244,7 @@ internal void gm_init(Arena* arena, GM_Game* game, U64 seed) {
 
   //- fp: the world: terrain registry and knobs from the file, generated
   //  into the fields, then mirrored into the board
-  wg_terrain_table_load(str8_lit("data/world.tabula"));
+  wg_terrain_table_load(str8_lit("data/terrain_types.tabula"));
   WG_Params params = wg_params_load(str8_lit("data/world.tabula"));
   wg_generate(game->db, &params, seed);
   game->board = bd_board_alloc(arena, params.width, params.height, 1024);
@@ -309,10 +403,12 @@ internal TB_Value* gm_info(Arena* arena, GM_Game* game) {
 #define GM_TICK_BANK_MAX 0.5f // at most 5 banked ticks replay after a stall
 
 internal void gm_update(GM_Game* game, F32 dt) {
-  if(game->paused) { return; }
+  ArenaTemp scratch = arena_get_scratch(0, 0);
   TH_Db* db = game->db;
+  dt *= game->paused ? 0 : 1;
   game->move_timer = ClampTop(game->move_timer + dt, GM_TICK_BANK_MAX);
   while(game->move_timer > GM_TICK_DT) {
+    game->tick_num++;
     game->move_timer -= GM_TICK_DT;
 
     // DO NOT REWRITE THIS AS A LOOP OVER SOME FLAGGED ENTITY.
@@ -324,6 +420,7 @@ internal void gm_update(GM_Game* game, F32 dt) {
         F32* pts = th_var(db, this, TH_Var_MovePts);
         *pts = ClampTop(*pts + 1.0f, 4.0f);
 
+        // Advance waypoints while we can
         for(;;) {
           V2I pos = gm__xy_get(db, this);
           TH_Id waypoint = th_ref_get(db, TH_Ref_Goal, this);
@@ -356,6 +453,7 @@ internal void gm_update(GM_Game* game, F32 dt) {
     gm__home_derive(game);
   }
   gm__selection_refresh(game);
+  arena_release_scratch(scratch);
 }
 
 internal GM_MapItems gm_map_items(Arena* arena, GM_Game* game, GM_MapMode mode) {

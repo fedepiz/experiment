@@ -275,7 +275,7 @@ enum {
 
 typedef struct {
   U64 key;      // the pawn this radiates from; unknown keys contribute nothing
-  F32 range;    // tiles reached, inclusive; <= 0 contributes nothing
+  F32 range;    // tiles reached, inclusive; 0 is the source's own tile alone, < 0 nothing
   F32 strength; // influence at the source's own tile; <= 0 contributes nothing
   BD_InfluenceDecay decay;
 } BD_Influence;

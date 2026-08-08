@@ -435,10 +435,11 @@ internal V2I bd_path_next_towards(BD_Board* board, V2I from, V2I to) {
 ////////////////////////////////
 //~ fp: Influence
 
-// `source` felt `dist` tiles away; 0 past its range
+// `source` felt `dist` tiles away; 0 past its range. Falloff runs to range + 1
+// so the last tile in range still reads above zero.
 internal F32 bd__influence_at(BD_Influence* source, F32 dist) {
   if(dist > source->range) { return 0; }
-  F32 t = dist / source->range;
+  F32 t = dist / (source->range + 1.0f);
   F32 result = source->strength;
   switch(source->decay) {
     case BD_InfluenceDecay_Linear: {
@@ -470,7 +471,7 @@ internal BD_InfluenceAssignment* bd_influence_map(Arena* arena, BD_Board* board,
 
   for(U64 i = 0; i < sources.count; i += 1) {
     BD_Influence* source = &sources.elems[i];
-    if(source->range <= 0 || source->strength <= 0) { continue; }
+    if(source->range < 0 || source->strength <= 0) { continue; } // range 0 still claims its own tile
     BD_Pawn* pawn = bd_pawn_lookup(board, source->key);
     if(pawn == &BD_NIL_PAWN) { continue; }
 

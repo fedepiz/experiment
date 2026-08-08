@@ -9,7 +9,8 @@
 //~ fp: Map
 //
 // The client's view of the world -- the world itself is game/'s (worldgen
-// knobs in data/world.tabula). One opaque object holds the sprite assets,
+// knobs in data/world.tabula, terrain rows in data/terrain_types.tabula).
+// One opaque object holds the sprite assets,
 // the tiling registration built while loading them, and the tiler cell
 // cache. Pure presentation: reads no input; the camera arrives as a value.
 

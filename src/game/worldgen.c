@@ -29,10 +29,10 @@ internal B32 wg__band_contains(WG_Band band, F32 v) {
 }
 
 // first row (past nil) whose bands all contain the fields; 0 = no row claims it
-internal U32 wg__classify(WG_Params* params, F32 e, F32 moisture, F32 drainage,
+internal U32 wg__classify(F32 e, F32 moisture, F32 drainage,
                           F32 temperature, B32 coast) {
-  for(U32 i = 1; i < params->terrain_count; i += 1) {
-    WG_TerrainDef* def = &params->terrains[i];
+  for(U32 i = 1; i < WG_TERRAIN_TYPE_COUNT; i += 1) {
+    WG_TerrainType* def = &WG_TERRAIN_TYPES[i];
     if(!wg__band_contains(def->elevation, e)) { continue; }
     if(!wg__band_contains(def->moisture, moisture)) { continue; }
     if(!wg__band_contains(def->drainage, drainage)) { continue; }
@@ -46,7 +46,7 @@ internal U32 wg__classify(WG_Params* params, F32 e, F32 moisture, F32 drainage,
 // Bands are axis-aligned boxes, so any coverage gap contains the midpoint of
 // some cell in the grid of all band boundaries: testing those midpoints is an
 // exact check. Gaps report to stderr and classify as nil (loud magenta).
-internal void wg__report_band_gaps(String8 path, WG_Params* params) {
+internal void wg__report_band_gaps(String8 path) {
   F32 cuts[4][2 * WG_TERRAIN_CAP + 2];
   U32 cut_counts[4];
   for(U32 dim = 0; dim < 4; dim += 1) {
@@ -54,8 +54,8 @@ internal void wg__report_band_gaps(String8 path, WG_Params* params) {
     cuts[dim][1] = 1;
     cut_counts[dim] = 2;
   }
-  for(U32 i = 1; i < params->terrain_count; i += 1) {
-    WG_TerrainDef* def = &params->terrains[i];
+  for(U32 i = 1; i < WG_TERRAIN_TYPE_COUNT; i += 1) {
+    WG_TerrainType* def = &WG_TERRAIN_TYPES[i];
     WG_Band bands[4] = {def->elevation, def->moisture, def->drainage, def->temperature};
     for(U32 dim = 0; dim < 4; dim += 1) {
       if(bands[dim].min == 0 && bands[dim].max == 0) { continue; }
@@ -73,7 +73,7 @@ internal void wg__report_band_gaps(String8 path, WG_Params* params) {
           F32 m = 0.5f * (cuts[1][mi] + cuts[1][mi + 1]);
           F32 d = 0.5f * (cuts[2][di] + cuts[2][di + 1]);
           F32 t = 0.5f * (cuts[3][ti] + cuts[3][ti + 1]);
-          if(wg__classify(params, e, m, d, t, 0) == 0) {
+          if(wg__classify(e, m, d, t, 0) == 0) {
             eprintf_str8("%S: no terrain matches elevation %.2f moisture %.2f drainage %.2f temperature %.2f\n",
                          path, e, m, d, t);
             gaps += 1;
@@ -89,6 +89,11 @@ internal String8 wg_terrain_name(U32 type) {
   return str8(WG_TERRAIN_TYPES[type].name_chars, WG_TERRAIN_TYPES[type].name_len);
 }
 
+internal const WG_TerrainType* wg_terrain_type_get(U32 idx) {
+  Assert(idx < WG_TERRAIN_TYPE_COUNT);
+  return &WG_TERRAIN_TYPES[idx];
+}
+
 internal U32 wg_terrain_by_name(String8 name) {
   for(U32 i = 0; i < WG_TERRAIN_TYPE_COUNT; i += 1) {
     if(str8_match(wg_terrain_name(i), name, 0)) { return i; }
@@ -101,10 +106,17 @@ internal void wg__terrain_name_set(WG_TerrainType* type, String8 name) {
   MemoryCopy(type->name_chars, name.str, type->name_len);
 }
 
+typedef struct {
+  const char* name;
+  WG_TerrainFlags flags;
+} WG_TerrainFlagsDef;
+
+const WG_TerrainFlagsDef WG_TERRAIN_FLAG_DEFS[] = {
+    {"fertile", WG_TerrainFlag_Fertile}};
+
 internal void wg_terrain_table_load(String8 path) {
   ArenaTemp scratch = arena_get_scratch(0, 0);
   TB_Value* root = tb_parse_file_and_report(scratch.arena, path);
-  TB_Value* world = tb_get(root, str8_lit("world"));
 
   //- fp: terrain rows, in file order; row 0 is the baked nil. Refilled
   //  whole, so repeated loads stay idempotent.
@@ -115,7 +127,7 @@ internal void wg_terrain_table_load(String8 path) {
     nil_type->color = (V4){1, 0, 1, 1}; // loud magenta
     WG_TERRAIN_TYPE_COUNT = 1;
   }
-  for(TB_Node* node = world->first_member; node != 0; node = node->next) {
+  for(TB_Node* node = root->first_member; node != 0; node = node->next) {
     if(!str8_match(node->key, str8_lit("terrain_type"), 0)) { continue; }
     if(WG_TERRAIN_TYPE_COUNT >= WG_TERRAIN_CAP) {
       eprintf_str8("%S: more than %d terrain_type entries; extras ignored\n",
@@ -126,12 +138,44 @@ internal void wg_terrain_table_load(String8 path) {
     WG_TerrainType* type = &WG_TERRAIN_TYPES[WG_TERRAIN_TYPE_COUNT];
     WG_TERRAIN_TYPE_COUNT += 1;
 
-    wg__terrain_name_set(type, tb_get_str8(src, str8_lit("name"), str8_lit("unnamed")));
+    String8 name = tb_get_str8(src, str8_lit("name"), str8_lit("unnamed"));
+    wg__terrain_name_set(type, name);
     type->color = tb_get_v4(src, str8_lit("color"), (V4){1, 0, 1, 1}); // magenta = the loud fallback
     type->rank = (U8)tb_get_num(src, str8_lit("rank"), 0);
     type->overlay_density = (U32)tb_get_num(src, str8_lit("overlay_density"), 0);
     type->move_cost = tb_get_num(src, str8_lit("move_cost"), 0); // missing = impassable, visibly
+
+    type->elevation = wg__band_from_key(src, str8_lit("elevation"));
+    type->moisture = wg__band_from_key(src, str8_lit("moisture"));
+    type->drainage = wg__band_from_key(src, str8_lit("drainage"));
+    type->temperature = wg__band_from_key(src, str8_lit("temperature"));
+    type->needs_coast = tb_get_num(src, str8_lit("needs_coast"), 0) != 0;
+
+    //- fp: flags: a list of names from WG_TERRAIN_FLAG_DEFS, or absent for
+    //  none. An unrecognised name reports and contributes nothing, so a typo
+    //  cannot quietly read as "this terrain lacks the trait".
+    type->flags = 0;
+    TB_Value* flag_list = tb_get(src, str8_lit("flags"));
+    if(!tb_value_is_nil(flag_list) && flag_list->kind != TB_ValueKind_List) {
+      eprintf_str8("%S: terrain '%S': flags must be a list\n", path, name);
+    }
+    for(TB_Value* elem = flag_list->first; elem != 0; elem = elem->next) {
+      String8 flag_name = tb_str8_from_value(elem, str8_lit(""));
+      B32 known = 0;
+      for(U32 i = 0; i < ArrayCount(WG_TERRAIN_FLAG_DEFS); i += 1) {
+        const WG_TerrainFlagsDef* def = &WG_TERRAIN_FLAG_DEFS[i];
+        if(str8_match(str8_cstring(def->name), flag_name, 0)) {
+          type->flags |= def->flags;
+          known = 1;
+          break;
+        }
+      }
+      if(!known) {
+        eprintf_str8("%S: terrain '%S': unknown flag '%S'\n", path, name, flag_name);
+      }
+    }
   }
+  wg__report_band_gaps(path);
   arena_release_scratch(scratch);
 }
 
@@ -184,24 +228,6 @@ internal WG_Params wg_params_load(String8 path) {
   params.continent_blend = tb_get_num(world, str8_lit("continent_blend"), 0);
   params.continent_height = tb_get_num(world, str8_lit("continent_height"), 0);
   params.min_region_size = (I32)tb_get_num(world, str8_lit("min_region_size"), 0);
-
-  //- fp: classification rows, mirroring the terrain table's file order; row
-  //  0 is the baked nil (the type half lives in wg_terrain_table_load)
-  params.terrain_count = 1;
-  for(TB_Node* node = world->first_member; node != 0; node = node->next) {
-    if(!str8_match(node->key, str8_lit("terrain_type"), 0)) { continue; }
-    if(params.terrain_count >= WG_TERRAIN_CAP) { break; } // table load reports the excess
-    TB_Value* src = &node->value;
-    WG_TerrainDef* def = &params.terrains[params.terrain_count];
-    params.terrain_count += 1;
-
-    def->elevation = wg__band_from_key(src, str8_lit("elevation"));
-    def->moisture = wg__band_from_key(src, str8_lit("moisture"));
-    def->drainage = wg__band_from_key(src, str8_lit("drainage"));
-    def->temperature = wg__band_from_key(src, str8_lit("temperature"));
-    def->needs_coast = tb_get_num(src, str8_lit("needs_coast"), 0) != 0;
-  }
-  wg__report_band_gaps(path, &params);
 
   params.river_count = (I32)tb_get_num(world, str8_lit("river_count"), 0);
   params.river_max_tries = (I32)tb_get_num(world, str8_lit("river_max_tries"), 0);
@@ -809,7 +835,7 @@ internal U8* wg__determine_sea(Arena* arena, WG_Params* params, F32* elevation) 
 
 internal void wg__classify_tiles(WG_Params* params, U64 seed, TH_Db* db, F32* elevation, U8* sea) {
   //- fp: classify tiles: prepare the fields, then first-match the terrain
-  //  rows (see WG_TerrainDef). River banks read wetter than their moisture
+  //  rows (see WG_TerrainType). River banks read wetter than their moisture
   //  field says, so valleys go green or boggy.
   I32 w = params->width;
   I32 h = params->height;
@@ -837,7 +863,7 @@ internal void wg__classify_tiles(WG_Params* params, U64 seed, TH_Db* db, F32* el
       }
 
       th_ifield_set(db, p, TH_IField_Terrain,
-                    (I32)wg__classify(params, e, moisture, drainage, temperature, coast));
+                    (I32)wg__classify(e, moisture, drainage, temperature, coast));
     }
   }
 }
@@ -881,7 +907,7 @@ internal void wg__despeckle(WG_Params* params, TH_Db* db) {
           }
           U32 best = (U32)terrain;
           U32 best_votes = 0;
-          for(U32 i = 0; i < params->terrain_count; i += 1) {
+          for(U32 i = 0; i < WG_TERRAIN_TYPE_COUNT; i += 1) {
             if(votes[i] > best_votes) {
               best = i;
               best_votes = votes[i];
@@ -936,7 +962,7 @@ internal void wg_generate(TH_Db* db, WG_Params* params, U64 seed) {
   U8* sea = wg__determine_sea(scratch.arena, params, elevation);
 
   //- fp: classify tiles: prepare the fields, then first-match the terrain
-  //  rows (see WG_TerrainDef). River banks read wetter than their moisture
+  //  rows (see WG_TerrainType). River banks read wetter than their moisture
   //  field says, so valleys go green or boggy.
   wg__classify_tiles(params, seed, db, elevation, sea);
 

@@ -7,6 +7,7 @@
 #include "game/worldgen.h"
 #include "game/tiling.h"
 #include "game/game.h"
+#include "gfx/color.h"
 #include "gfx/window.h"
 #include "gfx/draw.h"
 #include "ui.h"
@@ -197,11 +198,15 @@ internal Map_View* map_init(Arena* arena) {
 
 
 // draw order: the tiler's layers first (a fact about how the art is built --
-// boundary tongues must not paint over overlay art), then surface items,
-// then highlights above everything
-#define MAP_LAYER_SURFACE   TL_Layer_COUNT
-#define MAP_LAYER_HIGHLIGHT (TL_Layer_COUNT + 1)
-#define MAP_LAYER_COUNT     (TL_Layer_COUNT + 2)
+// boundary tongues must not paint over overlay art), then per-tile shading,
+// then surface items, then highlights above everything
+#define MAP_LAYER_SHADING   TL_Layer_COUNT
+#define MAP_LAYER_SURFACE   (TL_Layer_COUNT + 1)
+#define MAP_LAYER_HIGHLIGHT (TL_Layer_COUNT + 2)
+#define MAP_LAYER_COUNT     (TL_Layer_COUNT + 3)
+
+// how strongly a tile's shading colour veils the ground under it
+#define MAP_SHADING_ALPHA 0.35f
 
 // the world-space rect of the tile at (x, y) -- fractional positions land on
 // the dual grid -- shrunk by `inset` world units per side
@@ -255,6 +260,7 @@ internal void map_draw(Map_View* map, GM_MapItems items, D_Camera camera) {
     }
     TL_Cell* cell = map__cell(map, item);
     for(U32 pi = 0; pi < cell->count; pi += 1) { cap[cell->pieces[pi].layer] += 1; }
+    if(item->color.w > 0) { cap[MAP_LAYER_SHADING] += 1; }
   }
   U64 base[MAP_LAYER_COUNT];
   U64 total = 0;
@@ -282,16 +288,22 @@ internal void map_draw(Map_View* map, GM_MapItems items, D_Camera camera) {
       TL_Cell* cell = map__cell(map, item);
       for(U32 pi = 0; pi < cell->count; pi += 1) {
         TL_Piece* piece = &cell->pieces[pi];
-
-        V4 color = {0};
-        if(piece->id != 0) {
-          color = item->color;
-        }
-
+        // untinted: ground pieces sit on the dual grid, half a cell off this
+        // item's tile, so a per-tile colour cannot ride on them
         Rect r = map_tile_rect(item->pos.x + piece->offset.x, item->pos.y + piece->offset.y, 0);
         MapDrawCmd* cmd = &cmds[base[piece->layer] + count[piece->layer]];
-        *cmd = (MapDrawCmd){.rect = r, .sprite = piece->id, .color = color, .mask = piece->mask_id};
+        *cmd = (MapDrawCmd){.rect = r, .sprite = piece->id, .mask = piece->mask_id};
         count[piece->layer] += 1;
+      }
+
+      // shading rides its own quad on the map grid, where the tile actually is
+      if(item->color.w > 0) {
+        MapDrawCmd* cmd = &cmds[base[MAP_LAYER_SHADING] + count[MAP_LAYER_SHADING]];
+        count[MAP_LAYER_SHADING] += 1;
+        *cmd = (MapDrawCmd){
+            .rect = map_tile_rect(item->pos.x, item->pos.y, 0),
+            .color = col_with_alpha(item->color, MAP_SHADING_ALPHA),
+        };
       }
     }
 

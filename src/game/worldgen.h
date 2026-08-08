@@ -26,42 +26,22 @@
 // What a terrain *is*, apart from where generation puts it: the cross-module
 // terrain registry -- the row index is the terrain id everywhere
 // (TH_IField_Terrain values, tiling classes, board travel costs, art
-// prefixes, map colors). Filled whole by wg_terrain_table_load from the
-// world file's terrain_type rows, in file order, so repeated loads stay
-// idempotent; call it before anything that reads the table. Row 0 is the
+// prefixes, map colors) and the bands that claim it. Filled whole by
+// wg_terrain_table_load from the terrain file's rows, in file order, so
+// repeated loads stay idempotent; call it before anything that reads the
+// table -- including wg_generate, which classifies against it. Row 0 is the
 // reserved nil terrain (ZII: an unpainted cell reads as nil -- impassable,
 // loud magenta). Names are copied into the rows, so the table outlives any
 // load arena.
 
-#define WG_TERRAIN_CAP 24
+#define WG_TERRAIN_CAP      24
 #define WG_TERRAIN_NAME_CAP 31
 
-typedef struct {
-  U8 name_len;                       // asset prefix and display name,
-  U8 name_chars[WG_TERRAIN_NAME_CAP]; // read via wg_terrain_name
-  V4 color;            // flat map color when a terrain has no ground art
-  U8 rank;             // boundary covering order; higher spills over lower
-  U32 overlay_density; // percent of interior cells carrying an overlay
-  F32 move_cost;       // cost to enter, <= 0 impassable (BD_TravelRules semantics)
-} WG_TerrainType;
+typedef U64 WG_TerrainFlags;
 
-global WG_TerrainType WG_TERRAIN_TYPES[WG_TERRAIN_CAP];
-global U32 WG_TERRAIN_TYPE_COUNT;
-
-internal void wg_terrain_table_load(String8 path);
-internal String8 wg_terrain_name(U32 type); // empty past the count
-internal U32 wg_terrain_by_name(String8 name); // 0 (nil) when unknown
-
-////////////////////////////////
-//~ fp: Terrain Classification
-//
-// The generation-only half of a terrain row: which field values claim it.
-// Classification is ordered FIRST MATCH: a tile takes the first row whose
-// declared bands all contain the tile's field values. Bands are closed
-// intervals; a zero band reads as "don't care" (ZII), so an all-zero row is
-// a catch-all -- the file's last row should be one. The classifier starts at
-// row 1, and a tile no row claims stays nil (wg_params_load reports any such
-// gap in the band data).
+enum {
+  WG_TerrainFlag_Fertile = (1 << 0),
+};
 
 typedef struct {
   F32 min;
@@ -69,12 +49,40 @@ typedef struct {
 } WG_Band; // zero band = don't care
 
 typedef struct {
+  U8 name_len;                        // asset prefix and display name,
+  U8 name_chars[WG_TERRAIN_NAME_CAP]; // read via wg_terrain_name
+  V4 color;                           // flat map color when a terrain has no ground art
+  U8 rank;                            // boundary covering order; higher spills over lower
+  U32 overlay_density;                // percent of interior cells carrying an overlay
+  F32 move_cost;                      // cost to enter, <= 0 impassable (BD_TravelRules semantics)
+  WG_TerrainFlags flags;              // features about the terrain type
+
+  //- fp: which field values claim this row (see Terrain Classification below)
   WG_Band elevation;
   WG_Band moisture;
   WG_Band drainage;
   WG_Band temperature;
   B32 needs_coast; // only matches with the sea one step away
-} WG_TerrainDef;
+} WG_TerrainType;
+
+global WG_TerrainType WG_TERRAIN_TYPES[WG_TERRAIN_CAP];
+global U32 WG_TERRAIN_TYPE_COUNT;
+
+internal void wg_terrain_table_load(String8 path);
+internal String8 wg_terrain_name(U32 type);    // empty past the count
+internal U32 wg_terrain_by_name(String8 name); // 0 (nil) when unknown
+internal const WG_TerrainType* wg_terrain_type_get(U32 idx);
+
+////////////////////////////////
+//~ fp: Terrain Classification
+//
+// Which field values claim a terrain row (the WG_Band members above).
+// Classification is ordered FIRST MATCH: a tile takes the first row whose
+// declared bands all contain the tile's field values. Bands are closed
+// intervals; a zero band reads as "don't care" (ZII), so an all-zero row is
+// a catch-all -- the file's last row should be one. The classifier starts at
+// row 1, and a tile no row claims stays nil (wg_terrain_table_load reports
+// any such gap in the band data).
 
 
 ////////////////////////////////
@@ -135,11 +143,6 @@ typedef struct {
   // read as noise, not terrain.
   I32 min_region_size;
 
-  //- fp: classification bands, one row per terrain type, in file order
-  //  (see WG_TerrainDef); [0] is the baked nil. Mirrors WG_TERRAIN_TYPES.
-  WG_TerrainDef terrains[WG_TERRAIN_CAP];
-  U32 terrain_count;
-
   //- fp: tectonic plates: the map splits into fuzzy voronoi cells around
   //  blue-noise seed points (one per plate_spacing-sized grid cell, so plate
   //  size is map-scale independent). Each plate drifts with a hashed
@@ -162,9 +165,9 @@ typedef struct {
   //  floor drops below sea level), in drowned ocean they raise a mid-ocean
   //  ridge that can breach the surface as volcanic island arcs. One field,
   //  blended by the rim.
-  F32 rift_depth;  // elevation removed at a full-force rift on land
-  F32 rift_width;  // tiles from rift axis to the foot of the falloff
-  F32 arc_height;  // elevation added at a full-force ocean ridge
+  F32 rift_depth; // elevation removed at a full-force rift on land
+  F32 rift_width; // tiles from rift axis to the foot of the falloff
+  F32 arc_height; // elevation added at a full-force ocean ridge
 
   //- fp: continental rim, plate-shaped: every plate owning a border tile
   //  drowns to zero elevation, and land climbs back to the full heightmap

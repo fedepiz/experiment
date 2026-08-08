@@ -207,7 +207,7 @@ int main(int argc, char** argv) {
   U64 game_next_seed = 2704;
 
   // the terrain table drives asset naming and tiling registration
-  wg_terrain_table_load(str8_lit("data/world.tabula"));
+  wg_terrain_table_load(str8_lit("data/terrain_types.tabula"));
   Map_View* map = map_init(arena_alloc()); // outlives every reseed
 
   D_Font hud_font = d_font_open(str8_lit("assets/fonts/Arial.ttf"));
