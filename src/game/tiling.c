@@ -1,3 +1,4 @@
+#include "base/rng.h"
 #include "game/tiling.h"
 
 ////////////////////////////////
@@ -66,14 +67,7 @@ internal void tl_push_network(TL_Config* config, U32 network, U32 code, U32 id) 
 // random decisions at one position; the allocation: 0 overlay pick, 1
 // density roll, 2..2+TL_CLASS_CAP mask variants (by class), networks after.
 internal U32 tl__noise(U64 seed, V2I p, U32 stream) {
-  U64 h = seed ^ ((U64)(U32)p.x * 374761393u) ^ ((U64)(U32)p.y * 668265263u) ^
-          ((U64)stream * 0x9E3779B97F4A7C15ull);
-  h ^= h >> 30;
-  h *= 0xBF58476D1CE4E5B9ull;
-  h ^= h >> 27;
-  h *= 0x94D049BB133111EBull;
-  h ^= h >> 31;
-  return (U32)h;
+  return rng_hash_2d_stream(seed, p.x, p.y, stream);
 }
 
 // the total covering order: rank decides, class id breaks ties

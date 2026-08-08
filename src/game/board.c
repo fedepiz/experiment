@@ -1,5 +1,6 @@
 #include "base/core.h"
 #include "base/math.h"
+#include "base/rng.h"
 #include "base/arena.h"
 #include "base/tctx.h"
 #include "game/board.h"
@@ -67,16 +68,9 @@ internal U8 bd_feature_mask(BD_Board* board, V2I p, BD_Feature feature) {
 ////////////////////////////////
 //~ fp: Pawns
 
-// splitmix64 finalizer: spreads consecutive keys across the buckets
-internal U64 bd__key_hash(U64 key) {
-  key ^= key >> 30; key *= 0xbf58476d1ce4e5b9ull;
-  key ^= key >> 27; key *= 0x94d049bb133111ebull;
-  key ^= key >> 31;
-  return key;
-}
-
 internal BD_Pawn** bd__pawn_bucket(BD_Board* board, U64 key) {
-  return &board->pawn_buckets[bd__key_hash(key) & (board->pawn_bucket_count - 1)];
+  // mixed first: consecutive keys would otherwise crowd one bucket
+  return &board->pawn_buckets[rng_mix_u64(key) & (board->pawn_bucket_count - 1)];
 }
 
 internal BD_Pawn* bd_pawn_lookup(BD_Board* board, U64 key) {
@@ -464,7 +458,7 @@ internal F32 bd__influence_at(BD_Influence* source, F32 dist) {
 // else, so the winner is the same whatever order the sources are scanned in,
 // and stays the same every recompute.
 internal U64 bd__influence_tiebreak(U64 key, U64 idx) {
-  return bd__key_hash(key ^ bd__key_hash(idx * 0x9e3779b97f4a7c15ull));
+  return rng_hash_u64(idx, key);
 }
 
 internal BD_InfluenceAssignment* bd_influence_map(Arena* arena, BD_Board* board, BD_InfluenceArray sources, U64 key_unassigned) {

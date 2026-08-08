@@ -1,5 +1,6 @@
 #include "base/core.h"
 #include "base/math.h"
+#include "base/rng.h"
 #include "base/arena.h"
 #include "base/strings.h"
 #include "base/tctx.h"
@@ -305,7 +306,7 @@ internal void map_draw(Map_View* map, GM_MapItems items, D_Camera camera) {
         // full tile; the art brings its own silhouette, the item's color
         // rides along as tint (white = as-is). Variant hashed off the thing
         // id: stable for the thing's whole life, varied across things.
-        U32 variant = (item->id * 2654435761u) % variant_count;
+        U32 variant = (U32)(rng_hash_u64(0, item->id) % variant_count);
         sprite = map->gm_sprites[item->sprite][variant];
       } else {
         inset = MAP_TILE * 0.2f;

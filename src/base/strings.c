@@ -23,7 +23,7 @@ internal String8 str8(U8* str, U64 size) {
   return result;
 }
 
-internal String8 str8_cstring(char* cstr) {
+internal String8 str8_cstring(const char* cstr) {
   return str8((U8*)cstr, strlen(cstr));
 }
 

@@ -4,6 +4,7 @@
 //~ fp: Base Layer -- all headers, in dependency order
 
 #include "base/core.h"
+#include "base/rng.h"
 #include "base/arena.h"
 #include "base/tctx.h"
 #include "base/strings.h"

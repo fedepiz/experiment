@@ -15,18 +15,30 @@
 #define TH_WORD_CAP       8192
 #define TH_WORD_HASH_SLOTS 16384 // power of two, > 2x TH_WORD_CAP: never fills
 #define TH_WORD_CHARS      KB(256)
-#define TH_EDGE_CAP       (1 << 18)
+// Edges live in chunks: one chunk holds up to TH_EDGE_CHUNK_LEN entries of a
+// single (rel, source) list, so a list walk costs one dependent load per chunk
+// rather than per edge. Chunk links are U16 indices, which fixes the cap at
+// what a U16 addresses; chunk 0 is the nil entry, leaving 1..65535 usable.
+#define TH_EDGE_CHUNK_LEN 9
+#define TH_EDGE_CHUNK_CAP 65536
 
 StaticAssert(IsPow2(TH_WORD_HASH_SLOTS), th_word_hash_pow2);
 StaticAssert(TH_WORD_HASH_SLOTS >= 2 * TH_WORD_CAP, th_word_hash_room);
 
+// Entries are unordered within a chunk: removal swaps the last entry down into
+// the hole. TH_EDGE_CHUNK_LEN is sized to fill the line exactly -- retune the
+// padding alongside it.
 typedef struct {
-  U16 rel; // TH_Relation_Nil marks a free entry
+  F32 values[TH_EDGE_CHUNK_LEN];
+  U16 targets[TH_EDGE_CHUNK_LEN];
+  U16 next;   // next chunk of the same (rel, source); freelist link while free
+  U16 rel;    // TH_Relation_Nil marks a free chunk
   U16 source;
-  U16 target;
-  F32 value;
-  U32 next; // next edge of the same (rel, source); freelist link while free
-} TH__Edge;
+  U8 count;   // entries in use
+  U8 pad_[3];
+} TH__EdgeChunk;
+StaticAssert(sizeof(TH__EdgeChunk) == 64, th_edge_chunk_is_one_cache_line);
+StaticAssert(TH_EDGE_CHUNK_LEN <= 255, th_edge_chunk_count_fits_u8);
 
 struct TH_Db {
   //- fp: things. alive & ~nascent is what iteration sees; doomed things stay
@@ -56,12 +68,13 @@ struct TH_Db {
   I32 ivars[TH_IVar_COUNT][TH_THING_CAP];
   TH_Id refs[TH_Ref_COUNT][TH_THING_CAP];
 
-  //- fp: edges, pooled: per-(rel, source) lists threaded by index. Edge 0 is
-  // the nil entry, so 0 terminates lists.
-  TH__Edge edges[TH_EDGE_CAP];
-  U32 edge_first[TH_Relation_COUNT][TH_THING_CAP];
-  U32 edge_free;
-  U32 edge_watermark;
+  //- fp: edges, pooled: per-(rel, source) chunk lists threaded by index. Chunk
+  // 0 is the nil entry, so 0 terminates lists. The alignment lands each chunk
+  // on its own cache line, which is the point of chunking them.
+  _Alignas(64) TH__EdgeChunk edge_chunks[TH_EDGE_CHUNK_CAP];
+  U16 edge_first[TH_Relation_COUNT][TH_THING_CAP];
+  U16 edge_chunk_free;
+  U32 edge_chunk_watermark; // counts to TH_EDGE_CHUNK_CAP, so it outgrows a U16
 
   //- fp: fields, dense: table[kind][cell], cell = y * TH_WORLD_MAX_DIM + x.
   // Columns are fixed at TH_WORLD_CELLS; world_width/height bound the part in
@@ -133,7 +146,7 @@ internal TH_Db* th_init_db(Arena* arena) {
   TH_Db* db = push_array(arena, TH_Db, 1);
   db->watermark = 1;      // slot 0 is the nil thing
   db->word_count = 1;     // word 0 is the nil word
-  db->edge_watermark = 1; // edge 0 is the nil entry
+  db->edge_chunk_watermark = 1; // chunk 0 is the nil entry
   return db;
 }
 
@@ -163,19 +176,33 @@ internal void th_despawn_mark(TH_Db* db, TH_Id id) {
 internal void th_commit(TH_Db* db) {
   if(db->doomed_count > 0) {
     //- fp: rebuild edge lists from the pool, dropping every edge that touches
-    // a doomed thing -- the batched sweep that lets edges store one direction
+    // a doomed thing -- the batched sweep that lets edges store one direction.
+    // A chunk whose source died drops whole; otherwise its dead targets
+    // compact out, and it is recycled only if that empties it.
     MemoryZero(db->edge_first, sizeof(db->edge_first));
-    db->edge_free = 0;
-    for(U32 e = 1; e < db->edge_watermark; e += 1) {
-      TH__Edge* edge = &db->edges[e];
-      B32 dead = edge->rel == TH_Relation_Nil || th__bit_get(db->doomed, edge->source) || th__bit_get(db->doomed, edge->target);
-      if(dead) {
-        edge->rel = TH_Relation_Nil;
-        edge->next = db->edge_free;
-        db->edge_free = e;
+    db->edge_chunk_free = 0;
+    for(U32 c = 1; c < db->edge_chunk_watermark; c += 1) {
+      TH__EdgeChunk* chunk = &db->edge_chunks[c];
+      if(chunk->rel == TH_Relation_Nil || th__bit_get(db->doomed, chunk->source)) {
+        chunk->count = 0;
       } else {
-        edge->next = db->edge_first[edge->rel][edge->source];
-        db->edge_first[edge->rel][edge->source] = e;
+        for(U8 i = 0; i < chunk->count;) {
+          if(th__bit_get(db->doomed, chunk->targets[i])) {
+            chunk->count -= 1;
+            chunk->targets[i] = chunk->targets[chunk->count];
+            chunk->values[i] = chunk->values[chunk->count];
+          } else {
+            i += 1;
+          }
+        }
+      }
+      if(chunk->count == 0) {
+        chunk->rel = TH_Relation_Nil;
+        chunk->next = db->edge_chunk_free;
+        db->edge_chunk_free = (U16)c;
+      } else {
+        chunk->next = db->edge_first[chunk->rel][chunk->source];
+        db->edge_first[chunk->rel][chunk->source] = (U16)c;
       }
     }
     //- fp: destroy doomed things: zero every fact row, stale the id, recycle
@@ -384,59 +411,96 @@ internal TH_Edges th_edges(Arena* arena, TH_Db* db, TH_Relation rel, TH_Id sourc
   U32 slot = th__slot(db, source);
   if(slot == 0 || rel == TH_Relation_Nil || rel >= TH_Relation_COUNT) { return result; }
   U64 count = 0;
-  for(U32 e = db->edge_first[rel][slot]; e != 0; e = db->edges[e].next) { count += 1; }
+  for(U16 c = db->edge_first[rel][slot]; c != 0; c = db->edge_chunks[c].next) {
+    count += db->edge_chunks[c].count;
+  }
   result.entries = push_array_no_zero(arena, TH_EdgeEntry, count);
-  for(U32 e = db->edge_first[rel][slot]; e != 0; e = db->edges[e].next) {
-    TH__Edge* edge = &db->edges[e];
-    result.entries[result.count] = (TH_EdgeEntry){
-        .id = th__id_from_slot(db, edge->target),
-        .value = edge->value,
-    };
-    result.count += 1;
+  for(U16 c = db->edge_first[rel][slot]; c != 0; c = db->edge_chunks[c].next) {
+    TH__EdgeChunk* chunk = &db->edge_chunks[c];
+    for(U8 i = 0; i < chunk->count; i += 1) {
+      result.entries[result.count] = (TH_EdgeEntry){
+          .id = th__id_from_slot(db, chunk->targets[i]),
+          .value = chunk->values[i],
+      };
+      result.count += 1;
+    }
   }
   return result;
+}
+
+internal F32 th_edge_get(TH_Db* db, TH_Relation rel, TH_Id source, TH_Id target, F32 fallback) {
+  U32 src = th__slot(db, source);
+  U32 tgt = th__slot(db, target);
+  if(src == 0 || tgt == 0 || rel == TH_Relation_Nil || rel >= TH_Relation_COUNT) { return fallback; }
+  for(U16 c = db->edge_first[rel][src]; c != 0; c = db->edge_chunks[c].next) {
+    TH__EdgeChunk* chunk = &db->edge_chunks[c];
+    for(U8 i = 0; i < chunk->count; i += 1) {
+      if(chunk->targets[i] == tgt) { return chunk->values[i]; }
+    }
+  }
+  return fallback;
 }
 
 internal void th_edge_set(TH_Db* db, TH_Relation rel, TH_Id source, TH_Id target, F32 value) {
   U32 src = th__slot(db, source);
   U32 tgt = th__slot(db, target);
   if(src == 0 || tgt == 0 || rel == TH_Relation_Nil || rel >= TH_Relation_COUNT) { return; }
-  //- fp: existing edge: update, or unlink when set to 0
-  for(U32* link = &db->edge_first[rel][src]; *link != 0; link = &db->edges[*link].next) {
-    TH__Edge* edge = &db->edges[*link];
-    if(edge->target == tgt) {
-      if(value == 0) {
-        U32 e = *link;
-        *link = edge->next;
-        edge->rel = TH_Relation_Nil;
-        edge->next = db->edge_free;
-        db->edge_free = e;
-      } else {
-        edge->value = value;
+  //- fp: existing edge: update, or swap-remove when set to 0. `link` trails a
+  // step behind at the field pointing to the chunk in hand, so a chunk that
+  // empties anywhere in the list unlinks in one store and needs no back link.
+  U16 room = 0; // a chunk of this list with a spare entry, for the insert below
+  for(U16* link = &db->edge_first[rel][src]; *link != 0; link = &db->edge_chunks[*link].next) {
+    U16 c = *link;
+    TH__EdgeChunk* chunk = &db->edge_chunks[c];
+    if(chunk->count < TH_EDGE_CHUNK_LEN) { room = c; }
+    for(U8 i = 0; i < chunk->count; i += 1) {
+      if(chunk->targets[i] != tgt) { continue; }
+      if(value != 0) {
+        chunk->values[i] = value;
+        return;
+      }
+      chunk->count -= 1;
+      chunk->targets[i] = chunk->targets[chunk->count];
+      chunk->values[i] = chunk->values[chunk->count];
+      if(chunk->count == 0) {
+        *link = chunk->next;
+        chunk->rel = TH_Relation_Nil;
+        chunk->next = db->edge_chunk_free;
+        db->edge_chunk_free = c;
       }
       return;
     }
   }
   if(value == 0) { return; }
-  //- fp: new edge; exhaustion is a capacity tuning failure, so it trips loud
-  U32 e = db->edge_free;
-  if(e != 0) {
-    db->edge_free = db->edges[e].next;
-  } else if(db->edge_watermark < TH_EDGE_CAP) {
-    e = db->edge_watermark;
-    db->edge_watermark += 1;
-  } else {
-    Assert(!"edge pool exhausted");
+  //- fp: new edge: fill a hole an earlier removal left before taking a chunk
+  if(room != 0) {
+    TH__EdgeChunk* chunk = &db->edge_chunks[room];
+    chunk->targets[chunk->count] = (U16)tgt;
+    chunk->values[chunk->count] = value;
+    chunk->count += 1;
     return;
   }
-  db->edges[e] = (TH__Edge){
-      .rel = rel,
+  //- fp: new chunk; exhaustion is a capacity tuning failure, so it trips loud
+  U16 c = db->edge_chunk_free;
+  if(c != 0) {
+    db->edge_chunk_free = db->edge_chunks[c].next;
+  } else if(db->edge_chunk_watermark < TH_EDGE_CHUNK_CAP) {
+    c = (U16)db->edge_chunk_watermark;
+    db->edge_chunk_watermark += 1;
+  } else {
+    Assert(!"edge chunk pool exhausted");
+    return;
+  }
+  TH__EdgeChunk* chunk = &db->edge_chunks[c];
+  *chunk = (TH__EdgeChunk){
+      .rel = (U16)rel,
       .source = (U16)src,
-      .target = (U16)tgt,
-      .value = value,
+      .count = 1,
       .next = db->edge_first[rel][src],
   };
-  db->edge_first[rel][src] = e;
+  chunk->targets[0] = (U16)tgt;
+  chunk->values[0] = value;
+  db->edge_first[rel][src] = c;
 }
 
 ////////////////////////////////

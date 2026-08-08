@@ -11,7 +11,7 @@
 // of TH_WORLD_MAX_DIM^2 cells, so the world can never outgrow them. World
 // generation asserts its dimensions against this.
 #define TH_WORLD_MAX_DIM 256
-#define TH_WORLD_CELLS (TH_WORLD_MAX_DIM * TH_WORLD_MAX_DIM)
+#define TH_WORLD_CELLS   (TH_WORLD_MAX_DIM * TH_WORLD_MAX_DIM)
 
 // The structure that contains the database of things.
 // KEEP CONTIGUOUS and relocatable (ie, no stored pointers)
@@ -76,8 +76,9 @@ internal TH_Phrase* th_label(TH_Db* db, TH_Id id, TH_Label label);
 typedef U8 TH_Flag;
 enum {
   TH_Flag_Nil,
-  TH_Flag_Debug, // A test mark
-  TH_Flag_Placed, // standing on the board: reconciled to a pawn each tick
+  TH_Flag_Debug,        // A test mark
+  TH_Flag_Placed,       // standing on the board: reconciled to a pawn each tick
+  TH_Flag_Mobile,       // the entity can move
   TH_Flag_HasInfluence, // claims the land around it; tiles it wins are homed to it
   TH_Flag_COUNT,
 };
@@ -95,6 +96,7 @@ typedef U16 TH_Var;
 enum {
   TH_Var_Nil,
   TH_Var_MovePts,
+  TH_Var_Population,
   TH_Var_COUNT
 };
 
@@ -157,6 +159,9 @@ internal F32 th_edge_value(TH_Edges edges, TH_Id id, F32 fallback);
 
 // Every outgoing edge of `source` under `rel`, pushed on `arena`
 internal TH_Edges th_edges(Arena* arena, TH_Db* db, TH_Relation rel, TH_Id source);
+
+// Value of one edge without materializing the list, fallback when it is missing
+internal F32 th_edge_get(TH_Db* db, TH_Relation rel, TH_Id source, TH_Id target, F32 fallback);
 
 // Relations are (logically) matrices: a set of value 0 is equivalent to a removal
 internal void th_edge_set(TH_Db* db, TH_Relation rel, TH_Id source, TH_Id target, F32 value);

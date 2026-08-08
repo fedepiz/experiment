@@ -179,25 +179,29 @@ internal void gm_init(Arena* arena, GM_Game* game, U64 seed) {
     th_ref_set(db, TH_Ref_Goal, id, waypoints[(i + 1) % ArrayCount(waypoints)]);
     th_ivar_set(db, id, TH_IVar_Sprite, GM_Sprite_Wagon);
     th_flag_set(db, id, TH_Flag_Placed, true);
+    th_flag_set(db, id, TH_Flag_Mobile, true);
   }
 
-  // demo dressing: a band holding the land around it, so tiles have a Home
-  {
+  typedef struct {
+    const char* name;
+    V2I pos;
+    GM_Sprite sprite;
+    F32 population;
+  } GroupSpawn;
+
+  const GroupSpawn GROUP_SPAWNS[] = {
+      {"Place #A", {100, 100}, GM_Sprite_Band, .population = 200},
+      {"Place #B", {102, 96}, GM_Sprite_Tholos, .population = 500},
+  };
+
+  for(U32 idx = 0; idx < ArrayCount(GROUP_SPAWNS); ++idx) {
+    const GroupSpawn* spawn = &GROUP_SPAWNS[idx];
     TH_Id id = th_spawn(db);
     TH_Phrase* name = th_label(db, id, TH_Label_Name);
-    th_push_word(name, th_define_word(db, str8_lit("Place #A")));
-    gm__xy_set(db, id, (V2I){100, 100});
-    th_ivar_set(db, id, TH_IVar_Sprite, GM_Sprite_Band);
-    th_flag_set(db, id, TH_Flag_HasInfluence, true);
-    th_flag_set(db, id, TH_Flag_Placed, true);
-  }
-  // And another one
-  {
-    TH_Id id = th_spawn(db);
-    TH_Phrase* name = th_label(db, id, TH_Label_Name);
-    th_push_word(name, th_define_word(db, str8_lit("Place #B")));
-    gm__xy_set(db, id, (V2I){102, 96});
-    th_ivar_set(db, id, TH_IVar_Sprite, GM_Sprite_Tholos);
+    th_push_word(name, th_define_word(db, str8_cstring(spawn->name)));
+    gm__xy_set(db, id, spawn->pos);
+    th_var_set(db, id, TH_Var_Population, spawn->population);
+    th_ivar_set(db, id, TH_IVar_Sprite, spawn->sprite);
     th_flag_set(db, id, TH_Flag_HasInfluence, true);
     th_flag_set(db, id, TH_Flag_Placed, true);
   }
@@ -289,7 +293,7 @@ internal void gm__selection_info(Arena* arena, GM_Game* game, TB_Value* root) {
       if(name.size == 0) { name = GM_SPRITE_NAMES[sprite]; }
       tb_add_str8(arena, info, str8_lit("name"), name);
       tb_add_str8(arena, info, str8_lit("sprite"), GM_SPRITE_NAMES[sprite]);
-      tb_add_num(arena, info, str8_lit("move_pts"), th_var_get(db, selection.id, TH_Var_MovePts));
+      tb_add_num(arena, info, str8_lit("population"), th_var_get(db, selection.id, TH_Var_Population));
     } break;
   }
   gm__tile_facts(arena, game, tb_add_object(arena, info, str8_lit("tile")), selection.tile);
@@ -311,36 +315,39 @@ internal void gm_update(GM_Game* game, F32 dt) {
   while(game->move_timer > GM_TICK_DT) {
     game->move_timer -= GM_TICK_DT;
 
-    for(TH_Id this = th_first_flagged(db, TH_Flag_Placed);
-        this != 0; this = th_next_flagged(db, TH_Flag_Placed, this)) {
-      // 1 point per tick: a plains step; banking is capped so waiting at a
-      // cheap stretch cannot buy a later teleport across an expensive one
-      F32* pts = th_var(db, this, TH_Var_MovePts);
-      *pts = ClampTop(*pts + 1.0f, 4.0f);
+    // DO NOT REWRITE THIS AS A LOOP OVER SOME FLAGGED ENTITY.
+    // WE WANT TO SWEEP EVERY ENTITY HERE
+    for(TH_Id this = th_first(db); this != 0; this = th_next(db, this)) {
+      if(th_flag_get(db, this, TH_Flag_Placed) && th_flag_get(db, this, TH_Flag_Mobile)) {
+        // 1 point per tick: a plains step; banking is capped so waiting at a
+        // cheap stretch cannot buy a later teleport across an expensive one
+        F32* pts = th_var(db, this, TH_Var_MovePts);
+        *pts = ClampTop(*pts + 1.0f, 4.0f);
 
-      for(;;) {
-        V2I pos = gm__xy_get(db, this);
-        TH_Id waypoint = th_ref_get(db, TH_Ref_Goal, this);
-        if(waypoint == 0) { break; } // placed but goalless: stands still
-        V2I goal = gm__xy_get(db, waypoint);
+        for(;;) {
+          V2I pos = gm__xy_get(db, this);
+          TH_Id waypoint = th_ref_get(db, TH_Ref_Goal, this);
+          if(waypoint == 0) { break; } // placed but goalless: stands still
+          V2I goal = gm__xy_get(db, waypoint);
 
-        if(v2i_eq(pos, goal)) {
-          waypoint = th_ref_get(db, TH_Ref_Next, waypoint);
-          th_ref_set(db, TH_Ref_Goal, this, waypoint);
-          goal = gm__xy_get(db, waypoint);
+          if(v2i_eq(pos, goal)) {
+            waypoint = th_ref_get(db, TH_Ref_Next, waypoint);
+            th_ref_set(db, TH_Ref_Goal, this, waypoint);
+            goal = gm__xy_get(db, waypoint);
+          }
+
+          V2I next = bd_path_next_towards(game->board, pos, goal);
+          if(v2i_eq(next, pos)) {
+            // unreachable from here: skip that waypoint
+            th_ref_set(db, TH_Ref_Goal, this, th_ref_get(db, TH_Ref_Next, waypoint));
+            break;
+          }
+
+          F32 cost = bd_step_cost(game->board, pos, next);
+          if(cost <= 0 || *pts < cost) { break; } // not affordable yet
+          *pts -= cost;
+          gm__xy_set(db, this, next);
         }
-
-        V2I next = bd_path_next_towards(game->board, pos, goal);
-        if(v2i_eq(next, pos)) {
-          // unreachable from here: skip that waypoint
-          th_ref_set(db, TH_Ref_Goal, this, th_ref_get(db, TH_Ref_Next, waypoint));
-          break;
-        }
-
-        F32 cost = bd_step_cost(game->board, pos, next);
-        if(cost <= 0 || *pts < cost) { break; } // not affordable yet
-        *pts -= cost;
-        gm__xy_set(db, this, next);
       }
     }
 

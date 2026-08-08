@@ -1,5 +1,6 @@
 #include "base/core.h"
 #include "base/math.h"
+#include "base/rng.h"
 #include "base/arena.h"
 #include "base/strings.h"
 #include "base/print.h"
@@ -237,21 +238,6 @@ internal WG_Params wg_params_load(String8 path) {
 // [0,1]). The seed is folded into the hash, and each octave re-salts it, so
 // distinct fields and octaves decorrelate without any rng state.
 
-internal U32 wg__hash(U64 seed, I32 x, I32 y) {
-  U32 h = (U32)(seed ^ (seed >> 32));
-  h += (U32)x * 374761393u + (U32)y * 668265263u;
-  h ^= h >> 16;
-  h *= 0x7feb352du;
-  h ^= h >> 15;
-  h *= 0x846ca68bu;
-  h ^= h >> 16;
-  return h;
-}
-
-internal F32 wg__noise01(U64 seed, I32 x, I32 y) {
-  return (F32)wg__hash(seed, x, y) * (1.0f / 4294967296.0f);
-}
-
 internal F32 wg__value_noise(U64 seed, F32 x, F32 y) {
   F32 fx = floorf(x);
   F32 fy = floorf(y);
@@ -261,10 +247,10 @@ internal F32 wg__value_noise(U64 seed, F32 x, F32 y) {
   F32 ty = y - fy;
   tx = tx * tx * (3.0f - 2.0f * tx); // smoothstep: kills the lattice creases
   ty = ty * ty * (3.0f - 2.0f * ty);
-  F32 n00 = wg__noise01(seed, x0 + 0, y0 + 0);
-  F32 n10 = wg__noise01(seed, x0 + 1, y0 + 0);
-  F32 n01 = wg__noise01(seed, x0 + 0, y0 + 1);
-  F32 n11 = wg__noise01(seed, x0 + 1, y0 + 1);
+  F32 n00 = rng_hash01_2d(seed, x0 + 0, y0 + 0);
+  F32 n10 = rng_hash01_2d(seed, x0 + 1, y0 + 0);
+  F32 n01 = rng_hash01_2d(seed, x0 + 0, y0 + 1);
+  F32 n11 = rng_hash01_2d(seed, x0 + 1, y0 + 1);
   F32 nx0 = n00 + (n10 - n00) * tx;
   F32 nx1 = n01 + (n11 - n01) * tx;
   return nx0 + (nx1 - nx0) * ty;
@@ -323,15 +309,15 @@ internal F32 wg__ridged_fbm(U64 seed, F32 x, F32 y, I32 octaves, F32 persistence
 internal V2 wg__plate_seed(WG_Params* params, U64 seed, I32 cx, I32 cy) {
   U64 salt = seed ^ WG__PLATE_SALT;
   V2 p;
-  p.x = ((F32)cx + wg__noise01(salt + 1, cx, cy)) * params->plate_spacing;
-  p.y = ((F32)cy + wg__noise01(salt + 2, cx, cy)) * params->plate_spacing;
+  p.x = ((F32)cx + rng_hash01_2d(salt + 1, cx, cy)) * params->plate_spacing;
+  p.y = ((F32)cy + rng_hash01_2d(salt + 2, cx, cy)) * params->plate_spacing;
   return p;
 }
 
 internal V2 wg__plate_velocity(U64 seed, I32 cx, I32 cy) {
   U64 salt = seed ^ WG__PLATE_SALT;
-  F32 angle = 6.2831853f * wg__noise01(salt + 3, cx, cy);
-  F32 magnitude = wg__noise01(salt + 4, cx, cy);
+  F32 angle = 6.2831853f * rng_hash01_2d(salt + 3, cx, cy);
+  F32 magnitude = rng_hash01_2d(salt + 4, cx, cy);
   return (V2){magnitude * cosf(angle), magnitude * sinf(angle)};
 }
 
@@ -673,8 +659,8 @@ internal void wg__carve_rivers(TH_Db* db, WG_Params* params, U64 seed, F32* elev
     F32 source_elevation = WG__ELEVATION_OFF_MAP;
     for(I32 sample = 0; sample < 32; sample += 1) {
       U64 salt = seed ^ WG__RIVER_SALT;
-      V2I p = {(I32)(wg__hash(salt, attempt, sample) % (U32)w),
-               (I32)(wg__hash(salt + 1, attempt, sample) % (U32)h)};
+      V2I p = {(I32)(rng_hash_2d(salt, attempt, sample) % (U32)w),
+               (I32)(rng_hash_2d(salt + 1, attempt, sample) % (U32)h)};
       F32 e = elevation[(U64)p.y * w + p.x];
       if(e > source_elevation && e >= params->sea_level &&
          th_ifield_get(db, p, TH_IField_RiverMask) == 0) {
@@ -702,7 +688,7 @@ internal void wg__carve_rivers(TH_Db* db, WG_Params* params, U64 seed, F32* elev
         F32 e = off_map ? WG__ELEVATION_OFF_MAP : elevation[(U64)n.y * w + n.x];
         if(e >= here) { continue; } // only strictly downhill: no cycles
         F32 score = e + params->river_meander *
-                            (wg__noise01(seed ^ WG__MEANDER_SALT, n.x, n.y) - 0.5f);
+                            (rng_hash01_2d(seed ^ WG__MEANDER_SALT, n.x, n.y) - 0.5f);
         if(down_dir == Dir4_COUNT || score < down_score) {
           down_dir = dir;
           down_score = score;

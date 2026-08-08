@@ -20,8 +20,8 @@ typedef struct {
 
 //- fp: constructors
 internal String8 str8(U8* str, U64 size);
-internal String8 str8_cstring(char* cstr);
-#define str8_lit(s) str8((U8*)(s), sizeof(s) - 1)
+internal String8 str8_cstring(const char* cstr);
+#define str8_lit(s)      str8((U8*)(s), sizeof(s) - 1)
 #define str8_lit_comp(s) {(U8*)(s), sizeof(s) - 1} // braced form for static initializers
 
 //- fp: printf bridge -- printf("%.*s", str8_varg(s))
@@ -32,10 +32,10 @@ internal String8 str8_cstring(char* cstr);
 
 // substr clamps both bounds; first is inclusive, opl ("one past last") is not.
 internal String8 str8_substr(String8 s, U64 first, U64 opl);
-internal String8 str8_prefix(String8 s, U64 count); // first count bytes
+internal String8 str8_prefix(String8 s, U64 count);  // first count bytes
 internal String8 str8_postfix(String8 s, U64 count); // last count bytes
-internal String8 str8_skip(String8 s, U64 count); // drop count from the front
-internal String8 str8_chop(String8 s, U64 count); // drop count from the back
+internal String8 str8_skip(String8 s, U64 count);    // drop count from the front
+internal String8 str8_chop(String8 s, U64 count);    // drop count from the back
 
 ////////////////////////////////
 //~ fp: Comparison & Search
@@ -90,7 +90,7 @@ typedef struct {
   String8 post;
 } StringJoin;
 
-internal void    str8_list_push(Arena* arena, String8List* list, String8 s);
+internal void str8_list_push(Arena* arena, String8List* list, String8 s);
 internal String8 str8_list_join(Arena* arena, String8List list, StringJoin* optional_join);
 
 // splits on any of the given bytes; consecutive separators produce no empty

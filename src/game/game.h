@@ -42,10 +42,18 @@ typedef struct {
   TH_Id id; // Thing only
 } GM_Selection;
 
+#define POP_TYPES_DEF_CAP 16
+
+typedef struct {
+  TH_Id pop_types[POP_TYPES_DEF_CAP];
+  U32 pop_types_count;
+} GM_Defs;
+
 typedef struct {
   B32 initialised;
   B32 paused;
   TH_Db* db;
+  GM_Defs defs;
   BD_Board* board;
   F32 move_timer;
   GM_Selection selection;
