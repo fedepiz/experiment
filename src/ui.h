@@ -8,44 +8,61 @@
 ////////////////////////////////
 //~ fp: UI
 //
-// Immediate-mode UI core, depending on base only. Input arrives as a UI_Input
-// value, drawing leaves as a flat UI_DrawCommand array, and text measurement
-// goes through callbacks installed at ui_init. Frame protocol:
+// The core of an immediate mode UI. It uses the base layer alone.
+//
+// The input arrives as a UI_Input value. The result leaves as one array of
+// UI_DrawCommand. The size of a text comes from the two functions that the
+// caller gives to ui_init.
+//
+// The frame goes like this:
 //
 //   ui_frame_begin(frame_arena, input);
-//   ... build boxes / widgets, query ui_signal in any order ...
-//   UI_DrawList list = ui_frame_end(); // layout solve + command emission
+//   ... build the boxes and the widgets, and read ui_signal in any order ...
+//   UI_DrawList list = ui_frame_end(); // solve the layout, and make the commands
 //
-// Boxes form a tree rebuilt from scratch each frame on the frame arena.
-// Cross-frame state -- hover/press animation, the previous frame's rects --
-// persists in an internal table addressed by box key, so interaction queries
-// during the build test against the previous frame's layout (one frame
-// stale). All coordinates are points, top-left origin; colors are V4 RGBA in
-// 0..1, matching the draw layer's conventions without depending on it.
+// The boxes make a tree. Each frame builds that tree again, on the frame
+// arena.
+//
+// The state that stays between two frames is in an internal table, and the key
+// of a box addresses it. That state holds the animation of a hover and of a
+// press, and the rects of the frame before. A read of an interaction during
+// the build therefore tests against the layout of the frame before, which is
+// one frame old.
+//
+// Each coordinate is in points, from the top left corner. Each color is a V4
+// that holds RGBA from 0 to 1. Those are the rules of the draw layer, and this
+// layer follows them without a dependency on it.
 
 ////////////////////////////////
 //~ fp: Keys
 //
-// A box's key names it across frames. Keys hash from the box's string, mixed
-// with the parent box's key and the top of the seed stack -- push a seed
-// (loop index, entity id) to disambiguate identical strings built in a loop.
+// The key of a box names that box across the frames. A key is a hash of the
+// string of the box, of the key of the parent box, and of the value at the top
+// of the stack of seeds. Push a seed, such as the index of a loop or the id of
+// a thing, to separate two boxes that a loop builds from one string.
 //
-// String conventions, borrowed from Dear ImGui / RF:
-//   "Label"          hash of the whole string; all of it displays
-//   "Label##suffix"  hash of the whole string; only "Label" displays
-//   "Label###suffix" hash of "suffix" alone; only "Label" displays
-//                    (display text can change without changing identity)
-// A string with an empty hash part yields key 0: a transient box with no
-// persistent state and no interaction.
+// The rules for a string come from Dear ImGui and from RF:
+//   "Label"          the hash of the whole string. The whole string shows.
+//   "Label##suffix"  the hash of the whole string. "Label" alone shows.
+//   "Label###suffix" the hash of "suffix" alone. "Label" alone shows. The
+//                    text that shows can therefore change while the identity
+//                    of the box stays.
+//
+// A string whose part for the hash is empty gives the key 0. Such a box exists
+// for one frame, holds no state, and has no interaction.
 
 typedef U64 UI_Key;
 
 ////////////////////////////////
 //~ fp: Semantic Sizes
 //
-// Each box states a preferred size per axis; ui_frame_end solves the tree.
-// strictness in 0..1 is the fraction of the preferred size the box refuses
-// to give up when its parent overflows: 1 never shrinks, 0 shrinks freely.
+// Each box gives a preferred size on each axis, and ui_frame_end solves the
+// tree.
+//
+// `strictness` is from 0 to 1. It is the part of the preferred size that the
+// box keeps where the content of the parent is larger than the parent. A
+// strictness of 1 keeps the whole size, and a strictness of 0 keeps none of
+// it.
 
 typedef U32 UI_Axis;
 enum {
@@ -56,17 +73,23 @@ enum {
 
 typedef U32 UI_SizeKind;
 enum {
-  UI_SizeKind_ChildrenSum = 0, // sum of children along the child axis, max
-                               // across it; the ZII default
-  UI_SizeKind_Points,          // value points, as-is
-  UI_SizeKind_Text,            // the box's text: natural width / line-count
-                               // height (after wrapping, if the box wraps)
-  UI_SizeKind_PctOfParent,     // value (0..1) times the parent's content size
-                               // (undefined when the parent sizes by children)
-  UI_SizeKind_Grow,            // starts at zero, then takes value/(sum of
-                               // sibling grow values) of the parent's leftover
-                               // space along the parent's child axis; across
-                               // that axis it fills the parent's content
+  UI_SizeKind_ChildrenSum = 0, // The sum of the children along the axis of the
+                               // children, and the largest child across that
+                               // axis. It is the default (ZII).
+  UI_SizeKind_Points,          // the value, in points
+  UI_SizeKind_Text,            // The text of the box: its natural width, and a
+                               // height of the number of its lines, after the
+                               // wrap where the box wraps its text.
+  UI_SizeKind_PctOfParent,     // The value, from 0 to 1, multiplied by the size
+                               // of the content of the parent. It has no
+                               // meaning where the parent takes its size from
+                               // its children.
+  UI_SizeKind_Grow,            // It starts at 0. It then takes the value
+                               // divided by the sum of the values of each other
+                               // child that grows, of the space that the parent
+                               // has left along the axis of its children.
+                               // Across that axis it takes the content of the
+                               // parent in full.
 };
 
 typedef struct {
@@ -84,22 +107,24 @@ internal UI_Size ui_size_grow(F32 weight);
 ////////////////////////////////
 //~ fp: Boxes
 //
-// The one node type: widgets are flag combinations plus style, composed by
-// the widget functions below or by callers directly. A box's style fields
-// are captured from the stacks at build time and stay writable until
-// ui_frame_end reads them.
+// The box is the one kind of node. A widget is a set of flags and a style. The
+// widget functions below make those sets, and a caller can make one directly.
+//
+// A box takes its style members from the stacks at the build. Those members
+// stay writable until ui_frame_end reads them.
 
 typedef U32 UI_BoxFlags;
 enum {
-  UI_BoxFlag_Clickable = (1 << 0), // hit-testable; hover/press animate
+  UI_BoxFlag_Clickable = (1 << 0), // The mouse can hit it. A hover and a press then animate.
   UI_BoxFlag_DrawBackground = (1 << 1),
   UI_BoxFlag_DrawBorder = (1 << 2),
   UI_BoxFlag_DrawText = (1 << 3),
-  UI_BoxFlag_TextWrap = (1 << 4), // wrap text to the solved width;
-                                  // without it text breaks on '\n' only
-  UI_BoxFlag_Clip = (1 << 5),     // clip children and text to the box
-  UI_BoxFlag_Floating = (1 << 6), // out of layout flow: positioned at
-                                  // floating_pos relative to the parent
+  UI_BoxFlag_TextWrap = (1 << 4), // Wrap the text to the width that the solve
+                                  // gives. Without this flag the text breaks at
+                                  // a newline character alone.
+  UI_BoxFlag_Clip = (1 << 5),     // clip the children and the text to the box
+  UI_BoxFlag_Floating = (1 << 6), // The box is outside the layout. It stands at
+                                  // floating_pos, relative to its parent.
 };
 
 typedef U32 UI_TextAlign;
@@ -109,20 +134,21 @@ enum {
   UI_TextAlign_Right,
 };
 
-// placement of a box's children across its child axis (the cross axis):
-// a row's children align vertically, a column's horizontally
+// The position of the children of a box across the axis of those children. The
+// children of a row therefore align on the vertical axis, and the children of
+// a column align on the horizontal axis.
 typedef U32 UI_Align;
 enum {
-  UI_Align_Start = 0, // at the padding edge (ZII)
+  UI_Align_Start = 0, // at the edge of the padding (ZII)
   UI_Align_Center,
   UI_Align_End,
 };
 
-typedef struct UI_BoxState UI_BoxState; // ui-internal persistent state
+typedef struct UI_BoxState UI_BoxState; // the state that stays between two frames, which this module alone reads
 
 typedef struct UI_Box UI_Box;
 struct UI_Box {
-  //- tree links; frame lifetime
+  //- The links of the tree. They exist for one frame.
   UI_Box* parent;
   UI_Box* first;
   UI_Box* last;
@@ -130,16 +156,17 @@ struct UI_Box {
   UI_Box* prev;
 
   //- identity
-  UI_Key key; // 0 = transient
+  UI_Key key; // A key of 0 says that the box exists for one frame.
   UI_BoxFlags flags;
-  String8 string; // display part, copied to the frame arena
-  U64 tags_key;   // names the pushed-tag set at build; colors resolve
-                  // against it, including after the tag stack unwinds
+  String8 string; // the part that shows, on the frame arena
+  U64 tags_key;   // It names the set of tags at the build. A color resolves
+                  // against that set, and does so after the stack of tags
+                  // returns to its earlier state.
 
-  //- style, captured from the stacks at build
+  //- The style, which the box takes from the stacks at the build.
   UI_Size pref_size[UI_Axis_COUNT];
-  UI_Axis child_axis;   // children lay out along this axis
-  UI_Align child_align; // and align like this across it
+  UI_Axis child_axis;   // the children go along this axis
+  UI_Align child_align; // the children align in this way across that axis
   U64 font;
   F32 font_size;
   V4 text_color;
@@ -148,31 +175,37 @@ struct UI_Box {
   V4 border_color;
   F32 border_thickness;
   F32 corner_radius;
-  V2 padding;         // per-side inset between the box and its content
-  F32 child_gap;      // points between adjacent children
-  V2 floating_pos;    // Floating boxes: offset applied after anchoring
-  V2 floating_anchor; // Floating boxes: per-axis 0..1 fraction naming the
-                      // same point on the parent and on the box; the box is
-                      // placed so the two coincide, then floating_pos offsets
-                      // it. {0,0} top-left on top-left (the ZII default),
-                      // {1,1} bottom-right on bottom-right, {0.5,0.5} centered.
+  V2 padding;         // the space at each side between the box and its content
+  F32 child_gap;      // the points between two children that follow each other
+  V2 floating_pos;    // A floating box: the offset after the anchor below.
+  V2 floating_anchor; // A floating box: a fraction from 0 to 1 on each axis. It
+                      // names one point on the parent and the same point on the
+                      // box. The box stands where those two points meet, and
+                      // floating_pos then moves it. {0,0} puts the top left
+                      // corner of the box on the top left corner of the parent,
+                      // which is the default (ZII). {1,1} puts the bottom right
+                      // corner on the bottom right corner. {0.5,0.5} puts the
+                      // box at the center of the parent.
 
-  //- solved by ui_frame_end; garbage before it
+  //- ui_frame_end writes these members. Do not read them before that call.
   F32 fixed_size[UI_Axis_COUNT];
   Rect rect;
-  String8* lines; // final drawn lines (DrawText boxes)
+  String8* lines; // the lines that the frame draws, for a box with DrawText
   U64 line_count;
 
-  UI_BoxState* state; // nil for transient boxes
+  UI_BoxState* state; // It is nil for a box that exists for one frame.
 };
 
 ////////////////////////////////
 //~ fp: Input
 //
-// Filled by the caller each frame from whatever input system it owns. Mouse
-// position is in points. pressed/released are frame edges; down is held
-// state. dt is the frame delta in seconds (drives animation); window is the
-// root box size in points.
+// The caller fills this struct in each frame, from the input system that it
+// owns.
+//
+// The position of the mouse is in points. `pressed` and `released` are the two
+// edges inside the frame, and `down` is the state that holds. `dt` is the
+// seconds of the frame, which the animation reads. `window` is the size of the
+// root box, in points.
 
 typedef U8 UI_MouseButton;
 enum {
@@ -195,15 +228,18 @@ typedef struct {
 ////////////////////////////////
 //~ fp: Text Callbacks
 //
-// Fonts are opaque U64 handles the callbacks interpret; the core never
-// decodes them. measure returns the bounding-box dimensions of a single-line
-// run. Measurements are cached internally by (font, size, string), so the
-// callback only runs on cache misses.
+// A font is a U64 handle. The two functions below read that handle, and this
+// module does not.
+//
+// The measure function gives the size of the box around a run of text of one
+// line. This module holds a cache of those sizes, whose key is the font, the
+// size and the string, so it calls the function where the cache has no entry
+// alone.
 
 typedef struct {
-  F32 ascent;       // top of box -> baseline
-  F32 descent;      // baseline -> bottom of box
-  F32 line_advance; // baseline -> next baseline
+  F32 ascent;       // from the top of the box to the baseline
+  F32 descent;      // from the baseline to the bottom of the box
+  F32 line_advance; // from one baseline to the next baseline
 } UI_FontMetrics;
 
 typedef V2 UI_MeasureTextFunc(void* user, U64 font, F32 size, String8 text);
@@ -212,21 +248,29 @@ typedef UI_FontMetrics UI_FontMetricsFunc(void* user, U64 font, F32 size);
 ////////////////////////////////
 //~ fp: Tags / Theme
 //
-// Colors resolve CSS-selector style; nothing else is themed -- metrics
-// (sizes, paddings, radii) are plain values in code. Call sites push tags,
-// plain strings naming what is being built ("button", "accent"), and any
-// color a box does not get from a pushed stack resolves against the theme:
-// a flat list of patterns, each a tag list plus a color. A pattern applies
-// when every one of its tags appears in the box's pushed tags + the queried
-// color name ("background", "text", "border"; "hover"/"active" for the hot
-// lift on clickables), and the name itself is among them; the pattern with
-// the most tags wins. No match resolves to zero, an obviously unstyled
-// look.
+// A color resolves in the way that a selector of CSS does. The theme holds a
+// color and nothing more: each size, each padding and each radius is a value in
+// the code.
 //
-// The theme is dumb data installed whole and read by reference -- the
-// caller keeps the pattern memory alive (typically loaded from data at
-// startup). Matching is cached by tag-set hash, so the pattern scan runs
-// once per distinct (tag set, name) pair, not per box.
+// A call site pushes a tag, which is a string that names what the code builds
+// there, such as "button" or "accent". A color that a box does not take from a
+// stack resolves against the theme.
+//
+// The theme is a list of patterns. Each pattern holds a list of tags and a
+// color. A pattern applies where each of its tags is in the set of the tags of
+// the box together with the name of the color, and where that name is among
+// its tags. The names of the colors are "background", "text" and "border",
+// with "hover" and "active" for a box that a person can click. The pattern
+// with the most tags wins. Where no pattern applies the color is 0, which
+// gives an appearance that a person sees at once.
+//
+// The theme is data. The caller installs it in full, and this module holds a
+// reference to it. The caller must therefore keep the memory of the patterns,
+// which a load from a file at the start of the program usually gives.
+//
+// This module holds a cache of the results, whose key is the hash of the set of
+// tags. It therefore reads the patterns one time for each pair of a set of
+// tags and a name, and not one time for each box.
 
 typedef struct {
   String8* tags;
@@ -243,15 +287,19 @@ internal UI_Theme ui_theme_load(Arena* arena, String8 path);
 internal void ui_set_theme(UI_Theme theme);
 internal void ui_push_tag(String8 tag);
 internal void ui_pop_tag(void);
-internal V4 ui_color_from_name(String8 name); // resolve under the current tags
+internal V4 ui_color_from_name(String8 name); // resolve the name against the tags that are on the stack now
 
 ////////////////////////////////
 //~ fp: Draw Commands
 //
-// ui_frame_end's output: a flat array on the frame arena, in paint order.
-// Rect mirrors the draw layer's rect params; Text is one line, no newlines,
-// pos at the top-left of the line's bounding box. ClipPush rects nest by
-// intersection and every push has a matching pop.
+// The result of ui_frame_end is one array on the frame arena, in the order to
+// draw.
+//
+// A Rect command holds the same values as a rect of the draw layer. A Text
+// command holds one line, which contains no newline character, and its `pos`
+// is the top left corner of the box around that line. A second ClipPush inside
+// the first gives the intersection of the two, and each ClipPush has one
+// ClipPop.
 
 typedef U32 UI_DrawCommandKind;
 enum {
@@ -269,7 +317,7 @@ typedef struct {
   Rect rect;
   V4 colors[Corner_COUNT];
   F32 corner_radii[Corner_COUNT];
-  F32 border_thickness; // 0 = filled
+  F32 border_thickness; // A value of 0 fills the rect.
   F32 edge_softness;
 
   //- Text
@@ -283,8 +331,9 @@ typedef struct {
 typedef struct {
   UI_DrawCommand* commands;
   U64 count;
-  B32 mouse_over_ui; // mouse is inside a clickable or background-drawing
-                     // box, or a press that started on one is still held
+  B32 mouse_over_ui; // The mouse is inside a box that a person can click, or
+                     // inside a box that draws a background. It is also true
+                     // while a press that started on such a box continues.
 } UI_DrawList;
 
 ////////////////////////////////
@@ -294,21 +343,21 @@ internal void ui_init(UI_MeasureTextFunc* measure, UI_FontMetricsFunc* metrics, 
 internal void ui_frame_begin(Arena* frame_arena, UI_Input input);
 internal UI_DrawList ui_frame_end(void);
 
-internal UI_Box* ui_root(void); // the window-sized root box of this frame
-internal V2 ui_mouse(void);     // this frame's mouse, in points
+internal UI_Box* ui_root(void); // the root box of this frame, at the size of the window
+internal V2 ui_mouse(void);     // the mouse of this frame, in points
 
 ////////////////////////////////
 //~ fp: Style Stacks
 //
-// Every stack resets at ui_frame_begin to a ZII-friendly default; boxes
-// capture the tops at build time. Pushes must balance pops within the frame
-// (asserted).
+// ui_frame_begin sets each stack to a default that suits a struct of zeros. A
+// box takes the value at the top of each stack at its build. Each push needs a
+// pop inside the same frame, which an assert tests.
 
 internal void ui_push_parent(UI_Box* box);
 internal void ui_pop_parent(void);
 internal void ui_push_seed(U64 seed);
 internal void ui_pop_seed(void);
-// ui_push_tag / ui_pop_tag live in the Tags / Theme section above
+// ui_push_tag and ui_pop_tag are in the Tags / Theme section above.
 internal void ui_push_pref_width(UI_Size size);
 internal void ui_pop_pref_width(void);
 internal void ui_push_pref_height(UI_Size size);
@@ -341,20 +390,23 @@ internal void ui_pop_child_gap(void);
 ////////////////////////////////
 //~ fp: Building / Signals
 //
-// ui_box appends a box under the current parent and returns it for field
-// tweaks; ui_signal reads the box's interaction against the previous frame's
-// layout. hovered follows the topmost clickable box under the mouse;
-// clicked = left button released over the box it was pressed on.
+// ui_box adds a box under the current parent, and gives that box back, so that
+// the caller can write its members.
+//
+// ui_signal reads the interaction of a box against the layout of the frame
+// before. `hovered` follows the box that a person can click and that is above
+// each other such box under the mouse. `clicked` says that the left button
+// came up over the box on which it went down.
 
 typedef struct {
-  UI_Box* box; // the box the signal was read from, for field tweaks
+  UI_Box* box; // the box of this signal, so that the caller can write its members
   B8 hovered;
-  B8 pressed;  // left went down on it this frame
-  B8 down;     // left held since pressing it
-  B8 released; // left came up this frame, wherever the mouse is
+  B8 pressed;  // the left button went down on the box in this frame
+  B8 down;     // the left button stays down since that press
+  B8 released; // the left button came up in this frame, at any position of the mouse
   B8 clicked;
   B8 right_clicked;
-  V2 drag_delta; // mouse minus press position, while held
+  V2 drag_delta; // the mouse minus the position of the press, while the button is down
 } UI_Signal;
 
 internal UI_Box* ui_box(UI_BoxFlags flags, String8 string);
@@ -364,26 +416,32 @@ internal UI_Signal ui_signal(UI_Box* box);
 ////////////////////////////////
 //~ fp: Widgets
 //
-// Thin compositions of ui_box; the expected call sites for common cases.
-// Buttons, panels, and tooltips push their name as a tag around their box
-// (a panel's tag spans its children), so the theme can address them; their
-// shape metrics are plain values here, tweakable on the returned box.
-// Labels and buttons size to their text; wrapped text fills the parent's
-// width and grows downward. The begin/end pairs push/pop the parent stack --
-// the UI_* macros wrap them in defer-loops.
+// Each widget is a small set of calls to ui_box. Use these functions for the
+// usual cases.
+//
+// A button, a panel and a tooltip push their name as a tag around their box, so
+// that the theme can address them. The tag of a panel covers its children. The
+// sizes of those widgets are values in this file, and a caller can change them
+// on the box that the function gives back.
+//
+// A label and a button take the size of their text. A wrapped text takes the
+// width of its parent, and grows toward the bottom.
+//
+// Each pair of a begin and an end pushes the parent stack and pops it. Each
+// UI_ macro below puts such a pair in a loop that runs one time.
 
 internal void ui_label(String8 string);
 internal void ui_labelf(char* fmt, ...);
 internal void ui_text_wrapped(String8 string);
 internal UI_Signal ui_button(String8 string);
-internal void ui_spacer(UI_Size size); // along the parent's child axis
+internal void ui_spacer(UI_Size size); // along the axis of the children of the parent
 internal void ui_tooltip(String8 string);
 
-internal UI_Box* ui_row_begin(String8 string); // children lay out along X
+internal UI_Box* ui_row_begin(String8 string); // the children go along X
 internal void ui_row_end(void);
-internal UI_Box* ui_column_begin(String8 string); // children lay out along Y
+internal UI_Box* ui_column_begin(String8 string); // the children go along Y
 internal void ui_column_end(void);
-internal UI_Box* ui_panel_begin(String8 string); // background+border+clip column
+internal UI_Box* ui_panel_begin(String8 string); // a column with a background, a border and a clip
 internal void ui_panel_end(void);
 
 #define UI_Tag(string)    DeferLoop(ui_push_tag(string), ui_pop_tag())

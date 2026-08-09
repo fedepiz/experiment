@@ -17,19 +17,21 @@
 #define MAP_PAWN_VARIANT_CAP 8
 
 struct Map_View {
-  //- assets: one flat sprite table plus the tiling registration built while
-  //  filling it
-  D_Sprite sprites[MAP_SPRITE_CAP]; // id 0 reserved: "no art"
+  //- The assets: one table of sprites, and the registration in the tiler that
+  //  the loader makes while it fills that table.
+  D_Sprite sprites[MAP_SPRITE_CAP]; // The id 0 says that there is no art.
   U32 sprite_count;
   TL_Config tiling;
-  // pawn art: GM_Sprite -> sprite ids, one per variant; count 0 = no art yet
+  // The art of a pawn. Each GM_Sprite gives a list of sprite ids, one for each
+  // variant. A count of 0 says that the sprite has no art.
   U32 gm_sprites[GM_Sprite_COUNT][MAP_PAWN_VARIANT_CAP];
   U32 gm_sprite_counts[GM_Sprite_COUNT];
 
-  //- read-through cell cache around the tiler: a hit returns as-is, a miss
-  //  asks the tiler and keeps the answer. tl_cell always emits at least one
-  //  piece, so a zero cell reads as "not yet".
-  TL_Cell* cells; // (width+1) x (height+1): the ring owns far-edge dual cells
+  //- The cache of the cells of the tiler. An entry that exists comes back as
+  //  it is. Where an entry is absent, this module calls the tiler and keeps the
+  //  answer. tl_cell always gives one piece or more, so a cell of zeros says
+  //  that the cache has no entry.
+  TL_Cell* cells; // (width+1) by (height+1). The extra ring holds the dual cells of the far edges.
   I32 cache_w;
   I32 cache_h;
 };
@@ -37,10 +39,12 @@ struct Map_View {
 ////////////////////////////////
 //~ fp: Map Assets
 //
-// The loader narrates what exists to the tiler (tl_push_*); at draw time,
-// tl_cell answers in the same currency -- sprite ids -- so drawing is a
-// table lookup with no policy. Assets stay factored: ground paintings, mask
-// shapes, overlay art; never baked combinations.
+// The loader tells the tiler what art exists, with the tl_push_ functions. At
+// the draw, tl_cell answers with those same sprite ids, so the draw is a read
+// of a table and holds no rule.
+//
+// The assets stay separate: a painting of the ground, a shape of a mask, and a
+// piece of overlay art. No file holds a combination of two of those.
 
 internal U32 map__register(Map_View* map, D_Sprite sprite) {
   U32 result = 0;
@@ -52,8 +56,9 @@ internal U32 map__register(Map_View* map, D_Sprite sprite) {
   return result;
 }
 
-// one tile png -> sprite id; 0 = no such file, which is also the loader's
-// "stop scanning variants" signal
+// It reads one png of a tile and gives a sprite id. A result of 0 says that the
+// file does not exist, which also tells the loader to stop its search for more
+// variants.
 internal U32 map__load(Map_View* map, Arena* scratch, String8 path) {
   U32 result = 0;
   D_Image image = d_image_load(scratch, path);
@@ -85,7 +90,7 @@ internal TL_Cell* map__cell(Map_View* map, GM_MapItem* item) {
 
 internal Map_View* map_init(Arena* arena) {
   Map_View* map = push_array(arena, Map_View, 1);
-  map->sprite_count = 1; // id 0 = nil
+  map->sprite_count = 1; // the id 0 is the nil sprite
   ArenaTemp scratch = arena_get_scratch(0, 0);
   d_spritesheet_begin(512, 512, D_Sampling_Smooth);
 
@@ -94,12 +99,15 @@ internal Map_View* map_init(Arena* arena) {
     String8 name = wg_terrain_name(type);
     tl_class_set(&map->tiling, type, def->rank, def->overlay_density);
 
-    // ground: one torus painting per terrain, cut into 4x4 windows on the
-    // OFFSET grid -- each half a tile past the painting's own grid, since
-    // the tiler draws ground on dual cells (see tiling.h). The wrap margin
-    // keeps every offset window one contiguous crop; push_window fills each
-    // window's atlas gutter with its true neighbor texels, so windows butt
-    // seamlessly on screen.
+    // The ground. Each terrain has one painting that wraps on both axes. The
+    // loader cuts that painting into 4x4 windows on the OFFSET grid, which is
+    // half a tile past the grid of the painting itself, because the tiler
+    // draws the ground on the dual cells. See tiling.h.
+    //
+    // The margin of the wrap keeps each window of that offset grid one
+    // continuous part of the image. push_window fills the gutter of each
+    // window in the sheet with the true texels next to that window, so two
+    // windows meet with no seam on the screen.
     String8 ground_path = push_str8f(scratch.arena, "assets/tiles/%S_ground.png", name);
     D_Image torus = d_image_load(scratch.arena, ground_path);
     if(torus.w > 0) {
@@ -107,7 +115,7 @@ internal Map_View* map_init(Arena* arena) {
       I32 th = torus.h / TL_TORUS_GRID;
       D_Image ext = d_image_create(scratch.arena, torus.w + tw, torus.h + th, (V4){0});
       d_image_blit(ext, 0, 0, torus);
-      d_image_blit(ext, torus.w, 0, torus); // wrap margins; blit clips
+      d_image_blit(ext, torus.w, 0, torus); // the margins of the wrap. The blit clips what goes past the image.
       d_image_blit(ext, 0, torus.h, torus);
       d_image_blit(ext, torus.w, torus.h, torus);
       for(U32 gy = 0; gy < TL_TORUS_GRID; gy += 1) {
@@ -135,8 +143,9 @@ internal Map_View* map_init(Arena* arena) {
     }
   }
 
-  // boundary masks are class-agnostic: cases 1..14 (0 and 15 are the
-  // trivial empty/full cases and have no files)
+  // A mask of a boundary does not name a class of terrain. The cases are 1 to
+  // 14. The case 0 is an empty cell and the case 15 is a full cell, and neither
+  // has a file.
   for(U32 code = 1; code < 15; code += 1) {
     for(U32 variant = 0;; variant += 1) {
       String8 path = push_str8f(scratch.arena, "assets/tiles/mask_%u_%u.png", code, variant);
@@ -146,9 +155,10 @@ internal Map_View* map_init(Arena* arena) {
     }
   }
 
-  // network art, by BD_Feature id; finished pieces per connection case. The
-  // art prefix is the feature's own name, so this scans whatever features
-  // exist without naming any of them.
+  // The art of a network, at the id of each BD_Feature. There is one complete
+  // piece for each case of the connections. The prefix of a file is the name of
+  // the feature, so this loop reads each feature that exists and names none of
+  // them.
   for(BD_Feature feature = 0; feature < BD_Feature_COUNT; feature += 1) {
     for(U32 code = 1; code < 16; code += 1) {
       for(U32 variant = 0;; variant += 1) {
@@ -161,10 +171,11 @@ internal Map_View* map_init(Arena* arena) {
     }
   }
 
-  // pawn art, by GM_Sprite id -- the game names what a thing looks like,
-  // these files say how that looks. Variant-scanned like all tile art; a
-  // sprite with no files keeps count 0 and the renderer falls back to a
-  // flat shape. Sprite 0 is nil and has no art.
+  // The art of a pawn, at the id of each GM_Sprite. The game layer says what a
+  // thing looks like, and these files hold that appearance. This loop searches
+  // for the variants, as it does for each other kind of tile art. A sprite with
+  // no file keeps a count of 0, and the renderer then draws a flat shape. The
+  // sprite 0 is the nil sprite, and it has no art.
   for(GM_Sprite sprite = 1; sprite < GM_Sprite_COUNT; sprite += 1) {
     for(U32 variant = 0; variant < MAP_PAWN_VARIANT_CAP; variant += 1) {
       String8 path = push_str8f(scratch.arena, "assets/tiles/site_%S_%u.png",
@@ -182,46 +193,54 @@ internal Map_View* map_init(Arena* arena) {
 }
 
 
-// draw order: the tiler's layers first (a fact about how the art is built --
-// boundary tongues must not paint over overlay art), then per-tile shading,
-// then surface items, then highlights above everything
+// The order of the draw: the layers of the tiler first, then the shade of each
+// tile, then the items of the surface, then the marks above everything. The
+// layers of the tiler come first because of how the art is built: a boundary
+// that goes into the tile next to it must not cover a piece of overlay art.
 #define MAP_LAYER_SHADING   TL_Layer_COUNT
 #define MAP_LAYER_SURFACE   (TL_Layer_COUNT + 1)
 #define MAP_LAYER_HIGHLIGHT (TL_Layer_COUNT + 2)
 #define MAP_LAYER_COUNT     (TL_Layer_COUNT + 3)
 
-// how strongly a tile's shading colour veils the ground under it
+// The alpha of the color that shades a tile, which sets how much of the ground
+// below that color a person sees.
 #define MAP_SHADING_ALPHA 0.35f
 
-// the world-space rect of the tile at (x, y) -- fractional positions land on
-// the dual grid -- shrunk by `inset` world units per side
+// The rect in world space of the tile at (x, y). A position with a fraction is
+// on the dual grid. The rect becomes smaller by `inset` units of the world at
+// each side.
 internal Rect map_tile_rect(F32 x, F32 y, F32 inset) {
   return (Rect){{x * MAP_TILE + inset, y * MAP_TILE + inset},
                 {(x + 1) * MAP_TILE - inset, (y + 1) * MAP_TILE - inset}};
 }
 
-// the tile cell under a screen position, taken in client points as
-// wnd_mouse_pos gives them. Floors, so cells west/north of the board come
-// back negative -- callers bounds-check against the board.
+// The cell of the tile below a position on the screen. That position is in the
+// points of the client area, as wnd_mouse_pos gives it.
+//
+// This function rounds toward the lower value, so a cell to the west of the
+// board and a cell to the north of it come back with a value below 0. The
+// caller must test the result against the size of the board.
 internal V2I map_tile_from_screen(D_Camera camera, V2 screen) {
   V2 world = d_camera_from_screen(camera, screen);
   V2I tile = {(I32)(world.x / MAP_TILE), (I32)(world.y / MAP_TILE)};
-  // (I32) truncates toward zero; subtracting the comparison corrects that
-  // to a true floor for negative coordinates
+  // A cast to I32 rounds toward 0. The subtraction of the result of the
+  // comparison changes that into a round toward the lower value, which is what
+  // a coordinate below 0 needs.
   tile.x -= (F32)tile.x * MAP_TILE > world.x;
   tile.y -= (F32)tile.y * MAP_TILE > world.y;
   return tile;
 }
 
 internal void map_draw(Map_View* map, GM_MapItems items, D_Camera camera) {
-  // One resolved drawable, ready to submit. sprite 0 means "draw color".
+  // One shape that this module can draw now. A sprite of 0 says that the shape
+  // is a color.
   typedef struct {
     Rect rect;
-    U32 sprite; // into map->sprites; 0 = none
-    U32 mask;   // sprite mask, 0 = none
-    V4 color;   // sprite tint (zero = as-is), or the fill when sprite == 0
+    U32 sprite; // an index into map->sprites. A value of 0 says that there is none.
+    U32 mask;   // the mask of the sprite. A value of 0 says that there is none.
+    V4 color;   // The tint of the sprite, where a value of 0 keeps its colors. Where sprite is 0, it is the color of the shape.
     F32 rounding;
-    F32 outline; // > 0: outline of this thickness (world units) instead of a fill
+    F32 outline; // A value above 0 draws an outline of that thickness, in units of the world, and does not fill the shape.
   } MapDrawCmd;
 
   V2 vp = wnd_size();
@@ -229,9 +248,10 @@ internal void map_draw(Map_View* map, GM_MapItems items, D_Camera camera) {
 
   ArenaTemp scratch = arena_get_scratch(0, 0);
 
-  //- size the layers: one slot per piece / surface item. Upper bounds --
-  // pieces that resolve to nothing leave slack. This pass also warms the cell
-  // cache, so the scatter below re-resolves for free.
+  //- Find the size of each layer, which is one slot for each piece and for each
+  //  item of the surface. Those sizes are upper limits, because a piece that
+  //  gives nothing leaves its slot empty. This pass also fills the cache of the
+  //  cells, so the pass below reads that cache.
   U64 cap[MAP_LAYER_COUNT] = {0};
   for(U64 i = 0; i < items.count; i += 1) {
     GM_MapItem* item = &items.items[i];
@@ -256,7 +276,7 @@ internal void map_draw(Map_View* map, GM_MapItems items, D_Camera camera) {
   MapDrawCmd* cmds = push_array_no_zero(scratch.arena, MapDrawCmd, total);
   U64 count[MAP_LAYER_COUNT] = {0};
 
-  //- scatter: resolve each item once, every drawable lands in its layer's slots
+  //- Read each item one time, and put each shape in a slot of its layer.
   for(U64 i = 0; i < items.count; i += 1) {
     GM_MapItem* item = &items.items[i];
     if(item->has_highlight) {
@@ -269,19 +289,21 @@ internal void map_draw(Map_View* map, GM_MapItems items, D_Camera camera) {
       };
       continue;
     }
-    if(!item->has_pawn) { // ground cells, off-board ring included -- mirrors the sizing pass
+    if(!item->has_pawn) { // The cells of the ground, with the ring outside the board. The pass above counts the same cells.
       TL_Cell* cell = map__cell(map, item);
       for(U32 pi = 0; pi < cell->count; pi += 1) {
         TL_Piece* piece = &cell->pieces[pi];
-        // untinted: ground pieces sit on the dual grid, half a cell off this
-        // item's tile, so a per-tile colour cannot ride on them
+        // There is no tint here. A piece of the ground is on the dual grid,
+        // half a cell from the tile of this item, so a color of one tile
+        // cannot go on such a piece.
         Rect r = map_tile_rect(item->pos.x + piece->offset.x, item->pos.y + piece->offset.y, 0);
         MapDrawCmd* cmd = &cmds[base[piece->layer] + count[piece->layer]];
         *cmd = (MapDrawCmd){.rect = r, .sprite = piece->id, .mask = piece->mask_id};
         count[piece->layer] += 1;
       }
 
-      // shading rides its own quad on the map grid, where the tile actually is
+      // The shade takes its own quad, on the grid of the map, where the tile
+      // is.
       if(item->color.w > 0) {
         MapDrawCmd* cmd = &cmds[base[MAP_LAYER_SHADING] + count[MAP_LAYER_SHADING]];
         count[MAP_LAYER_SHADING] += 1;
@@ -300,9 +322,11 @@ internal void map_draw(Map_View* map, GM_MapItems items, D_Camera camera) {
       U32 sprite = 0;
 
       if(variant_count > 0) {
-        // full tile; the art brings its own silhouette, the item's color
-        // rides along as tint (white = as-is). Variant hashed off the thing
-        // id: stable for the thing's whole life, varied across things.
+        // The whole tile. The art holds its own shape, and the color of the
+        // item goes on it as a tint, where white keeps the colors of the art.
+        // A hash of the id of the thing chooses the variant, so that variant
+        // stays equal for the life of the thing, and two things take two
+        // variants.
         U32 variant = (U32)(rng_hash_u64(0, item->id) % variant_count);
         sprite = map->gm_sprites[item->sprite][variant];
       } else {
@@ -321,7 +345,8 @@ internal void map_draw(Map_View* map, GM_MapItems items, D_Camera camera) {
     }
   }
 
-  //- submit: layers in order, commands in scatter order
+  //- Draw the layers in their order, and the shapes of each layer in the order
+  //  of the pass above.
   d_camera_begin(camera);
   for(U32 layer = 0; layer < MAP_LAYER_COUNT; layer += 1) {
     for(U64 i = 0; i < count[layer]; i += 1) {

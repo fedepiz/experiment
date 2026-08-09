@@ -12,16 +12,21 @@
 ////////////////////////////////
 //~ fp: Draw Layer Implementation
 //
-// The only file that talks to render. Sheets are the resource backbone:
-// sprite sheets pack via an incremental shelf packer (positions final at
-// push, as the API promises), and the glyph atlas is one more sheet that
-// simply never closes. Everything drawn funnels through d__emit_screen,
-// where the current clip lands on the quad; d__emit is the rect-shaped
-// entry that applies the camera transform first (d_line skips it: a line's
-// quad can only be built after its endpoints transform).
+// This is the one file that calls the render layer.
+//
+// The sheet holds each resource. A sprite sheet packs its images on shelves,
+// as each image arrives, so a position is complete at the push, which is what
+// the interface promises. The glyph atlas is one more sheet, and it never
+// closes.
+//
+// Each shape goes through d__emit_screen, which puts the current clip on the
+// quad. d__emit is the entry for a rect, and it applies the camera transform
+// first. d_line does not use d__emit, because the quad of a line exists only
+// after the transform of its two end points.
 
-// stbtt/stbi use malloc internally for their temporaries -- contained
-// third-party internals; everything of ours rides arenas as usual
+// stbtt and stbi call malloc for their temporary memory. That memory stays
+// inside those two libraries. Each allocation of this program is on an arena,
+// as usual.
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-parameter"
 #pragma clang diagnostic ignored "-Wsign-compare"
@@ -29,7 +34,7 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "gfx/stb_truetype.h"
 #define STB_IMAGE_STATIC
-#define STBI_NO_STDIO // files arrive as bytes via os_read_entire_file
+#define STBI_NO_STDIO // A file arrives as bytes, from os_read_entire_file.
 #define STB_IMAGE_IMPLEMENTATION
 #include "gfx/stb_image.h"
 #pragma clang diagnostic pop
@@ -48,7 +53,7 @@ typedef struct {
   R_Handle tex;
   I32 w;
   I32 h;
-  //- shelf packer
+  //- the packer of the shelves
   I32 shelf_x;
   I32 shelf_y;
   I32 shelf_h;
@@ -58,11 +63,11 @@ typedef struct D_Glyph D_Glyph;
 struct D_Glyph {
   D_Glyph* next;
   U32 codepoint;
-  I32 size_px;    // rasterized pixel height; part of the cache key
-  B32 has_bitmap; // spaces advance but draw nothing
-  Rect src;       // texels in the glyph sheet
+  I32 size_px;    // The height in pixels of the raster. It is part of the key of the cache.
+  B32 has_bitmap; // A space moves the pen and draws nothing.
+  Rect src;       // the texels in the glyph sheet
   F32 w_px, h_px;
-  F32 xoff_px, yoff_px; // bitmap offset from the pen, pixels
+  F32 xoff_px, yoff_px; // the offset of the bitmap from the pen, in pixels
   F32 advance_px;
 };
 
@@ -75,27 +80,28 @@ typedef struct {
 
 typedef struct {
   B32 initialized;
-  Arena* arena; // persistent: font files, glyph nodes
+  Arena* arena; // It holds the font files and the glyph nodes, for the whole program.
 
-  //- frame
+  //- the members of one frame
   Arena* frame_arena;
   F32 scale;
   V2 viewport_pts;
 
-  //- clip stack (resolved: each entry is already intersected with its parent)
+  //- The stack of clips. Each entry is the intersection with the entry below
+  //  it, so a read needs no further work.
   Rect clip_stack[D_CLIP_STACK_CAP];
   U64 clip_count;
 
-  //- camera
+  //- the camera
   D_Camera camera;
   B32 camera_active;
 
-  //- sheets
+  //- the sheets
   D_Sheet sheets[D_SHEET_CAP];
-  U64 open_sheet;  // slot+1 of the sheet under construction; 0 = none
-  U64 glyph_sheet; // slot+1; created lazily at first rasterization
+  U64 open_sheet;  // The slot plus 1 of the sheet that the code builds now. 0 says that there is none.
+  U64 glyph_sheet; // The slot plus 1. The first raster of a glyph makes this sheet.
 
-  //- fonts
+  //- the fonts
   D_FontSlot fonts[D_FONT_CAP];
 } D_State;
 
@@ -112,7 +118,7 @@ internal void d_init(void) {
 
 internal void d_frame_begin(Arena* frame_arena, V2 framebuffer_size_px, F32 points_to_pixels) {
   d_state.frame_arena = frame_arena;
-  d_state.scale = (points_to_pixels == 0) ? 1.0f : points_to_pixels; // ZII: 0 reads as 1
+  d_state.scale = (points_to_pixels == 0) ? 1.0f : points_to_pixels; // A scale of 0 reads as 1 (ZII).
   d_state.viewport_pts.x = framebuffer_size_px.x / d_state.scale;
   d_state.viewport_pts.y = framebuffer_size_px.y / d_state.scale;
   d_state.clip_count = 0;
@@ -121,8 +127,8 @@ internal void d_frame_begin(Arena* frame_arena, V2 framebuffer_size_px, F32 poin
 }
 
 internal void d_frame_end(void) {
-  Assert(d_state.clip_count == 0); // unbalanced d_push_clip
-  Assert(!d_state.camera_active);  // unbalanced d_camera_begin
+  Assert(d_state.clip_count == 0); // a d_push_clip with no d_pop_clip
+  Assert(!d_state.camera_active);  // a d_camera_begin with no d_camera_end
   r_frame_end();
   d_state.frame_arena = 0;
 }
@@ -130,11 +136,12 @@ internal void d_frame_end(void) {
 ////////////////////////////////
 //~ fp: Camera + Quad Emission
 //
-// The one funnel: camera transform (world -> screen) for d__emit, then the
-// current clip, then render.
+// Each shape goes through these functions. d__emit applies the camera
+// transform, which converts world coordinates to screen coordinates. Both
+// functions then apply the current clip, and call the render layer.
 
 internal F32 d_camera__zoom(D_Camera cam) {
-  return (cam.zoom == 0) ? 1.0f : cam.zoom; // ZII: the zero camera is identity
+  return (cam.zoom == 0) ? 1.0f : cam.zoom; // The zero camera is the identity camera (ZII).
 }
 
 internal V2 d_camera_to_screen(D_Camera cam, V2 world_point) {
@@ -162,7 +169,7 @@ internal void d_camera_end(void) {
   d_state.camera_active = 0;
 }
 
-// screen-space quads: clip only
+// A quad in screen space. This function applies the clip and nothing more.
 internal void d__emit_screen(R_Quad* quad) {
   if(d_state.clip_count > 0) {
     quad->clip = d_state.clip_stack[d_state.clip_count - 1];
@@ -170,8 +177,9 @@ internal void d__emit_screen(R_Quad* quad) {
   r_push_quad(quad);
 }
 
-// world-space-aware: camera transform first (geometry scales with zoom;
-// rotation is scale-invariant and passes through)
+// A quad that can be in world space. This function applies the camera
+// transform first. The geometry changes size with the zoom. A rotation does
+// not change with a scale, so it passes through.
 internal void d__emit(R_Quad* quad) {
   if(d_state.camera_active) {
     F32 zoom = d_camera__zoom(d_state.camera);
@@ -200,8 +208,8 @@ internal void d_push_clip(Rect r) {
       resolved.max.y = Min(resolved.max.y, top.max.y);
     }
     if(resolved.max.x <= resolved.min.x || resolved.max.y <= resolved.min.y) {
-      // disjoint nesting clips everything; a zero rect would read as
-      // "no clip" downstream, so park it somewhere nothing renders
+      // Two clips that do not overlap remove each fragment. A rect of 0 reads
+      // as "no clip" further down, so put this rect where nothing draws.
       resolved = (Rect){{-1e8f, -1e8f}, {-1e8f + 1.0f, -1e8f + 1.0f}};
     }
     d_state.clip_stack[d_state.clip_count] = resolved;
@@ -244,7 +252,7 @@ internal void d_rect_rounded(Rect r, V4 color, F32 radius) {
     params.colors[corner] = color;
     params.corner_radii[corner] = radius;
   }
-  params.edge_softness = 1.0f; // curves need antialiasing
+  params.edge_softness = 1.0f; // A curve needs a smooth edge.
   d_rect_ex(&params);
 }
 
@@ -266,7 +274,8 @@ internal void d_rect_gradient_v(Rect r, V4 top, V4 bottom) {
 }
 
 internal void d_line(V2 a, V2 b, F32 thickness, V4 color) {
-  // endpoints transform as points; the quad is then built in screen space
+  // The two end points convert as points. The code then builds the quad in
+  // screen space.
   F32 zoom = 1.0f;
   if(d_state.camera_active) {
     zoom = d_camera__zoom(d_state.camera);
@@ -284,7 +293,8 @@ internal void d_line(V2 a, V2 b, F32 thickness, V4 color) {
     quad.dst = (Rect){{center.x - half_len, center.y - half_thick},
                       {center.x + half_len, center.y + half_thick}};
     for(U32 corner = 0; corner < Corner_COUNT; corner += 1) { quad.colors[corner] = color; }
-    // quad rotation is visual-ccw; y grows down, so the angle negates
+    // The rotation of a quad is counter-clockwise for a person who looks at
+    // the screen. y grows toward the bottom, so the angle takes a minus sign.
     quad.rotation = atan2f(-dy, dx);
     quad.edge_softness = 1.0f;
     d__emit_screen(&quad);
@@ -302,10 +312,11 @@ internal D_Sheet* d__sheet_from_id(U64 id) {
   return result;
 }
 
-// Allocates a sheet slot and its GPU texture. opt_data fills it verbatim
-// (perfectly-sized one-image sheets); with no data the texture is zeroed --
-// packed regions whose pusher does not fill the gutter ring (glyphs) rely on
-// linear sampling finding transparent black there, not stale memory.
+// Take a slot for a sheet, and make the texture of that sheet on the GPU.
+// opt_data writes the texture as it is, which suits a sheet of one image at
+// the size of that image. With no data the texture holds zeros. A pusher that
+// leaves the gutter ring empty, such as the pusher of a glyph, needs a
+// transparent black there, and not the bytes that the memory held.
 internal U64 d__sheet_create(I32 w, I32 h, R_TexFormat format, D_Sampling sampling, void* opt_data) {
   U64 result = 0;
   U64 slot = D_SHEET_CAP;
@@ -341,20 +352,23 @@ internal U64 d__sheet_create(I32 w, I32 h, R_TexFormat format, D_Sampling sampli
   return result;
 }
 
-// incremental shelf packing: the position is final the moment it is handed
-// out, which is what lets sprites resolve at push time. Every region is
-// reserved with a D__SHEET_GUTTER ring around its content, so linear
-// sampling at a sprite's edge can never reach a neighboring region. What the
-// ring holds is the pusher's business: sprite images duplicate their edge
-// texels into it (tiles butt seamlessly); glyphs leave it transparent black
-// (correct for alpha-blended text).
+// The packer puts each image on a shelf as that image arrives. The position
+// is complete when the packer gives it back, which is what makes a sprite
+// complete at the push.
+//
+// Each region takes a ring of D__SHEET_GUTTER texels around its content, so
+// linear sampling at the edge of a sprite cannot reach the region next to it.
+//
+// The pusher decides what the ring holds. An image copies its edge texels into
+// the ring, so two tiles meet with no seam. A glyph leaves the ring
+// transparent black, which is correct for text with an alpha blend.
 #define D__SHEET_GUTTER 1
 
 internal B32 d__sheet_pack(D_Sheet* sheet, I32 w, I32 h, I32* out_x, I32* out_y) {
   B32 result = 0;
   I32 fw = w + 2 * D__SHEET_GUTTER;
   I32 fh = h + 2 * D__SHEET_GUTTER;
-  if(sheet->shelf_x + fw > sheet->w) { // shelf full: open the next one
+  if(sheet->shelf_x + fw > sheet->w) { // The shelf has no space. Start the next shelf.
     sheet->shelf_y += sheet->shelf_h;
     sheet->shelf_x = 0;
     sheet->shelf_h = 0;
@@ -370,8 +384,8 @@ internal B32 d__sheet_pack(D_Sheet* sheet, I32 w, I32 h, I32* out_x, I32* out_y)
 }
 
 internal void d_spritesheet_begin(I32 w, I32 h, D_Sampling sampling) {
-  Assert(d_state.open_sheet == 0);        // one sheet under construction at a time
-  if(w == 0) { w = D_SHEET_DEFAULT_DIM; } // ZII: 0 reads as the default
+  Assert(d_state.open_sheet == 0);        // the code can build one sheet at a time
+  if(w == 0) { w = D_SHEET_DEFAULT_DIM; } // A size of 0 reads as the default (ZII).
   if(h == 0) { h = D_SHEET_DEFAULT_DIM; }
   d_state.open_sheet = d__sheet_create(w, h, R_TexFormat_RGBA8, sampling, 0);
 }
@@ -382,9 +396,10 @@ internal D_Sprite d_spritesheet_push(D_Image image) {
   if(sheet != 0 && image.pixels != 0 && image.w > 0 && image.h > 0) {
     I32 x = 0, y = 0;
     if(d__sheet_pack(sheet, image.w, image.h, &x, &y)) {
-      // upload the image plus its gutter ring, filled with clamped edge
-      // texels: linear sampling at the sprite's border then blends with the
-      // sprite's own colors, so tiled sprites butt without seams
+      // Send the image and its gutter ring. The ring holds a copy of the edge
+      // texels of the image. Linear sampling at the border of the sprite then
+      // mixes the colors of that sprite alone, so two tiles meet with no
+      // seam.
       ArenaTemp scratch = arena_get_scratch(0, 0);
       I32 fw = image.w + 2 * D__SHEET_GUTTER;
       I32 fh = image.h + 2 * D__SHEET_GUTTER;
@@ -404,7 +419,7 @@ internal D_Sprite d_spritesheet_push(D_Image image) {
       result.src = (Rect){{(F32)x, (F32)y}, {(F32)(x + image.w), (F32)(y + image.h)}};
       result.size = (V2){(F32)image.w, (F32)image.h};
     }
-    // full sheet: fall through to the nil sprite (ZII)
+    // The sheet has no space. The function then gives the nil sprite (ZII).
   }
   return result;
 }
@@ -419,13 +434,14 @@ internal D_Sprite d_spritesheet_push_window(D_Image canvas, Rect window) {
   if(sheet != 0 && canvas.pixels != 0 && w > 0 && h > 0) {
     I32 x = 0, y = 0;
     if(d__sheet_pack(sheet, w, h, &x, &y)) {
-      // upload the window plus its gutter ring, filled with the canvas
-      // texels just past the window, wrapping toroidally at the canvas
-      // edges: linear sampling at the sprite's border then blends into the
-      // window's true neighbor, so slices of one wrapping texture butt
-      // seamlessly on screen -- a clamped ring (d_spritesheet_push) would
-      // harden every butt joint into a faint grid instead. A window covering
-      // the whole canvas yields a single self-tiling sprite.
+      // Send the window and its gutter ring. The ring holds the texels of the
+      // canvas that follow the window, and it wraps at each edge of the
+      // canvas. Linear sampling at the border of the sprite then mixes into
+      // the true neighbour of the window, so two parts of one texture that
+      // wraps meet with no seam on the screen. A ring of copied edge texels,
+      // which d_spritesheet_push makes, would give each joint a thin line, and
+      // those lines together read as a grid. A window that covers the whole
+      // canvas gives one sprite that tiles against itself.
       ArenaTemp scratch = arena_get_scratch(0, 0);
       I32 fw = w + 2 * D__SHEET_GUTTER;
       I32 fh = h + 2 * D__SHEET_GUTTER;
@@ -470,7 +486,8 @@ internal void d_spritesheet_release(D_SpriteSheet id) {
 internal D_Sprite d_sprite_from_image(D_Image image) {
   D_Sprite result = {0};
   if(image.pixels != 0 && image.w > 0 && image.h > 0) {
-    // a sheet of exactly this image: no packing, the texture is the sprite
+    // A sheet at the size of this image. There is no packing, and the texture
+    // is the sprite.
     U64 id = d__sheet_create(image.w, image.h, R_TexFormat_RGBA8, D_Sampling_Smooth, image.pixels);
     if(id != 0) {
       result.sheet.u64 = id;
@@ -502,7 +519,7 @@ internal D_Image d_image_load(Arena* arena, String8 path) {
       result.h = (I32)h;
       result.pixels = push_array_no_zero(arena, U8, (U64)w * (U64)h * 4);
       MemoryCopy(result.pixels, decoded, (U64)w * (U64)h * 4);
-      stbi_image_free(decoded); // stbi's malloc; ours lives on the arena
+      stbi_image_free(decoded); // stbi allocated it with malloc. The copy is on the arena.
     }
   }
   arena_release_scratch(scratch);
@@ -553,7 +570,7 @@ internal void d_image_set_px(D_Image image, I32 x, I32 y, V4 color) {
 
 internal void d_image_blit(D_Image dst, I32 x, I32 y, D_Image src) {
   if(dst.pixels != 0 && src.pixels != 0) {
-    // clip src against dst; the surviving rows copy whole
+    // Clip src against dst. Each row that stays copies in full.
     I32 x0 = Max(x, 0);
     I32 y0 = Max(y, 0);
     I32 x1 = Min(x + src.w, dst.w);
@@ -571,13 +588,14 @@ internal void d_image_blit(D_Image dst, I32 x, I32 y, D_Image src) {
 
 internal void d_sprite_ex(D_SpriteParams* params) {
   D_Sheet* sheet = d__sheet_from_id(params->sprite.sheet.u64);
-  if(sheet != 0) { // nil sprite / released sheet: draws nothing
+  if(sheet != 0) { // A nil sprite, and a sheet that is gone, draw nothing.
     R_Quad quad = {0};
     quad.dst = params->dst;
     quad.tex = sheet->tex;
     quad.rotation = params->rotation;
 
-    // src is in the sprite's own texel space; zero rect = whole sprite
+    // src is in the texel space of the sprite. A rect of 0 gives the whole
+    // sprite.
     Rect src = params->src;
     if(src.max.x <= src.min.x || src.max.y <= src.min.y) {
       src = (Rect){{0, 0}, {params->sprite.size.x, params->sprite.size.y}};
@@ -587,13 +605,15 @@ internal void d_sprite_ex(D_SpriteParams* params) {
     quad.src.max.x = params->sprite.src.min.x + src.max.x;
     quad.src.max.y = params->sprite.src.min.y + src.max.y;
 
-    // the mask rides the same sheet texture (d_sprite_masked asserts it), so
-    // its atlas rect passes straight through
+    // The mask is on the texture of this same sheet, which d_sprite_masked
+    // asserts. Its rect in the sheet therefore passes through with no
+    // change.
     if(params->mask.sheet.u64 != 0) {
       quad.mask_src = params->mask.src;
     }
 
-    // ZII: the zero tint reads as white (draw as-is), like zoom 0 reads as 1
+    // A tint of 0 reads as white, which keeps the colors of the sprite. A zoom
+    // of 0 reads as 1 in the same way (ZII).
     V4 tint = params->tint;
     if(tint.x == 0 && tint.y == 0 && tint.z == 0 && tint.w == 0) {
       tint = (V4){1, 1, 1, 1};
@@ -612,9 +632,10 @@ internal void d_sprite(D_Sprite sprite, Rect dst, V4 tint) {
 }
 
 internal void d_sprite_masked(D_Sprite sprite, D_Sprite mask, Rect dst, V4 tint) {
-  // precondition: one texture per quad -- a (non-nil) mask must share the
-  // sprite's sheet, or the shader would sample the mask rect out of the
-  // wrong atlas. The nil mask is fine, and draws unmasked (ZII).
+  // A quad reads one texture. A mask that is not nil must therefore be in the
+  // sheet of the sprite. Without that rule the shader would read the rect of
+  // the mask from the wrong sheet. A nil mask is correct, and it draws the
+  // sprite with no mask (ZII).
   Assert(mask.sheet.u64 == 0 || mask.sheet.u64 == sprite.sheet.u64);
   D_SpriteParams params = {0};
   params.sprite = sprite;
@@ -650,7 +671,7 @@ internal D_Font d_font_open(String8 path) {
       String8 ttf = os_read_entire_file(d_state.arena, path, &read_ok);
       if(read_ok && ttf.size > 0) {
         D_FontSlot* font = &d_state.fonts[slot];
-        // GetFontOffsetForIndex handles both plain .ttf and .ttc collections
+        // GetFontOffsetForIndex reads a plain .ttf file and a .ttc collection.
         int offset = stbtt_GetFontOffsetForIndex(ttf.str, 0);
         if(offset >= 0 && stbtt_InitFont(&font->info, ttf.str, offset)) {
           font->used = 1;
@@ -667,8 +688,9 @@ internal D_Font d_font_open(String8 path) {
 internal void d_font_close(D_Font font) {
   D_FontSlot* slot = d__font_from_handle(font);
   if(slot != 0) {
-    // ttf bytes and glyph nodes stay on the persistent arena -- fonts close
-    // rarely enough that reclaiming isn't worth an allocator
+    // The bytes of the font and the glyph nodes stay on the arena of the whole
+    // program. A font closes seldom, so the memory that a close gives back
+    // does not justify an allocator.
     MemoryZeroStruct(slot);
   }
 }
@@ -679,15 +701,16 @@ internal D_FontMetrics d_font_metrics(D_Font font, F32 size) {
   if(slot != 0) {
     int ascent = 0, descent = 0, line_gap = 0;
     stbtt_GetFontVMetrics(&slot->info, &ascent, &descent, &line_gap);
-    F32 scale = stbtt_ScaleForPixelHeight(&slot->info, size); // point units
+    F32 scale = stbtt_ScaleForPixelHeight(&slot->info, size); // the units are points
     result.ascent = (F32)ascent * scale;
-    result.descent = (F32)(-descent) * scale; // stbtt descent is negative
+    result.descent = (F32)(-descent) * scale; // the descent of stbtt is below 0
     result.line_advance = (F32)(ascent - descent + line_gap) * scale;
   }
   return result;
 }
 
-//- fp: utf-8 decode: malformed bytes read as U+FFFD and advance one byte
+//- fp: the decoder of UTF-8. A byte sequence that is not correct gives U+FFFD
+//  and moves one byte.
 internal U32 d__utf8_next(String8 s, U64* io_off) {
   U64 off = *io_off;
   U32 result = 0xFFFD;
@@ -715,8 +738,9 @@ internal U32 d__utf8_next(String8 s, U64* io_off) {
   return result;
 }
 
-// cache lookup, rasterizing on miss: glyphs pack into the always-open glyph
-// sheet at the pixel size they are first drawn at
+// Read the cache, and make the raster where the cache has no entry. A glyph
+// goes into the glyph sheet, which never closes, at the size in pixels of the
+// first call that draws it.
 internal D_Glyph* d__glyph(D_FontSlot* font, U32 codepoint, I32 size_px) {
   U64 bucket = ((U64)codepoint * 31 + (U64)size_px) % D_GLYPH_BUCKETS;
   D_Glyph* glyph = 0;
@@ -759,7 +783,8 @@ internal D_Glyph* d__glyph(D_FontSlot* font, U32 codepoint, I32 size_px) {
         glyph->xoff_px = (F32)x0;
         glyph->yoff_px = (F32)y0;
       }
-      // full glyph sheet: the glyph caches as bitmap-less and only advances
+      // The glyph sheet has no space. The cache then holds a glyph with no
+      // bitmap, which moves the pen and draws nothing.
     }
     glyph->next = font->glyphs[bucket];
     font->glyphs[bucket] = glyph;
@@ -767,20 +792,21 @@ internal D_Glyph* d__glyph(D_FontSlot* font, U32 codepoint, I32 size_px) {
   return glyph;
 }
 
-// The shared walk: advances the pen over the text, optionally emitting glyph
-// quads. d_text and d_text_dim are the two callers.
+// The walk that the two callers share. It moves the pen across the text, and
+// it can draw the quad of each glyph. d_text and d_text_dim call it.
 internal F32 d__text_walk(D_Font font, F32 size, V2 pos, V4 color, String8 text, B32 emit) {
   F32 result = pos.x;
   D_FontSlot* slot = d__font_from_handle(font);
   if(slot != 0 && size > 0) {
-    F32 to_px = (d_state.scale == 0) ? 1.0f : d_state.scale; // dim queries may run pre-frame
+    F32 to_px = (d_state.scale == 0) ? 1.0f : d_state.scale; // A call to d_text_dim can occur before the first frame.
     I32 size_px = (I32)(size * to_px + 0.5f);
     F32 scale_px = stbtt_ScaleForPixelHeight(&slot->info, (F32)size_px);
 
-    // the walk runs in point*scale units -- true pixels for screen-space
-    // text; under an active camera these are world units and the pixel-grid
-    // snap below is only approximate. pos is the box's top-left; glyphs
-    // hang from the baseline
+    // The walk uses units of points multiplied by the scale. Those units are
+    // true pixels for text in screen space. Inside a camera they are units of
+    // the world, and the step to the grid of pixels below is then approximate.
+    // pos is the top left corner of the box, and each glyph hangs from the
+    // baseline.
     F32 baseline = (pos.y + d_font_metrics(font, size).ascent) * to_px;
     F32 pen = pos.x * to_px;
     U32 prev_cp = 0;
@@ -791,8 +817,9 @@ internal F32 d__text_walk(D_Font font, F32 size, V2 pos, V4 color, String8 text,
       }
       D_Glyph* glyph = d__glyph(slot, cp, size_px);
       if(emit && glyph->has_bitmap && d_state.frame_arena != 0) {
-        // snap to the pixel grid: glyph texels land 1:1 on pixels, which is
-        // what keeps text sharp under linear sampling
+        // Move the glyph to the grid of pixels. Each texel of the glyph then
+        // covers one pixel, which keeps the text sharp under linear
+        // sampling.
         F32 gx = roundf(pen + glyph->xoff_px);
         F32 gy = roundf(baseline + glyph->yoff_px);
         R_Quad quad = {0};

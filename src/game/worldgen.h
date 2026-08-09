@@ -56,32 +56,6 @@ typedef struct {
   F32 max;
 } WG_Band; // a band of 0 to 0 accepts each value
 
-// What a terrain grows: one column for each stock (defs.h). The keys below are
-// how a terrain row spells a stock, as `<key>_max` and `<key>_renew_rate`. The
-// fields below are the database column of each stock. One list makes both
-// tables, so a new stock reaches the parser, the terrain table and the fields
-// of the world at the same time.
-typedef U8 WG_Stock;
-
-enum {
-#define X(name, key) WG_Stock_##name,
-  DF_STOCK_LIST
-#undef X
-  WG_Stock_COUNT,
-};
-
-global String8 WG_STOCK_KEYS[WG_Stock_COUNT] = {
-#define X(name, key) str8_lit_comp(key),
-    DF_STOCK_LIST
-#undef X
-};
-
-global TH_Field WG_STOCK_FIELDS[WG_Stock_COUNT] = {
-#define X(name, key) TH_Field_##name,
-    DF_STOCK_LIST
-#undef X
-};
-
 typedef struct {
   U8 name_len;                        // the art prefix, and the name to show.
   U8 name_chars[WG_TERRAIN_NAME_CAP]; // Read it with wg_terrain_name.
@@ -98,9 +72,6 @@ typedef struct {
   WG_Band drainage;
   WG_Band temperature;
   B32 needs_coast; // the row claims a tile only when the sea is one step away
-  //- fp: the stocks
-  F32 stock_max[WG_Stock_COUNT];
-  F32 stock_renew_rate[WG_Stock_COUNT];
 } WG_TerrainType;
 
 global WG_TerrainType WG_TERRAIN_TYPES[WG_TERRAIN_CAP];

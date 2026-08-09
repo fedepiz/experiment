@@ -17,7 +17,8 @@ typedef struct {
   I32 size;
 } Report_Component;
 
-// 4-connected components of equal group values; group 0 tiles are skipped
+// The connected areas of equal group values, where two tiles connect across an
+// edge and not across a corner. A tile of the group 0 does not join an area.
 internal I32 report__components(Arena* arena, U16* groups, I32 w, I32 h,
                                 Report_Component* out) {
   U8* visited = push_array(arena, U8, (U64)w * h);
@@ -56,8 +57,8 @@ internal void report_worldgen(I32 world_count, U64 first_seed) {
   wg_terrain_table_load(str8_lit("data/terrain_types.tabula"));
   WG_Params params = wg_params_load(str8_lit("data/world.tabula"));
 
-  // the report knows some terrains by role; ids resolve by name so the file
-  // stays free to reorder
+  // This report knows what some terrains do. It finds the id of such a terrain
+  // by its name, so the order of the rows of the file can change.
   U32 id_water = wg_terrain_by_name(str8_lit("water"));
   U32 id_ocean = wg_terrain_by_name(str8_lit("ocean"));
   U32 id_ice = wg_terrain_by_name(str8_lit("ice"));
@@ -91,7 +92,7 @@ internal void report_worldgen(I32 world_count, U64 first_seed) {
     U64 tiles = (U64)w * h;
 
     U32 counts[WG_TERRAIN_CAP] = {0};
-    U16* by_terrain = push_array_no_zero(world_arena, U16, tiles); // terrain+1: no group 0
+    U16* by_terrain = push_array_no_zero(world_arena, U16, tiles); // the terrain plus 1, because the group 0 is not an area
     U16* by_land = push_array(world_arena, U16, tiles);
     U16* by_range = push_array(world_arena, U16, tiles);
     U16* by_passable = push_array(world_arena, U16, tiles);
@@ -121,7 +122,8 @@ internal void report_worldgen(I32 world_count, U64 first_seed) {
           }
           coast += sea_beside;
         }
-        // unordered adjacent pairs: only look right and down
+        // Each pair of two tiles that touch, one time for each pair. This loop
+        // therefore reads the tile to the right and the tile below.
         for(U32 pair = 0; pair < 2; pair += 1) {
           V2I n = pair == 0 ? (V2I){x + 1, y} : (V2I){x, y + 1};
           if(!th_world_in_bounds(db, n)) { continue; }

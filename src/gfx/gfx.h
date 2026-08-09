@@ -1,7 +1,7 @@
 #pragma once
 
 ////////////////////////////////
-//~ fp: Gfx Layer -- all headers, in dependency order
+//~ fp: Gfx Layer -- the headers of each part, in the order of their use
 
 #include "gfx/color.h"
 #include "gfx/window.h"

@@ -1,5 +1,5 @@
 ////////////////////////////////
-//~ fp: Gfx Layer -- all implementations, in dependency order
+//~ fp: Gfx Layer -- the code of each part, in the order of its use
 
 #include "gfx/color.c"
 #include "gfx/window.c"

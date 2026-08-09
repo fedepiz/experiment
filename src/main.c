@@ -1,9 +1,9 @@
 ////////////////////////////////
 //~ fp: Layer Includes
 //
-// The only file the compiler is pointed at. All headers first, then all
-// implementations -- that ordering is why the .h/.c split still earns its keep
-// in a unity build.
+// This is the one file that the compiler reads. It includes each header first,
+// and then each implementation. That order is the reason why the split of a
+// module into a .h file and a .c file is useful in a unity build.
 
 //- fp: [h]
 #include "base/arena.h"
@@ -29,9 +29,9 @@
 ////////////////////////////////
 //~ fp: temp: Test Render
 //
-// The draw-layer demo scene, parked: call it from inside the frame in place
-// of (or after) map_render whenever the draw layer needs a re-check. Owns its
-// assets and loads them on first call.
+// A scene that shows what the draw layer does. No code calls it now. Call it
+// inside the frame, in place of map_render or after it, to test the draw layer
+// again. It owns its assets, and it loads them at its first call.
 
 internal void test_render(D_Camera camera) {
   local_persist B32 initialized = 0;
@@ -58,7 +58,7 @@ internal void test_render(D_Camera camera) {
     checker = d_spritesheet_push(checker_img);
     stripes = d_spritesheet_push(stripes_img);
     d_spritesheet_end();
-    arena_release_scratch(scratch); // pixels are on the GPU now
+    arena_release_scratch(scratch); // the pixels are on the GPU now
   }
 
   V2 vp = wnd_size();
@@ -68,8 +68,8 @@ internal void test_render(D_Camera camera) {
   d_rect_rounded((Rect){{100, 100}, {500, 300}}, (V4){0.2f, 0.4f, 0.9f, 1}, 24);
   d_rect_outline((Rect){{100, 350}, {500, 550}}, (V4){1, 1, 1, 1}, 4);
 
-  d_sprite(checker, (Rect){{550, 100}, {806, 356}}, (V4){0}); // zero tint = as-is
-  stripes_angle += 0.5f * wnd_frame_time();                   // half a radian per second
+  d_sprite(checker, (Rect){{550, 100}, {806, 356}}, (V4){0}); // a tint of 0 keeps the colors of the sprite
+  stripes_angle += 0.5f * wnd_frame_time();                   // half a radian for each second
   D_SpriteParams sp = {0};
   sp.sprite = stripes;
   sp.dst = (Rect){{880, 120}, {1080, 320}};
@@ -91,7 +91,7 @@ internal void test_render(D_Camera camera) {
   d_text(font, 18, (V2){100, 660}, col_rgb(0.7f, 0.7f, 0.75f),
          str8_lit("rects, sprites, sheets, clip, camera, text"));
 
-  // hue ramp via col_hsva, fading out via col_with_alpha
+  // col_hsva moves the hue, and col_with_alpha lowers the alpha.
   for(I32 i = 0; i < 24; i += 1) {
     F32 t = (F32)i / 24.0f;
     d_rect((Rect){{100 + (F32)i * 30, 720}, {128 + (F32)i * 30, 760}},
@@ -102,12 +102,17 @@ internal void test_render(D_Camera camera) {
 ////////////////////////////////
 //~ fp: 60fps Present Pacing
 //
-// Hardware-paces presentation to 60fps: when the monitor runs at a whole
-// multiple of 60 (60Hz, 120Hz, ...), present every Nth vblank -- the display
-// clock then enforces an exact 60 on every screen, and a drag between
-// mixed-rate monitors re-resolves through the cached wnd_refresh_rate.
-// Non-multiples (144Hz, 90Hz) fall back to every vblank; the +-2Hz tolerance
-// absorbs fractional rates (119.98 reads as 120). Call once per frame.
+// The hardware presents the frames at 60 for each second. Where the rate of
+// the monitor is a whole multiple of 60, such as 60Hz or 120Hz, the window
+// presents at each Nth vertical blank. The clock of the display then gives
+// exactly 60 on each screen, and a drag between two monitors of different rates
+// reads wnd_refresh_rate again.
+//
+// Where the rate is not such a multiple, such as 144Hz or 90Hz, the window
+// presents at each vertical blank. The tolerance of 2Hz absorbs a rate that is
+// not an integer, so 119.98 reads as 120.
+//
+// Call this function one time in each frame.
 
 internal void pace_60fps_update(void) {
   local_persist I32 current_interval = 0;
@@ -127,26 +132,34 @@ internal void pace_60fps_update(void) {
 ////////////////////////////////
 //~ fp: Camera
 //
-// Steering lives here, not in client/map: the map is pure presentation, and
-// what keys mean is the shell's decision. The camera itself is a D_Camera
-// value the map only ever receives.
+// The code that steers the camera is here, and not in client/map, because the
+// map draws and does nothing more, and because the meaning of a key is a
+// decision of this file. The camera itself is a D_Camera value, which the map
+// receives and does not change.
 
 internal void camera_inertial_move(D_Camera* camera, V2 translation, F32 zooming) {
   F32 dt = wnd_frame_time();
   F32 zoom = (camera->zoom == 0) ? 1.0f : camera->zoom;
 
-  //- inertial movement: the keys steer a target velocity, and the camera's
-  //  velocity exponentially chases it -- the same curve accelerates on press
-  //  and glides to a stop on release. `blend` is the fraction of the
-  //  remaining gap closed this frame; putting dt in the exponent makes two
-  //  half-frames compose to exactly one whole one, so the feel survives any
-  //  framerate. Bigger rate = snappier (velocity half-life = 1/rate seconds).
+  //- The movement with inertia. The keys set a target velocity, and the
+  //  velocity of the camera moves toward that target along an exponential
+  //  curve. That one curve gives the increase of speed at a press and the
+  //  decrease to a stop at a release.
+  //
+  //  `blend` is the part of the difference that this frame removes. dt is in
+  //  the exponent, so two frames of a half length give the same result as one
+  //  frame of a full length, and the movement therefore feels the same at each
+  //  frame rate. A larger `rate` makes the camera answer faster: the velocity
+  //  falls to one half in 1/rate seconds.
   F32 blend = 1.0f - f32_exp2(-8.0f * dt);
 
-  // pan target is world-units-per-second scaled by 1/zoom, so panning covers
-  // a constant fraction of the screen at any zoom level; the zoom target is
-  // in doublings per second -- exponential, so it reads as the same speed at
-  // every level (the 1/zoom factor belongs to panning alone)
+  // The target of the pan is in units of the world for each second, multiplied
+  // by 1/zoom. A pan therefore covers the same part of the screen at each
+  // zoom.
+  //
+  // The target of the zoom is in doublings for each second. That measure is
+  // exponential, so a zoom feels equally fast at each level. The factor of
+  // 1/zoom belongs to the pan alone.
   V2 pan_target = v2_scale(translation, 400.0f / zoom);
   F32 zoom_target = 3.0f * zooming;
   camera->pan_vel = v2_add(camera->pan_vel, v2_scale(v2_sub(pan_target, camera->pan_vel), blend));
@@ -160,7 +173,8 @@ internal void camera_inertial_move(D_Camera* camera, V2 translation, F32 zooming
 ////////////////////////////////
 //~ fp: Entry Point
 
-// decimal digits only -- anything else is a usage error, not a number
+// The text must hold decimal digits alone. Each other text is a mistake of the
+// caller, and not a number.
 internal B32 main__parse_u64(String8 s, U64* out) {
   if(s.size == 0) { return 0; }
   U64 value = 0;
@@ -177,7 +191,8 @@ int main(int argc, char** argv) {
   TCTX tctx;
   tctx_init_and_equip(&tctx);
 
-  //- fp: temp: headless report mode exits before any window exists
+  //- fp: temp: The mode that writes a report stops the program before a window
+  //  exists.
   if(argc >= 3 && str8_match(str8_cstring(argv[1]), str8_lit("worlds"), 0)) {
     U64 world_count = 0;
     U64 first_seed = 1;
@@ -200,30 +215,37 @@ int main(int argc, char** argv) {
   ui_init(hud_measure_text, hud_font_metrics, 0);
   ui_set_theme(ui_theme_load(arena_alloc(), str8_lit("data/ui.tabula")));
 
-  //- fp: the long-lived game state; the map view shadows it (its cell cache
-  //  is rebuilt with it on every reseed)
+  //- fp: The state of the game, which exists for the run of the program. The
+  //  view of the map follows it: a new seed builds the cache of the cells of
+  //  that view again.
   Arena* game_arena = arena_alloc();
   GM_Game game = {0};
   U64 game_next_seed = 2704;
 
-  // the terrain table drives asset naming and tiling registration
+  // The terrain table gives the name of each asset and the registration in the
+  // tiler.
   wg_terrain_table_load(str8_lit("data/terrain_types.tabula"));
-  Map_View* map = map_init(arena_alloc()); // outlives every reseed
+  Map_View* map = map_init(arena_alloc()); // it stays across each new seed
 
   D_Font hud_font = d_font_open(str8_lit("assets/fonts/Arial.ttf"));
   CL_FPS_Counter fps_counter = {0};
 
   D_Camera camera = {0};
-  B32 hud_mouse_over = 0; // as of the last built frame
+  B32 hud_mouse_over = 0; // as of the last frame that the code built
 
   GM_MapModeFlags map_mode_flags = GM_MapModeFlag_Pawns;
 
-  // the frame, in phases: poll -> key/click handling -> pacing -> lazy
-  // (re)init -> sim -> draw (map, then HUD) -> camera -> swap. camera_update
-  // runs AFTER drawing on purpose: a frame draws with the same camera value
-  // the click handling above saw, one frame stale -- the hud_mouse_over
-  // convention. A close request still finishes its frame; the loop condition
-  // catches it at the top of the next one.
+  // The frame, in phases: read the input, then handle the keys and the clicks,
+  // then set the rate, then initialize the world where that is necessary, then
+  // run the simulation, then draw the map and the HUD, then move the camera,
+  // then swap.
+  //
+  // camera_update runs AFTER the draw, and it does so deliberately. The frame
+  // therefore draws with the camera value that the code for the clicks read,
+  // which is one frame old. hud_mouse_over follows that same rule.
+  //
+  // A request to close finishes its frame. The test of the loop reads that
+  // request at the start of the next frame.
   for(B32 keep_going = true; keep_going && !wnd_close_requested();) {
     wnd_poll();
 
@@ -236,7 +258,7 @@ int main(int argc, char** argv) {
       TB_Value* info = gm_info(frame_arena, &game);
 
       {
-        // Add fps information
+        // add the frames for each second
         String8 text = push_str8f(frame_arena, "%.1f", fps_counter.display);
         tb_add_str8(frame_arena, info, str8_lit("fps"), text);
       }
@@ -270,9 +292,9 @@ int main(int argc, char** argv) {
       arena_clear(game_arena);
       gm_init(game_arena, &game, game_next_seed++);
       map_world_changed(map, game_arena, game.board->width, game.board->height);
-      // Reset the camera
+      // set the camera to its first state
       camera.center = (V2){game.board->width * MAP_TILE / 2, game.board->height * MAP_TILE / 2};
-      camera.zoom = 1.0f; // whole map in view; scroll to zoom in
+      camera.zoom = 1.0f; // the whole map is in view. The wheel makes the view smaller.
     }
 
     gm_update(&game, wnd_frame_time());
@@ -280,11 +302,14 @@ int main(int argc, char** argv) {
     d_frame_begin(frame_arena, wnd_size_px(), wnd_scale());
     {
       GM_MapMode mode = {0};
-      // visible tile window: the cells under the screen corners, padded one
-      // ring out. The far edge takes one MORE ring: each cell owns the dual
-      // boundary cell at its NW corner (tiling.h), so the duals past the
-      // last board column/row need an owner -- the trailing +1 lands on the
-      // ring cells gm_map_items emits for exactly that.
+      // The window of the tiles that a person sees. It holds the cells below
+      // the corners of the screen, and one ring of cells around them.
+      //
+      // The far edge takes one MORE ring. Each cell owns the dual cell of the
+      // boundary at its corner to the north west. See tiling.h. The dual cells
+      // past the last column and the last row of the board therefore need an
+      // owner, and the +1 at the end reaches the ring cells that gm_map_items
+      // makes for that purpose.
       I32 board_w = game.board->width;
       I32 board_h = game.board->height;
       V2I tile_min = map_tile_from_screen(camera, (V2){0, 0});
@@ -296,16 +321,16 @@ int main(int argc, char** argv) {
       mode.flags = map_mode_flags;
       GM_MapItems map_items = gm_map_items(frame_arena, &game, mode);
       map_draw(map, map_items, camera);
-      // test_render(camera); // fp: parked draw-layer demo scene
+      // test_render(camera); // fp: the scene that shows what the draw layer does
 
       hud_replay_draw_list(hud_list);
       hud_mouse_over = hud_list.mouse_over_ui;
     }
     d_frame_end();
 
-    camera_inertial_move(&camera, cmd.translation, cmd.zooming); // after drawing: see the phase comment above the loop
+    camera_inertial_move(&camera, cmd.translation, cmd.zooming); // It runs after the draw. See the comment on the phases above the loop.
 
-    wnd_swap(); // vsync: paces the loop to the display rate
+    wnd_swap(); // The vertical sync makes the loop run at the rate of the display.
     arena_clear(frame_arena);
   }
   wnd_close();

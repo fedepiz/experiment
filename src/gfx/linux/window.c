@@ -9,13 +9,13 @@
 ////////////////////////////////
 //~ fp: X11 Backend
 //
-// Xlib pollutes the TU with typedefs and macros (Window, Display, True, None,
-// ...) -- in a unity build that pollution is global, so avoid those names for
-// our own symbols.
+// Xlib adds many typedefs and macros to this translation unit: Window,
+// Display, True, None and more. This is a unity build, so those names become
+// global. Do not use one of them for a symbol of this program.
 //
-// The OS_LINUX guard keeps the file quiet in clangd, which parses it
-// standalone on every platform (no X11 headers off Linux); real builds only
-// include it on Linux anyway, via gfx/window.c.
+// The OS_LINUX test makes this file empty for clangd, which parses it alone on
+// each platform, and which has no X11 header on another platform. A real build
+// includes this file on Linux only, through gfx/window.c.
 
 #if OS_LINUX
 
@@ -28,8 +28,8 @@ typedef struct {
   Display* display;
   Window window;
   Atom wm_delete_window;
-  V2 last_size; // last size seen, to filter move-only ConfigureNotify events
-  B8 key_down[WND_Key_COUNT]; // to tell autorepeat KeyPress from fresh presses
+  V2 last_size; // The size that the last event gave. It removes a ConfigureNotify of a move.
+  B8 key_down[WND_Key_COUNT]; // It separates a KeyPress of an automatic repeat from a new press.
   B32 is_open;
 } WND_State;
 
@@ -37,7 +37,7 @@ global WND_State wnd_state;
 
 internal void wnd_open(String8 title, I32 w, I32 h) {
   Display* display = XOpenDisplay(0);
-  AssertAlways(display != 0); // no X server: nothing sensible to do but stop
+  AssertAlways(display != 0); // Without an X server there is no other path, so the program stops.
 
   int screen = DefaultScreen(display);
   Window window = XCreateSimpleWindow(display, RootWindow(display, screen),
@@ -50,7 +50,8 @@ internal void wnd_open(String8 title, I32 w, I32 h) {
                ButtonPressMask | ButtonReleaseMask | PointerMotionMask |
                StructureNotifyMask);
 
-  // title (Xlib wants a C string -- scratch bridges as usual)
+  // The title. Xlib needs a C string, so a scratch arena holds a copy with a
+  // null byte at its end, as usual.
   {
     ArenaTemp scratch = arena_get_scratch(0, 0);
     String8 title_z = push_str8_copy(scratch.arena, title);
@@ -58,12 +59,14 @@ internal void wnd_open(String8 title, I32 w, I32 h) {
     arena_release_scratch(scratch);
   }
 
-  // autorepeat as bare KeyPress repeats, not synthetic KeyRelease/KeyPress
-  // pairs -- held keys then read as continuously down, and repeats are
-  // told apart below by the key already being down
+  // Ask for an automatic repeat as a KeyPress alone, and not as a pair of a
+  // KeyRelease and a KeyPress that the server makes. A key that a person holds
+  // then reads as down for the whole time. The code below finds a repeat,
+  // because the key is already down.
   XkbSetDetectableAutoRepeat(display, 1, 0);
 
-  // ask the WM to tell us about the close button instead of killing us
+  // Ask the window manager to send a message at a press of the close button,
+  // and to not stop the process.
   Atom wm_delete_window = XInternAtom(display, "WM_DELETE_WINDOW", 0);
   XSetWMProtocols(display, window, &wm_delete_window, 1);
 
@@ -103,16 +106,17 @@ internal V2 wnd_size(void) {
 ////////////////////////////////
 //~ fp: OpenGL
 //
-// GLX context creation still to come; stubs keep the Linux build compiling
-// while the mac side moves ahead.
+// The code that makes a GLX context does not exist yet. These stubs keep the
+// build on Linux correct while the work on the Mac side continues.
 
 internal void wnd_equip_gl(void) { NotImplemented; }
 internal void wnd_swap(void)     { NotImplemented; wnd__frame_mark(); }
 internal V2  wnd_size_px(void)   { NotImplemented; V2 result = {0}; return result; }
 internal F32 wnd_scale(void)     { NotImplemented; return 1.0f; }
 
-// XRandR query still to come; trips loudly rather than returning a quiet 0
-// (which would silently disable frame-time snapping and be forgotten)
+// The query of XRandR does not exist yet. This function stops the program, and
+// does not give a value of 0. A value of 0 would stop the step to whole
+// display periods with no report, and a person would not find that later.
 internal F32 wnd_refresh_rate(void) { NotImplemented; return 0; }
 
 internal void wnd_set_swap_interval(I32 interval) { Unused(interval); NotImplemented; }
@@ -202,8 +206,9 @@ internal WND_EventList wnd__get_events(Arena* arena) {
           event->pos.y = (F32)xev.xbutton.y;
           event->modifiers = modifiers;
         } else if(xev.type == ButtonPress && Button4 <= b && b <= 7) {
-          // X11 encodes the wheel as buttons: 4/5 vertical, 6/7 horizontal;
-          // only the press matters, the release is noise
+          // X11 gives the wheel as a button: 4 and 5 are vertical, and 6 and
+          // 7 are horizontal. The press carries the movement, and the release
+          // carries nothing.
           WND_Event* event = wnd__push_event(arena, &list, WND_EventType_Scroll);
           event->scroll.y = (b == Button4) ? 1.0f : (b == Button5) ? -1.0f : 0;
           event->scroll.x = (b == 6) ? -1.0f : (b == 7) ? 1.0f : 0;
@@ -221,7 +226,7 @@ internal WND_EventList wnd__get_events(Arena* arena) {
       } break;
 
       case ConfigureNotify: {
-        // fires for moves too; only report actual size changes
+        // This event arrives at a move too. Report a change of size alone.
         V2 size = {(F32)xev.xconfigure.width, (F32)xev.xconfigure.height};
         if(size.x != wnd_state.last_size.x || size.y != wnd_state.last_size.y) {
           wnd_state.last_size = size;

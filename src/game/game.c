@@ -13,10 +13,6 @@
 #include "gfx/color.h"
 #include "tabula.h"
 
-// The ways of life are below, next to the phases that read them. Setup needs
-// only the lookup by name.
-internal I32 gm__way_of_life_find(String8 key);
-
 ////////////////////////////////
 //~ fp: Game
 
@@ -226,14 +222,10 @@ internal void gm_init(Arena* arena, GM_Game* game, U64 seed) {
     String8 name;
     V2I pos;
     GM_Sprite sprite;
-    String8 way_of_life;
-    F32 population;
   } GroupSpawn;
 
   const GroupSpawn GROUP_SPAWNS[] = {
-      // Much less than the land supports. The group therefore grows into its
-      // range, and does not start at the limit with no change to show.
-      {str8_lit_comp("Group #A"), {102, 96}, GM_Sprite_Band, str8_lit_comp("hunter_gatherer"), .population = 50},
+      {str8_lit_comp("Group #A"), {102, 96}, GM_Sprite_Band},
   };
 
   for(U32 idx = 0; idx < ArrayCount(GROUP_SPAWNS); ++idx) {
@@ -242,14 +234,9 @@ internal void gm_init(Arena* arena, GM_Game* game, U64 seed) {
     TH_Phrase* name = th_label(db, id, TH_Label_Name);
     th_push_word(name, th_define_word(db, spawn->name));
     gm__xy_set(db, id, spawn->pos);
-    th_var_set(db, id, TH_Var_Population, spawn->population);
     th_ivar_set(db, id, TH_IVar_Sprite, spawn->sprite);
     th_flag_set(db, id, TH_Flag_HasInfluence, true);
     th_flag_set(db, id, TH_Flag_Placed, true);
-
-    I32 way = gm__way_of_life_find(spawn->way_of_life);
-    Assert(way > 0); // an unknown name is a mistake in the spawn table
-    th_ivar_set(db, id, TH_IVar_WayOfLife, way);
   }
 
   th_commit(db);
@@ -334,9 +321,6 @@ internal void gm__selection_info(Arena* arena, GM_Game* game, TB_Value* root) {
   switch(selection.kind) {
     case GM_SelectionKind_Tile: {
       tb_add_str8(arena, info, str8_lit("kind"), str8_lit("tile"));
-      tb_add_num(arena, info, str8_lit("crops"), th_field_get(db, selection.tile, TH_Field_Crops));
-      tb_add_num(arena, info, str8_lit("grass"), th_field_get(db, selection.tile, TH_Field_Grass));
-      tb_add_num(arena, info, str8_lit("wildlife"), th_field_get(db, selection.tile, TH_Field_Wildlife));
     } break;
     case GM_SelectionKind_Thing: {
       tb_add_str8(arena, info, str8_lit("kind"), str8_lit("thing"));
@@ -345,8 +329,6 @@ internal void gm__selection_info(Arena* arena, GM_Game* game, TB_Value* root) {
       if(name.size == 0) { name = GM_SPRITE_NAMES[sprite]; }
       tb_add_str8(arena, info, str8_lit("name"), name);
       tb_add_str8(arena, info, str8_lit("sprite"), GM_SPRITE_NAMES[sprite]);
-      tb_add_num(arena, info, str8_lit("population"), th_var_get(db, selection.id, TH_Var_Population));
-      tb_add_num(arena, info, str8_lit("food"), th_var_get(db, selection.id, TH_Var_FoodStore));
     } break;
   }
   gm__tile_facts(arena, game, tb_add_object(arena, info, str8_lit("tile")), selection.tile);
@@ -358,49 +340,9 @@ internal TB_Value* gm_info(Arena* arena, GM_Game* game) {
   return info;
 }
 
-////////////////////////////////
-//~ fp: Ways Of Life
-//
-// A way of life is how a group turns land into people. It is a row of
-// numbers. The economy phases read the row. Two ways of life differ in their
-// numbers only, so no phase has a branch on a way of life.
-//
-// Row 0 is the nil way of life. A group with row 0 takes nothing.
-
-typedef struct {
-  String8 key;    // the name that the spawn table uses
-  TH_Field stock; // the field that the group takes from the land
-  F32 labour;     // stock that one person gathers in one tick
-  F32 yield;      // food for each unit of stock
-  F32 reach;      // tiles that the group claims around itself
-  // Ticks of food that the group keeps in hand, above the food of this tick.
-  // The group gathers enough to eat and to fill this reserve. A group with a
-  // reserve of 0 keeps no food, and a bad tick is a famine at once.
-  F32 reserve;
-} GM_WayOfLife;
-
-global const GM_WayOfLife WAYS_OF_LIFE[] = {
-    {0},
-    {str8_lit_comp("hunter_gatherer"), TH_Field_Wildlife, 2, 1, 8, 1},
-};
-
-internal const GM_WayOfLife* gm__way_of_life_get(TH_Db* db, TH_Id id) {
-  U32 idx = (U32)th_ivar_get(db, id, TH_IVar_WayOfLife);
-  Assert(idx < ArrayCount(WAYS_OF_LIFE));
-  return &WAYS_OF_LIFE[idx];
-}
-
-// The row with this name. Row 0 shows that the name is unknown.
-internal I32 gm__way_of_life_find(String8 key) {
-  I32 result = 0;
-  for(U32 i = 1; i < ArrayCount(WAYS_OF_LIFE); i += 1) {
-    if(str8_match(WAYS_OF_LIFE[i].key, key, 0)) {
-      result = (I32)i;
-      break;
-    }
-  }
-  return result;
-}
+// The tiles that a group claims around itself. Each group reaches the same
+// distance for now.
+#define GM_CLAIM_REACH 8.0f
 
 #define GM_TICK_DT       0.1f // seconds of sim per tick; every rate below is per-tick
 #define GM_TICK_BANK_MAX 0.5f // at most 5 banked ticks replay after a stall
@@ -422,26 +364,6 @@ internal void gm_update(GM_Game* game, F32 dt) {
     // across the things what it also writes across the things would break the
     // rule above. No phase does that.
 
-    BD_PartitionCell* influence_map = 0;
-
-    //- fp: Regrow -- reads: terrain; writes: stocks
-    // Each stock of a tile moves toward the ceiling of its terrain type, at
-    // the rate of that terrain type. A terrain type with a rate of 0 grows
-    // nothing, and a terrain type with a ceiling of 0 holds nothing.
-    {
-      V2I world_size = th_world_size(db);
-      for(I32 y = 0; y < world_size.y; ++y) {
-        for(I32 x = 0; x < world_size.x; ++x) {
-          V2I pos = {x, y};
-          const WG_TerrainType* type = wg_terrain_type_get((U32)th_ifield_get(db, pos, TH_IField_Terrain));
-          for(WG_Stock stock = 0; stock < WG_Stock_COUNT; stock += 1) {
-            F32* field = th_field(db, pos, WG_STOCK_FIELDS[stock]);
-            *field = Min(*field + type->stock_renew_rate[stock], type->stock_max[stock]);
-          }
-        }
-      }
-    }
-
     //- fp: Claim -- reads: pawn positions; writes: influence_map, Home
     {
       BD_Board* board = game->board;
@@ -459,11 +381,10 @@ internal void gm_update(GM_Game* game, F32 dt) {
       U64 at = 0;
       for(TH_Id this = th_first_flagged(db, TH_Flag_HasInfluence);
           this != 0; this = th_next_flagged(db, TH_Flag_HasInfluence, this)) {
-        const GM_WayOfLife* wol = gm__way_of_life_get(db, this);
         sources.elems[at] = (BD_Source){
             .key = this, // a placed thing is its own pawn's key
             .strength = STRENGTH,
-            .range = wol->reach,
+            .range = GM_CLAIM_REACH,
             .falloff = FALLOFF,
         };
         at += 1;
@@ -471,73 +392,13 @@ internal void gm_update(GM_Game* game, F32 dt) {
 
       // The nil id is the unassigned key. th_field_ref_set reads it as an
       // instruction to clear the tile.
-      influence_map = bd_partition(scratch.arena, board, sources, 0);
+      BD_PartitionCell* influence_map = bd_partition(scratch.arena, board, sources, 0);
       for(I32 y = 0; y < board->height; y += 1) {
         for(I32 x = 0; x < board->width; x += 1) {
           TH_Id home = (TH_Id)influence_map[(U64)y * board->width + x].key;
           th_field_ref_set(db, TH_FieldRef_Home, (V2I){x, y}, home);
         }
       }
-    }
-
-    //- fp: Produce -- reads: influence_map, stocks; writes: stocks, food store
-    // The partition gives each tile to one group, so two groups never draw
-    // from one tile. The order of the groups therefore does not change the
-    // result.
-    for(TH_Id this = th_first_flagged(db, TH_Flag_HasInfluence);
-        this != 0; this = th_next_flagged(db, TH_Flag_HasInfluence, this)) {
-      F32 population = th_var_get(db, this, TH_Var_Population);
-      F32 store = th_var_get(db, this, TH_Var_FoodStore);
-      V2I my_pos = gm__xy_get(db, this);
-      const GM_WayOfLife* wol = gm__way_of_life_get(db, this);
-      BD_Disc disc = bd_disc(game->board, my_pos, wol->reach);
-
-      //- fp: pass one: the stock that grows on the tiles of this group
-      F32 available = 0.0;
-      for(BD_Disc iter = disc; bd_disc_next(&iter);) {
-        V2I cell = iter.pos;
-        B32 owned = influence_map[(U32)(cell.y * game->board->width + cell.x)].key == this;
-        if(!owned) { continue; }
-        available += th_field_get(db, cell, wol->stock);
-      }
-
-      // The group wants food for this tick and for its reserve. It counts the
-      // food that it holds already, so a full store stops the work. Three
-      // quantities limit the result: the food that the group wants, the hands
-      // that it has, and the stock that grows on its land.
-      F32 need = ClampBot(population * (1.0f + wol->reserve) - store, 0.0f);
-      F32 hands = population * wol->labour;
-      F32 target = Min(need / wol->yield, hands);
-      F32 take_fraction = available > 0 ? Min(1.0f, target / available) : 0;
-
-      //- fp: pass two: the same part of every tile, so a rich tile gives more
-      F32 got = 0;
-      for(BD_Disc iter = disc; bd_disc_next(&iter);) {
-        V2I cell = iter.pos;
-        B32 owned = influence_map[(U32)(cell.y * game->board->width + cell.x)].key == this;
-        if(!owned) { continue; }
-        F32* stock = th_field(db, cell, wol->stock);
-        F32 extracted = *stock * take_fraction;
-        *stock -= extracted;
-        got += extracted * wol->yield;
-      }
-      th_var_set(db, this, TH_Var_FoodStore, store + got);
-    }
-
-    //- fp: Consume -- reads: population, food store; writes: population, food store
-    // The phase visits every thing, but a thing with no people eats nothing.
-    // The people eat first, and the food that is left over spoils in part. A
-    // group that ate its fill grows by one. A group that ate less becomes
-    // smaller by one.
-    for(TH_Id this = th_first(db); this != 0; this = th_next(db, this)) {
-      F32 population = th_var_get(db, this, TH_Var_Population);
-      if(population <= 0) { continue; }
-      F32 food = th_var_get(db, this, TH_Var_FoodStore);
-      F32 eaten = Min(food, population);
-      F32 spoiled = Max((food - eaten) * 0.01f, 0.0f);
-      F32 change = (eaten >= population) ? 1.0f : -1.0f;
-      th_var_set(db, this, TH_Var_Population, population + change);
-      th_var_set(db, this, TH_Var_FoodStore, food - eaten - spoiled);
     }
 
     //- fp: Move -- reads: goals, board; writes: positions, move points

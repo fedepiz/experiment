@@ -8,26 +8,27 @@
 ////////////////////////////////
 //~ fp: Frame Timing
 //
-// Backend-independent: backends call wnd__frame_mark from wnd_swap, this
-// keeps the delta.
+// This code does not depend on a backend. Each backend calls wnd__frame_mark
+// in wnd_swap, and this code holds the time between two such calls.
 
 global U64 wnd__frame_last_us;
 global F32 wnd__frame_dt;
 global F32 wnd__frame_dt_raw;
-global F32 wnd__frame_debt; // measured-but-unreported wall time, seconds
+global F32 wnd__frame_debt; // the seconds of measured time that no frame reported yet
 
 internal void wnd__frame_mark(void) {
   U64 now = os_now_us();
   if(wnd__frame_last_us != 0) {
     F32 dt = (F32)(now - wnd__frame_last_us) / 1000000.0f;
     wnd__frame_dt_raw = dt;
-    // pay time out in whole display periods, banking the difference from the
-    // measurement as a debt (see the header). The steady state reports
-    // exactly one period per frame no matter how the raw unblock times
-    // wobble -- a 17ms block followed by a 0.5ms queue-absorbed return reads
-    // as two even periods, which is what the display actually showed. Real
-    // slowdowns push the debt past the threshold and pay out extra whole
-    // periods immediately, so a stall is still a stall.
+    // Give the time as whole periods of the display, and hold the difference
+    // from the measurement as a debt. See the header. In the usual state this
+    // code gives exactly one period for each frame, and the movement of the
+    // raw measurement changes nothing: a block of 17ms and then a return after
+    // 0.5ms, which the queue absorbed, read as two equal periods, which is
+    // what the display showed. A true slowdown moves the debt past the limit,
+    // and the code then gives more whole periods at once. A stall therefore
+    // stays a stall.
     F32 hz = wnd_refresh_rate();
     if(hz > 0) {
       F32 period = 1.0f / hz;
@@ -63,18 +64,19 @@ internal WND_Event* wnd__push_event(Arena* arena, WND_EventList* list, WND_Event
 ////////////////////////////////
 //~ fp: Input
 //
-// The digest the frontier reads. Events live only for the length of a poll:
-// they are pumped onto scratch, folded in here, and dropped.
+// The digest that the code above reads. An event exists for the length of one
+// poll: the backend puts it on a scratch arena, this code reads it into the
+// digest, and the arena then gives the memory back.
 
 typedef struct {
   B8 key_down[WND_Key_COUNT];
-  B8 key_pressed[WND_Key_COUNT]; // latch: went down at any point this frame
+  B8 key_pressed[WND_Key_COUNT]; // It holds for the frame: the key went down at some point of this frame.
   B8 mouse_down[WND_MouseButton_COUNT];
-  B8 mouse_pressed[WND_MouseButton_COUNT];  // latch, same idea
-  B8 mouse_released[WND_MouseButton_COUNT]; // latch: went up at any point this frame
+  B8 mouse_pressed[WND_MouseButton_COUNT];  // It holds for the frame, as key_pressed does.
+  B8 mouse_released[WND_MouseButton_COUNT]; // It holds for the frame: the button went up at some point of this frame.
   B8 close_requested;
   V2 mouse_pos;
-  V2 scroll; // accumulated over the frame: several wheel events sum
+  V2 scroll; // the sum across the frame, because the wheel can make more than one event
 } WND_InputState;
 
 global WND_InputState wnd__input;
@@ -120,8 +122,8 @@ internal void wnd_poll(void) {
   ArenaTemp scratch = arena_get_scratch(0, 0);
   WND_EventList events = wnd__get_events(scratch.arena);
 
-  // the per-frame latches reset BEFORE this frame's events land, or edges
-  // can never be observed
+  // Clear the members that hold for one frame BEFORE the events of this frame
+  // arrive. Without that order a caller could never read an edge.
   MemoryZeroArray(wnd__input.key_pressed);
   MemoryZeroArray(wnd__input.mouse_pressed);
   MemoryZeroArray(wnd__input.mouse_released);
@@ -132,18 +134,18 @@ internal void wnd_poll(void) {
     switch(evt->type) {
       case WND_EventType_KeyDown:
         wnd__input.key_down[evt->key] = true;
-        wnd__input.key_pressed[evt->key] = true; // survives a same-frame KeyUp
+        wnd__input.key_pressed[evt->key] = true; // a KeyUp in this same frame does not clear it
         break;
       case WND_EventType_KeyUp:
         wnd__input.key_down[evt->key] = false;
         break;
       case WND_EventType_MouseDown:
         wnd__input.mouse_down[evt->button] = true;
-        wnd__input.mouse_pressed[evt->button] = true; // survives a same-frame MouseUp
+        wnd__input.mouse_pressed[evt->button] = true; // a MouseUp in this same frame does not clear it
         break;
       case WND_EventType_MouseUp:
         wnd__input.mouse_down[evt->button] = false;
-        wnd__input.mouse_released[evt->button] = true; // survives a same-frame MouseDown
+        wnd__input.mouse_released[evt->button] = true; // a MouseDown in this same frame does not clear it
         break;
       case WND_EventType_MouseMoved:
         wnd__input.mouse_pos = evt->pos;
@@ -165,10 +167,11 @@ internal void wnd_poll(void) {
 ////////////////////////////////
 //~ fp: Per-OS Backend
 //
-// Xlib pollutes the TU with typedefs and macros (Window, Display, True, None,
-// ...) -- in a unity build that pollution is global, so avoid those names for
-// our own symbols. The mac backend dodges the equivalent problem: Cocoa stays
-// behind the C compatibility layer in mac/cocoa.[hm], its own TU.
+// Xlib adds many typedefs and macros to this translation unit: Window,
+// Display, True, None and more. This is a unity build, so those names become
+// global. Do not use one of them for a symbol of this program. The Mac backend
+// has no such problem, because Cocoa stays behind the C layer in mac/cocoa.h
+// and mac/cocoa.m, which is a separate translation unit.
 
 #if OS_LINUX
 #include "gfx/linux/window.c"

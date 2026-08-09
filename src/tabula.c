@@ -9,12 +9,14 @@
 ////////////////////////////////
 //~ fp: Lexer
 //
-// Token stream over the source. Atoms (bare words) cover both identifiers and
-// numbers -- the parser decides which by trying to read the text as a number.
+// The stream of tokens of the source. An atom is a word with no quotation
+// marks, and it covers an identifier and a number. The parser reads the text
+// of an atom as a number, and the result of that read decides which of the two
+// the atom is.
 
 typedef U32 TB_TokenKind;
 enum {
-  TB_TokenKind_EOF, // zero, so a zeroed token reads as end-of-input
+  TB_TokenKind_EOF, // Its value is 0, so a token of zeros is the end of the input.
   TB_TokenKind_Atom,
   TB_TokenKind_String,
   TB_TokenKind_LBrace,
@@ -26,16 +28,16 @@ enum {
 
 typedef struct {
   TB_TokenKind kind;
-  String8 text; // atom text, or string contents with quotes stripped
+  String8 text; // the text of an atom, or the contents of a string without the quotation marks
   U64 offset;
 } TB_Token;
 
 typedef struct {
   Arena* arena;
   String8 source;
-  U64 at;         // lex cursor
-  TB_Token token; // one-token lookahead
-  U64 depth;      // object/list nesting, to bound recursion
+  U64 at;         // the position of the lexer in the source
+  TB_Token token; // the next token, which the parser reads before it needs it
+  U64 depth;      // the objects and the lists inside each other, which limits the recursion
   TB_ErrorList errors;
 } TB_Parser;
 
@@ -77,7 +79,8 @@ internal B32 tb__is_atom_terminator(U8 c) {
 internal TB_Token tb__lex_token(TB_Parser* parser) {
   String8 src = parser->source;
 
-  // skip whitespace and '#' line comments
+  // Step over each space, and over each comment, which starts at a number
+  // sign and ends at the end of its line.
   for(;;) {
     while(parser->at < src.size && tb__is_whitespace(src.str[parser->at])) { parser->at += 1; }
     if(parser->at < src.size && src.str[parser->at] == '#') {
@@ -89,7 +92,7 @@ internal TB_Token tb__lex_token(TB_Parser* parser) {
 
   TB_Token token = {0};
   token.offset = parser->at;
-  if(parser->at >= src.size) { return token; } // EOF
+  if(parser->at >= src.size) { return token; } // the end of the input
 
   U8 c = src.str[parser->at];
   switch(c) {
@@ -130,8 +133,9 @@ internal void tb__advance(TB_Parser* parser) {
 ////////////////////////////////
 //~ fp: Number Recognition
 //
-// '-'? digits ('.' digits)? and nothing else. Anything that doesn't fully
-// match stays an identifier ("1.2.3", "2x", "-", ...).
+// A number is an optional minus sign, then digits, then an optional point with
+// more digits after it, and nothing more. A text that does not match that
+// pattern in full stays an identifier, such as "1.2.3", "2x" and "-".
 
 internal B32 tb__f32_from_atom(String8 text, F32* out) {
   U64 at = 0;
@@ -168,9 +172,10 @@ internal B32 tb__f32_from_atom(String8 text, F32* out) {
 ////////////////////////////////
 //~ fp: Parser
 //
-// Recursive descent that never fails hard: every wrong token produces an error
-// plus a recovery that provably advances, so parsing always terminates and the
-// tree keeps everything that did parse.
+// The parser goes down through the grammar with one function for each rule,
+// and it does not stop the program. Each token that is wrong makes an error
+// and a step that always moves forward. A parse therefore always ends, and the
+// tree holds each part that the parser read.
 
 internal void tb__parse_members(TB_Parser* parser, TB_Value* object, B32 is_root);
 
@@ -238,8 +243,10 @@ internal void tb__parse_value(TB_Parser* parser, TB_Value* out) {
     } break;
 
     default: {
-      // Equals / RBrace / RBracket / EOF in value position: report, leave the
-      // value nil, and do NOT consume -- the caller knows how to handle these
+      // An Equals, an RBrace, an RBracket and the end of the input are wrong
+      // at the position of a value. Report the error, leave the value nil, and
+      // do NOT read the token, because the caller knows what to do with each
+      // of the four.
       tb__errorf(parser, token.offset, "expected a value");
     } break;
   }
@@ -277,7 +284,7 @@ internal void tb__parse_members(TB_Parser* parser, TB_Value* object, B32 is_root
           DLLPushBack(object->first_member, object->last_member, node);
           object->member_count += 1;
         } else {
-          // the offending token is not consumed -- it may be the next key
+          // Do not read the token that is wrong here. It can be the next key.
           tb__errorf(parser, token.offset, "expected '=' after key '%S'", token.text);
         }
       } break;
@@ -285,7 +292,8 @@ internal void tb__parse_members(TB_Parser* parser, TB_Value* object, B32 is_root
       case TB_TokenKind_Equals: {
         tb__errorf(parser, token.offset, "expected a key before '='");
         tb__advance(parser);
-        // swallow the orphaned value, if one follows, to stay aligned
+        // Read the value that has no key, where such a value follows, so that
+        // the parser stays at a correct position.
         TB_TokenKind k = parser->token.kind;
         if(k == TB_TokenKind_Atom || k == TB_TokenKind_String ||
            k == TB_TokenKind_LBrace || k == TB_TokenKind_LBracket) {
@@ -298,7 +306,7 @@ internal void tb__parse_members(TB_Parser* parser, TB_Value* object, B32 is_root
       case TB_TokenKind_LBracket: {
         tb__errorf(parser, token.offset, "expected 'key =' before value");
         TB_Value discard = {0};
-        tb__parse_value(parser, &discard); // consume the whole subtree
+        tb__parse_value(parser, &discard); // read the whole tree below this point
       } break;
 
       case TB_TokenKind_RBracket: {
@@ -325,7 +333,8 @@ internal TB_ParseResult tb_parse(Arena* arena, String8 source) {
 
 internal TB_Value* tb_parse_file_and_report(Arena* arena, String8 path) {
   TB_Value* result = &tb_nil_value;
-  // the tree holds views into the source text, so both live on the same arena
+  // The tree holds views into the text of the source, so the text and the tree
+  // are on one arena.
   B32 read_ok = 0;
   String8 source = os_read_entire_file(arena, path, &read_ok);
   if(!read_ok) {

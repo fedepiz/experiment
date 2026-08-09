@@ -102,8 +102,6 @@ typedef U16 TH_Var;
 enum {
   TH_Var_Nil,
   TH_Var_MovePts,
-  TH_Var_Population,
-  TH_Var_FoodStore,
   TH_Var_COUNT
 };
 
@@ -121,7 +119,6 @@ enum {
   TH_IVar_X,
   TH_IVar_Y,
   TH_IVar_Sprite,
-  TH_IVar_WayOfLife,
   TH_IVar_COUNT
 };
 
@@ -193,15 +190,11 @@ internal void th_world_size_set(TH_Db* db, I32 width, I32 height);
 internal V2I th_world_size(TH_Db* db);
 internal B32 th_world_in_bounds(TH_Db* db, V2I pos);
 
-// a field variable is a scalar at each position
+// A field variable is a scalar at each position. The family holds the nil
+// column only. Add a member to give each tile a new scalar.
 typedef U16 TH_Field;
 enum {
   TH_Field_Nil,
-  // One column for each stock (defs.h). The database and the terrain table
-  // therefore agree on what a tile grows.
-#define X(name, key) TH_Field_##name,
-  DF_STOCK_LIST
-#undef X
   TH_Field_COUNT
 };
 StaticAssert(TH_Field_Nil == 0, th_field_nil_first);

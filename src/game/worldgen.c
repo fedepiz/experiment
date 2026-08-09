@@ -155,15 +155,6 @@ internal void wg_terrain_table_load(String8 path) {
     type->temperature = wg__band_from_key(src, str8_lit("temperature"));
     type->needs_coast = tb_get_num(src, str8_lit("needs_coast"), 0) != 0;
 
-    for(WG_Stock stock = 0; stock < WG_Stock_COUNT; stock += 1) {
-      String8 key = WG_STOCK_KEYS[stock];
-      String8 max_key = push_str8f(scratch.arena, "%S_max", key);
-      type->stock_max[stock] = tb_get_num(src, max_key, 0.0);
-
-      String8 renew_key = push_str8f(scratch.arena, "%S_renew_rate", key);
-      type->stock_renew_rate[stock] = tb_get_num(src, renew_key, 0.0);
-    }
-
     //- fp: the flags, which are a list of names from WG_TERRAIN_FLAG_DEFS. A
     //  row with no such list has no flag. A name that the table does not hold
     //  writes a report and adds nothing, so a wrong spelling cannot read as

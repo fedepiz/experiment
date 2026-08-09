@@ -10,20 +10,23 @@
 ////////////////////////////////
 //~ fp: OpenGL Backend
 //
-// One shader, one instanced draw call per batch. Every quad is 4 vertices
-// synthesized from gl_VertexID; all actual data rides per-instance. The
-// fragment shader does the rest: rounded-box SDF for corners and borders,
-// softness as a smoothstep band, per-quad clip, texture sampling with the
-// R8-as-coverage special case.
+// The backend has one shader, and it makes one instanced draw call for each
+// batch. Each quad is four vertices, which the vertex shader computes from
+// gl_VertexID. Each value of a quad goes with the instance.
 //
-// No GL type or call escapes this file.
+// The fragment shader does the rest of the work: a signed distance field of a
+// box with round corners, which gives the corners and the border; a band of
+// smoothstep, which gives the softness; the clip of the quad; and the sample
+// of the texture, where an R8 texture is a special case that holds a coverage.
+//
+// No GL type and no GL call leaves this file.
 
 #if OS_MAC
-# define GL_SILENCE_DEPRECATION // deliberate GL-over-Metal choice; see cocoa.m
+# define GL_SILENCE_DEPRECATION // The choice of GL against Metal is deliberate. See cocoa.m.
 # include <OpenGL/gl3.h>
 # define R_GL_BACKEND 1
 #elif OS_WINDOWS
-# include "gfx/win/gl.c" // the 1.1 header + runtime loading of everything newer
+# include "gfx/win/gl.c" // the header of GL 1.1, and the load of each later function while the program runs
 # define R_GL_BACKEND 1
 #else
 # define R_GL_BACKEND 0
@@ -34,20 +37,21 @@
 ////////////////////////////////
 //~ fp: GPU Instance Layout
 //
-// Mirrored by the vertex shader's attribute declarations: location i reads
-// 16 bytes at offset i*16. Keep the two in lockstep.
+// The attribute declarations of the vertex shader hold this same layout:
+// location i reads 16 bytes at the offset i*16. A change to one of the two
+// needs the same change to the other.
 
 typedef struct {
-  F32 dst[4];       // min.x min.y max.x max.y, points
-  F32 src[4];       // texel rect
-  F32 clip[4];      // points; pushed as a huge rect when the quad has none
-  F32 colors[4][4]; // TL TR BL BR
-  F32 radii[4];     // TL TR BL BR
+  F32 dst[4];       // min.x, min.y, max.x and max.y, in points
+  F32 src[4];       // a rect of texels
+  F32 clip[4];      // Points. A quad with no clip pushes a very large rect.
+  F32 colors[4][4]; // top left, top right, bottom left, bottom right
+  F32 radii[4];     // top left, top right, bottom left, bottom right
   F32 border;
   F32 softness;
   F32 rotation;
   F32 pad;
-  F32 mask_src[4];  // texel rect; all zeros = no mask
+  F32 mask_src[4];  // A rect of texels. A rect of 0 gives no mask.
 } R_GL_Inst;
 StaticAssert(sizeof(R_GL_Inst) == 10 * 16, r_gl_inst_matches_attrib_layout);
 
@@ -59,8 +63,9 @@ struct R_GL_InstChunk {
   R_GL_Inst insts[R_GL_INST_CHUNK_CAP];
 };
 
-// A maximal run of consecutive quads sharing a texture; drawn in formation
-// order, so push order is preserved exactly.
+// The longest run of quads that follow each other and that share one texture.
+// The renderer draws the batches in the order that it made them, so it keeps
+// the order of the pushes.
 typedef struct R_GL_Batch R_GL_Batch;
 struct R_GL_Batch {
   R_GL_Batch* next;
@@ -93,9 +98,9 @@ typedef struct {
   GLint u_tex_size;
   GLint u_tex_r8;
   R_GL_Tex textures[R_GL_TEX_CAP];
-  U32 white_slot; // 1x1 white texture; what nil-tex quads resolve to
+  U32 white_slot; // The white texture of 1x1 texels. A quad with a nil texture reads it.
 
-  //- per-frame
+  //- the members of one frame
   Arena* frame_arena;
   V2 fb_size_px;
   F32 scale;
@@ -118,13 +123,13 @@ global const char* r_gl__vs_src =
   "layout(location = 5) in vec4 a_color_bl;\n"
   "layout(location = 6) in vec4 a_color_br;\n"
   "layout(location = 7) in vec4 a_radii;\n"
-  "layout(location = 8) in vec4 a_misc;\n" // border, softness, rotation, pad
+  "layout(location = 8) in vec4 a_misc;\n" // the border, the softness, the rotation and the pad
   "layout(location = 9) in vec4 a_mask_src;\n"
   "uniform vec2 u_viewport;\n"             // points
-  "out vec2 v_local;\n"                    // position relative to quad center, unrotated
-  "out vec2 v_pos;\n"                      // screen position, points (for clip)
+  "out vec2 v_local;\n"                    // the position from the center of the quad, before the rotation
+  "out vec2 v_pos;\n"                      // the position on the screen, in points, for the clip
   "out vec2 v_uv;\n"                       // texels
-  "out vec2 v_mask_uv;\n"                  // texels; meaningful when v_mask_on
+  "out vec2 v_mask_uv;\n"                  // texels. It holds a value where v_mask_on is above 0.
   "out vec4 v_color;\n"
   "flat out float v_mask_on;\n"
   "flat out vec2 v_half_size;\n"
@@ -136,21 +141,24 @@ global const char* r_gl__vs_src =
   "  vec2 corner = 2.0 * t - 1.0;\n"
   "  vec2 center = 0.5 * (a_dst.xy + a_dst.zw);\n"
   "  vec2 half_size = 0.5 * (a_dst.zw - a_dst.xy);\n"
-  // the fade band lies entirely outside the shape (see the fragment shader),
-  // so the quad inflates by the band's full width to give it fragments to
-  // live in -- without this, straight edges clip the band away and only
-  // corners come out antialiased. pad is 0 for hard-edged quads.
+  // The band of the fade is fully outside the shape. See the fragment shader.
+  // The quad therefore grows by the full width of that band, so that the band
+  // has fragments. Without this step a straight edge removes the band, and the
+  // corners alone become smooth. The pad is 0 for a quad with a hard edge.
   "  float pad = 2.0 * a_misc.y;\n"
   "  vec2 local = corner * (half_size + vec2(pad));\n"
-  // unrotated corners come straight from a_dst (multiplying by 0/1 and adding
-  // 0 are exact in fp), NOT from center +- half_size, whose rounding differs
-  // between two quads sharing an edge coordinate and opens sliver gaps
-  // between abutting tiles; the +- pad term is exactly 0 there (soft quads
-  // don't abut, so their inexactness is fine)
+  // A corner with no rotation comes from a_dst, because a multiplication by 0
+  // or by 1 and an addition of 0 are exact in floating point. It does not come
+  // from center plus or minus half_size, whose rounding is different for two
+  // quads that share the coordinate of an edge. That difference opens a thin
+  // gap between two tiles that touch. The term with the pad is exactly 0
+  // there. A soft quad does not touch another quad, so its small error causes
+  // no such gap.
   "  vec2 pos = a_dst.xy * (1.0 - t) + a_dst.zw * t + corner * pad;\n"
   "  if (a_misc.z != 0.0) {\n"
-  // y grows downward, so visual counter-clockwise is a clockwise rotation
-  // in coordinate terms -- hence the transposed rotation matrix
+  // y grows toward the bottom. A turn that a person sees as counter-clockwise
+  // is therefore clockwise in the coordinates, so this matrix is the transpose
+  // of the usual rotation matrix.
   "    float c = cos(a_misc.z);\n"
   "    float s = sin(a_misc.z);\n"
   "    pos = center + vec2(local.x * c + local.y * s, -local.x * s + local.y * c);\n"
@@ -158,12 +166,13 @@ global const char* r_gl__vs_src =
   "  gl_Position = vec4(2.0 * pos.x / u_viewport.x - 1.0, 1.0 - 2.0 * pos.y / u_viewport.y, 0.0, 1.0);\n"
   "  v_local = local;\n"
   "  v_pos = pos;\n"
-  // uv stretches with the inflation so texels stay glued to the geometry;
-  // at pad 0 this reduces to exactly t (0.5 +- 0.5 is exact in fp)
+  // The uv grows with the quad, so a texel keeps its place on the geometry. At
+  // a pad of 0 this expression gives exactly t, because 0.5 plus or minus 0.5
+  // is exact in floating point.
   "  vec2 t_uv = 0.5 + (t - 0.5) * (half_size + vec2(pad)) / max(half_size, vec2(1e-6));\n"
   "  v_uv = mix(a_src.xy, a_src.zw, t_uv);\n"
   "  v_mask_uv = mix(a_mask_src.xy, a_mask_src.zw, t_uv);\n"
-  "  v_mask_on = (a_mask_src.z > a_mask_src.x) ? 1.0 : 0.0;\n" // zero rect = no mask
+  "  v_mask_on = (a_mask_src.z > a_mask_src.x) ? 1.0 : 0.0;\n" // a rect of 0 gives no mask
   "  v_color = mix(mix(a_color_tl, a_color_tr, t.x), mix(a_color_bl, a_color_br, t.x), t.y);\n"
   "  v_half_size = half_size;\n"
   "  v_clip = a_clip;\n"
@@ -192,25 +201,27 @@ global const char* r_gl__fs_src =
   "  return length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;\n"
   "}\n"
   "void main() {\n"
-  // quadrant picks the corner radius: local y < 0 is the top half
+  // The quadrant of the fragment chooses the radius of the corner. A local y
+  // below 0 is the top half.
   "  float r = (v_local.x < 0.0) ? ((v_local.y < 0.0) ? v_radii.x : v_radii.z)\n"
   "                              : ((v_local.y < 0.0) ? v_radii.y : v_radii.w);\n"
   "  float d = rounded_box_sdf(v_local, v_half_size, r);\n"
-  "  float soft = max(v_border_soft.y, 0.001);\n" // 0 softness reads as hard edge
-  // the falloff band sits entirely OUTSIDE the shape (d in [0, 2*soft]), so a
-  // fragment on the boundary keeps full coverage -- abutting hard-edged quads
-  // tile without half-alpha seam lines at shared edges
+  "  float soft = max(v_border_soft.y, 0.001);\n" // a softness of 0 gives a hard edge
+  // The band of the fall is fully OUTSIDE the shape, where d is from 0 to
+  // 2*soft. A fragment on the boundary therefore keeps its full coverage. Two
+  // quads with hard edges that touch then show no line of half alpha at the
+  // edge that they share.
   "  float coverage = 1.0 - smoothstep(0.0, 2.0 * soft, d);\n"
   "  float border = v_border_soft.x;\n"
   "  if (border > 0.0) {\n"
-  "    coverage *= smoothstep(0.0, 2.0 * soft, d + border);\n" // keep only the edge band
+  "    coverage *= smoothstep(0.0, 2.0 * soft, d + border);\n" // keep the band at the edge alone
   "  }\n"
   "  if (v_pos.x < v_clip.x || v_pos.y < v_clip.y || v_pos.x > v_clip.z || v_pos.y > v_clip.w) {\n"
   "    coverage = 0.0;\n"
   "  }\n"
   "  vec4 texel = texture(u_tex, v_uv / u_tex_size);\n"
   "  if (u_tex_r8 == 1) {\n"
-  "    texel = vec4(1.0, 1.0, 1.0, texel.r);\n" // R8 is coverage (glyphs)
+  "    texel = vec4(1.0, 1.0, 1.0, texel.r);\n" // An R8 texture holds a coverage. A glyph uses it.
   "  }\n"
   "  if (v_mask_on > 0.5) {\n"
   "    coverage *= texture(u_tex, v_mask_uv / u_tex_size).a;\n"
@@ -236,10 +247,10 @@ internal GLuint r_gl__compile_shader(GLenum kind, const char* src) {
 ////////////////////////////////
 //~ fp: Init
 
-// Requires a current GL context: wnd_open + wnd_equip_gl first.
+// A GL context must be current. Call wnd_open and wnd_equip_gl first.
 internal void r_init(void) {
 #if OS_WINDOWS
-  r_gl__load_procs(); // needs that current context too -- see win/gl.c
+  r_gl__load_procs(); // It needs that current context too. See win/gl.c.
 #endif
 
   //- program
@@ -267,8 +278,9 @@ internal void r_init(void) {
   r_gl_state.u_tex_size = glGetUniformLocation(program, "u_tex_size");
   r_gl_state.u_tex_r8   = glGetUniformLocation(program, "u_tex_r8");
 
-  //- vao + instance buffer: 10 vec4 attributes, all per-instance; the
-  //  vertex corner comes from gl_VertexID, so there is no per-vertex data
+  //- The vertex array and the instance buffer. There are 10 attributes of
+  //  type vec4, and each one goes with the instance. The corner of a vertex
+  //  comes from gl_VertexID, so there is no data for each vertex.
   glGenVertexArrays(1, &r_gl_state.vao);
   glBindVertexArray(r_gl_state.vao);
   glGenBuffers(1, &r_gl_state.instance_vbo);
@@ -279,10 +291,11 @@ internal void r_init(void) {
     glVertexAttribDivisor(i, 1);
   }
 
-  // R8 rows are not 4-byte aligned; harmless for RGBA8
+  // A row of an R8 texture does not align to 4 bytes. This value changes
+  // nothing for an RGBA8 texture.
   glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
-  //- the white texture: what solid-color quads sample
+  //- The white texture. A quad of a solid color reads it.
   U32 white = 0xFFFFFFFF;
   R_Handle white_handle = r_tex_alloc(1, 1, R_TexFormat_RGBA8, R_TexSampling_Nearest, &white);
   r_gl_state.white_slot = (U32)(white_handle.u64 - 1);
@@ -353,7 +366,7 @@ internal void r_tex_update(R_Handle handle, I32 x, I32 y, I32 w, I32 h, void* da
 internal void r_frame_begin(Arena* frame_arena, V2 framebuffer_size_px, F32 points_to_pixels) {
   r_gl_state.frame_arena = frame_arena;
   r_gl_state.fb_size_px = framebuffer_size_px;
-  Assert(points_to_pixels > 0); // draw owns the ZII 0->1 default; here it's contract
+  Assert(points_to_pixels > 0); // The draw layer turns a ZII 0 into 1. This layer needs a value above 0.
   r_gl_state.scale = points_to_pixels;
   r_gl_state.first_batch = 0;
   r_gl_state.last_batch = 0;
@@ -367,14 +380,15 @@ internal void r_push_quad(R_Quad* quad) {
   Arena* arena = r_gl_state.frame_arena;
   if(arena == 0) { return; }
 
-  //- resolve texture: nil (or dangling) draws as solid color via white
+  //- Find the texture. A nil handle, and a handle to a texture that is gone,
+  //  both give the white texture, which draws a solid color.
   U32 slot = r_gl_state.white_slot;
   if(quad->tex.u64 != 0 && quad->tex.u64 <= R_GL_TEX_CAP &&
      r_gl_state.textures[quad->tex.u64 - 1].used) {
     slot = (U32)(quad->tex.u64 - 1);
   }
 
-  //- extend the current run, or start a new one on texture change
+  //- Add to the current batch. A change of texture starts a new batch.
   R_GL_Batch* batch = r_gl_state.last_batch;
   if(batch == 0 || batch->tex_slot != slot) {
     batch = push_array(arena, R_GL_Batch, 1);
@@ -387,7 +401,7 @@ internal void r_push_quad(R_Quad* quad) {
     SLLQueuePush(batch->first_chunk, batch->last_chunk, chunk);
   }
 
-  //- flatten the quad into the GPU layout
+  //- Write the quad in the layout that the GPU reads.
   R_GL_Inst* inst = &chunk->insts[chunk->count];
   chunk->count += 1;
   batch->inst_count += 1;
@@ -406,7 +420,7 @@ internal void r_push_quad(R_Quad* quad) {
     inst->clip[2] = quad->clip.max.x;
     inst->clip[3] = quad->clip.max.y;
   } else {
-    // zero clip = no clip: substitute a rect nothing escapes
+    // A clip of 0 clips nothing. Put a rect here that holds each fragment.
     inst->clip[0] = -1e9f;
     inst->clip[1] = -1e9f;
     inst->clip[2] = 1e9f;
@@ -451,8 +465,9 @@ internal void r_frame_end(void) {
     glUniform2f(r_gl_state.u_tex_size, (F32)tex->w, (F32)tex->h);
     glUniform1i(r_gl_state.u_tex_r8, tex->format == R_TexFormat_R8);
 
-    // orphan-and-refill streaming: macOS caps at GL 4.1, which lacks
-    // BaseInstance draws, so every batch draws from offset 0 of the vbo
+    // Discard the contents of the buffer, then write the new contents. Each
+    // batch draws from the offset 0 of the buffer, because macOS gives GL 4.1
+    // at most, and GL 4.1 has no draw call with a base instance.
     U64 total_size = batch->inst_count * sizeof(R_GL_Inst);
     glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)total_size, 0, GL_STREAM_DRAW);
     U64 offset = 0;
@@ -481,8 +496,9 @@ internal void r_frame_end(void) {
 ////////////////////////////////
 //~ fp: Stubs
 //
-// GL headers + function loading for this OS still to come; stubs keep the
-// build compiling (mirrors the window layer's GLX stubs).
+// The GL headers and the function loader for this operating system do not
+// exist yet. These stubs keep the build correct. The window layer has the same
+// kind of stubs for GLX.
 
 internal void r_init(void) { NotImplemented; }
 internal R_Handle r_tex_alloc(I32 w, I32 h, R_TexFormat format, R_TexSampling sampling, void* opt_data) {

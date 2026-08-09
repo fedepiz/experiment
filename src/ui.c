@@ -9,37 +9,42 @@
 ////////////////////////////////
 //~ fp: UI State
 //
-// One module-internal global, like the gfx modules. The frame arena and
-// everything on it (boxes, lines, draw commands) live for one frame; the
-// persistent arena holds the box-state table and the text cache for the
-// module's whole life. Box states not touched for a frame are recycled
-// through a free list at the next ui_frame_begin.
+// This module holds one global, as each gfx module does.
+//
+// The frame arena and each thing on it, which is a box, a line and a draw
+// command, exist for one frame. The other arena holds the table of the box
+// states and the cache of the text sizes, for the life of the module.
+//
+// A box state that no box read in the last frame goes to a free list at the
+// next ui_frame_begin, and a later box can take it.
 
 #define UI_STACK_CAP         64
-#define UI_STATE_BUCKETS     256  // power of two
-#define UI_TEXT_CACHE_SLOTS  4096 // power of two
-#define UI_TAG_SET_BUCKETS   64   // power of two
-#define UI_COLOR_CACHE_SLOTS 1024 // power of two
+#define UI_STATE_BUCKETS     256  // a power of two
+#define UI_TEXT_CACHE_SLOTS  4096 // a power of two
+#define UI_TAG_SET_BUCKETS   64   // a power of two
+#define UI_COLOR_CACHE_SLOTS 1024 // a power of two
 
 struct UI_BoxState {
-  UI_BoxState* hash_next; // bucket chain, or free-list link when recycled
+  UI_BoxState* hash_next; // the next state of this bucket, or the next state of the free list
   UI_Key key;
   U64 last_frame_touched;
-  Rect rect; // final rect as of the last frame the box was built
+  Rect rect; // the rect of the last frame in which a caller built this box
   B8 rect_valid;
-  F32 hot_t;    // 0..1, chases "is the hot box"
-  F32 active_t; // 0..1, chases "is the active box"
+  F32 hot_t;    // From 0 to 1. It moves toward 1 while this box is the hot box.
+  F32 active_t; // From 0 to 1. It moves toward 1 while this box is the active box.
 };
 
-// direct-mapped measurement cache; a colliding key overwrites the slot
+// The cache of the text sizes. Each key maps to one slot, and a second key
+// that maps to that slot writes over the first.
 typedef struct {
-  U64 key; // 0 = empty
+  U64 key; // A key of 0 says that the slot is empty.
   V2 dim;
 } UI_TextCacheSlot;
 
-// tag-set key -> the pushed-tag strings it stands for, recorded at
-// ui_push_tag on the persistent arena so any later resolution can decode a
-// box's tags_key back into strings for pattern matching
+// The key of a set of tags, and the strings of the tags that the key stands
+// for. ui_push_tag writes this node on the arena of the module, so that a later
+// read of a color can find the strings of the tags_key of a box, and can test
+// them against the patterns.
 typedef struct UI_TagSetNode UI_TagSetNode;
 struct UI_TagSetNode {
   UI_TagSetNode* next;
@@ -48,46 +53,50 @@ struct UI_TagSetNode {
   U64 count;
 };
 
-// direct-mapped (tag set, color name) -> color cache; a colliding key
-// overwrites the slot. Cleared whole by ui_set_theme.
+// The cache of the colors. Its key is a set of tags and the name of a color.
+// Each key maps to one slot, and a second key that maps to that slot writes
+// over the first. ui_set_theme clears the whole cache.
 typedef struct {
   U64 key; // 0 = empty
   V4 color;
 } UI_ColorCacheSlot;
 
 typedef struct {
-  //- init-time
+  //- the members that ui_init writes
   Arena* persist;
   UI_MeasureTextFunc* measure;
   UI_FontMetricsFunc* metrics;
   void* user;
-  UI_Theme theme;                 // caller-owned pattern memory, installed by ui_set_theme
-  UI_TextCacheSlot* text_cache;   // [UI_TEXT_CACHE_SLOTS]
-  UI_ColorCacheSlot* color_cache; // [UI_COLOR_CACHE_SLOTS]
+  UI_Theme theme;                 // The caller owns the memory of the patterns. ui_set_theme installs it.
+  UI_TextCacheSlot* text_cache;   // an array of UI_TEXT_CACHE_SLOTS entries
+  UI_ColorCacheSlot* color_cache; // an array of UI_COLOR_CACHE_SLOTS entries
   UI_TagSetNode* tag_set_buckets[UI_TAG_SET_BUCKETS];
   UI_BoxState* state_buckets[UI_STATE_BUCKETS];
   UI_BoxState* state_free;
 
-  //- frame
-  Arena* arena; // the caller's frame arena, held between begin and end
+  //- the members of one frame
+  Arena* arena; // The frame arena of the caller. This module holds it between the begin and the end.
   UI_Input input;
   U64 frame;
   UI_Box* root;
   U64 box_count;
-  U64 line_total; // drawn text lines this frame, for the command cap
+  U64 line_total; // the lines of text that this frame draws, which gives the number of commands
   UI_DrawCommand* cmds;
   U64 cmd_count;
   U64 cmd_cap;
 
-  //- interaction
-  UI_Key hot_key;      // topmost clickable box under the mouse, per the
-                       // previous frame; pinned to active_key while held
-  UI_Key hot_key_next; // being computed during emission, for next frame
-  UI_Key active_key;   // box the left button went down on, until release
-  V2 press_mouse;      // mouse position at that press
-  B32 mouse_over;      // computed during emission
+  //- the members of the interaction
+  UI_Key hot_key;      // The box that a person can click, that is under the
+                       // mouse, and that is above each other such box, as of the
+                       // frame before. It stays equal to active_key while the
+                       // button is down.
+  UI_Key hot_key_next; // The emission computes it, for the next frame.
+  UI_Key active_key;   // the box on which the left button went down, until that button comes up
+  V2 press_mouse;      // the position of the mouse at that press
+  B32 mouse_over;      // the emission computes it
 
-  //- style stacks; bottoms are the per-frame defaults
+  //- The stacks of the style. The entry at the bottom of each stack is the
+  //  default of the frame.
   struct {
     UI_Box* items[UI_STACK_CAP];
     U64 top;
@@ -100,7 +109,7 @@ typedef struct {
     String8 items[UI_STACK_CAP];
     U64 top;
   } tag_stack;
-  struct { // running hash of tag_stack's contents, entry for entry
+  struct { // the hash of the contents of tag_stack, which grows with each entry
     U64 items[UI_STACK_CAP];
     U64 top;
   } tag_key_stack;
@@ -169,7 +178,7 @@ global UI_State ui_state;
                                  ui_state.stack.top += 1;)
 #define ui__pop(stack)    Stmnt(Assert(ui_state.stack.top > 1); ui_state.stack.top -= 1;)
 #define ui__top(stack)    (ui_state.stack.items[ui_state.stack.top - 1])
-#define ui__pushed(stack) (ui_state.stack.top > 1) // above its default depth
+#define ui__pushed(stack) (ui_state.stack.top > 1) // it holds more than its default entry
 
 ////////////////////////////////
 //~ fp: Small Helpers
@@ -178,13 +187,13 @@ internal F32 ui__v2_axis(V2 v, UI_Axis axis) {
   return axis == UI_Axis_X ? v.x : v.y;
 }
 
-// min inclusive, max exclusive
+// The result holds min, and does not hold max.
 internal B32 ui__rect_contains(Rect r, V2 p) {
   return p.x >= r.min.x && p.x < r.max.x && p.y >= r.min.y && p.y < r.max.y;
 }
 
-//- fp: fnv-1a over the bytes, then a splitmix64 finalizer so sequential
-//  inputs land far apart
+//- fp: fnv-1a across the bytes, then the final step of splitmix64. Two inputs
+//  that follow each other therefore give two hashes that are far apart.
 internal U64 ui__hash_str8(U64 seed, String8 s) {
   U64 h = seed ^ 0xcbf29ce484222325ull;
   for(U64 i = 0; i < s.size; i += 1) {
@@ -202,7 +211,7 @@ internal U64 ui__mix64(U64 h) {
   return h;
 }
 
-//- fp: the "##"/"###" split (see the Keys section in ui.h)
+//- fp: the split at "##" and at "###". See the Keys section of ui.h.
 internal String8 ui__display_part(String8 s) {
   return str8_prefix(s, str8_find_substr(s, str8_lit("##"), 0, 0));
 }
@@ -218,8 +227,9 @@ internal String8 ui__hash_part(String8 s) {
 ////////////////////////////////
 //~ fp: Text Measurement
 //
-// All measurement goes through the cache; the callback runs on misses only.
-// Keyed by (font, size bits, string bytes).
+// Each measurement goes through the cache. The function of the caller runs
+// where the cache has no entry alone. The key is the font, the bits of the
+// size, and the bytes of the string.
 
 internal V2 ui__measure_text(U64 font, F32 size, String8 text) {
   UI_State* s = &ui_state;
@@ -403,14 +413,18 @@ internal void ui_set_theme(UI_Theme theme) {
   MemoryZero(ui_state.color_cache, sizeof(UI_ColorCacheSlot) * UI_COLOR_CACHE_SLOTS);
 }
 
-// data/ui.tabula -> UI_Theme: the nesting is the selector. The path of keys
-// down to each color leaf becomes a pattern's tag list -- style.button.background
-// reads as ["button" "background"] -- so no key name is known here; the
-// vocabulary lives in the file and at the call sites that push the tags.
-// Leaves must be [r g b (a)] colors (metrics are not themed, asserted); a
-// missing pattern resolves to zero in the ui module, an obviously unstyled
-// look, never a quietly substituted default. The theme's memory lives on
-// `arena`, which must outlive the ui module's use of it.
+// This function reads data/ui.tabula into a UI_Theme. The objects inside each
+// other are the selector: the path of the keys down to a color becomes the list
+// of tags of a pattern. style.button.background therefore gives the tags
+// ["button" "background"].
+//
+// This function knows no key name. The vocabulary is in the file, and at each
+// call site that pushes a tag.
+//
+// A leaf must be a color of [r g b] or [r g b a], which an assert tests,
+// because the theme holds no size. A pattern that is absent gives a color of 0
+// in this module, which shows at once. This module never puts a default color
+// there without a report.
 typedef struct UI_ThemeNode UI_ThemeNode;
 struct UI_ThemeNode {
   UI_ThemeNode* next;
@@ -421,7 +435,7 @@ internal void ui__theme_walk(Arena* arena, Arena* scratch, TB_Value* object,
                              String8* path, U64 depth,
                              UI_ThemeNode** first, U64* count) {
   for(TB_Node* node = object->first_member; node != 0; node = node->next) {
-    Assert(depth < 8); // path[]'s capacity
+    Assert(depth < 8); // the number of entries of path[]
     path[depth] = node->key;
     if(node->value.kind == TB_ValueKind_Object) {
       ui__theme_walk(arena, scratch, &node->value, path, depth + 1, first, count);
@@ -466,9 +480,9 @@ internal UI_Theme ui_theme_load(Arena* arena, String8 path) {
 }
 
 
-// pushing chains the running hash; the first sight of a tag set copies its
-// strings to the persistent arena, so a key decodes back to strings for as
-// long as the module lives
+// A push adds to the hash of the stack. The first push that makes a given set
+// of tags copies the strings of that set to the arena of the module. A key
+// therefore gives its strings back for the life of the module.
 internal void ui_push_tag(String8 tag) {
   UI_State* s = &ui_state;
   U64 key = ui__mix64(ui__hash_str8(ui__top(tag_key_stack), tag));
@@ -481,7 +495,7 @@ internal void ui_push_tag(String8 tag) {
   if(node == 0) {
     node = push_array(s->persist, UI_TagSetNode, 1);
     node->key = key;
-    node->count = s->tag_stack.top - 1; // the entries above the empty bottom
+    node->count = s->tag_stack.top - 1; // the entries above the empty entry at the bottom
     node->tags = push_array(s->persist, String8, node->count);
     for(U64 i = 0; i < node->count; i += 1) {
       node->tags[i] = push_str8_copy(s->persist, s->tag_stack.items[i + 1]);
@@ -496,8 +510,9 @@ internal void ui_pop_tag(void) {
   ui__pop(tag_key_stack);
 }
 
-// most specific matching pattern wins: every pattern tag present in the
-// set + name, the name itself among them, highest tag count first
+// The pattern that matches and that holds the most tags wins. A pattern
+// matches where each of its tags is in the set of tags together with the name,
+// and where the name itself is among its tags.
 internal V4 ui__color_from_key_name(U64 tags_key, String8 name) {
   UI_State* s = &ui_state;
   U64 final_key = ui__mix64(ui__hash_str8(tags_key, name));
@@ -566,7 +581,7 @@ internal V2 ui_mouse(void) {
 
 internal void ui_frame_begin(Arena* frame_arena, UI_Input input) {
   UI_State* s = &ui_state;
-  Assert(s->persist != 0); // ui_init must run first
+  Assert(s->persist != 0); // a caller must call ui_init first
   s->arena = frame_arena;
   s->input = input;
   s->frame += 1;
@@ -576,11 +591,12 @@ internal void ui_frame_begin(Arena* frame_arena, UI_Input input) {
   s->cmd_count = 0;
   s->cmd_cap = 0;
 
-  //- hover follows the previous frame's topmost hit; a held press pins it
+  //- The hover follows the box that the frame before found under the mouse
+  //  and above each other such box. A button that stays down holds it.
   s->hot_key = (s->active_key != 0) ? s->active_key : s->hot_key_next;
   s->hot_key_next = 0;
 
-  //- recycle state not touched last frame
+  //- Take back each state that no box read in the frame before.
   for(U64 b = 0; b < UI_STATE_BUCKETS; b += 1) {
     for(UI_BoxState** at = &s->state_buckets[b]; *at != 0;) {
       UI_BoxState* state = *at;
@@ -594,7 +610,8 @@ internal void ui_frame_begin(Arena* frame_arena, UI_Input input) {
     }
   }
 
-  //- window-sized root; transient (key 0), outside every stack
+  //- The root box, at the size of the window. Its key is 0, so it exists for
+  //  one frame, and it takes no value from a stack.
   UI_Box* root = push_array(s->arena, UI_Box, 1);
   root->pref_size[UI_Axis_X] = ui_size_points(input.window.x, 1);
   root->pref_size[UI_Axis_Y] = ui_size_points(input.window.y, 1);
@@ -602,8 +619,9 @@ internal void ui_frame_begin(Arena* frame_arena, UI_Input input) {
   s->root = root;
   s->box_count = 1;
 
-  //- reset the stacks to their defaults; the color stacks' bottoms are
-  //  never read -- a color stack left unpushed resolves from the theme
+  //- Set each stack to its default. No code reads the entry at the bottom of a
+  //  stack of colors: a color whose stack holds no push comes from the
+  //  theme.
   s->parent_stack.top = 0;
   s->seed_stack.top = 0;
   s->tag_stack.top = 0;
@@ -675,7 +693,7 @@ internal UI_Box* ui_box(UI_BoxFlags flags, String8 string) {
   box->padding = ui__top(padding_stack);
   box->child_gap = ui__top(child_gap_stack);
 
-  //- colors: a pushed stack trumps the theme
+  //- The colors. A stack with a push wins against the theme.
   box->tags_key = ui__top(tag_key_stack);
   box->text_color = ui__pushed(text_color_stack) ? ui__top(text_color_stack) : ui__color_from_key_name(box->tags_key, str8_lit("text"));
   box->background_color = ui__pushed(background_color_stack) ? ui__top(background_color_stack) : ui__color_from_key_name(box->tags_key, str8_lit("background"));
@@ -725,14 +743,22 @@ internal UI_Signal ui_signal(UI_Box* box) {
 ////////////////////////////////
 //~ fp: Layout
 //
-// Axis-major: every pass runs for X, then text lines break against the final
-// widths, then every pass runs for Y (so wrapped heights see solved widths),
-// then one position pass places both axes. Within an axis: standalone kinds,
-// then percent-of-parent preorder, then children-sum postorder, then grow
-// preorder, then violation resolution preorder. Grow runs before violations:
-// a parent has leftover space or overflow along an axis, never both, so the
-// two passes act on disjoint parents. Floating boxes take no part in sums,
-// grow, violations, or the layout cursor.
+// The solve goes one axis at a time. Each pass runs for X. The text then
+// breaks into lines against those widths. Each pass then runs for Y, so a
+// height that comes from a wrap reads a width that the solve gave. One more
+// pass then puts each box at its position on both axes.
+//
+// Inside one axis the passes go in this order: the kinds that need no other
+// box; then the percent of the parent, from the root down; then the sum of the
+// children, from the leaves up; then the growth, from the root down; then the
+// correction of each box that is too large, from the root down.
+//
+// The growth runs before that correction. A parent has space that it has left,
+// or content that is larger than it, and never both, so the two passes act on
+// two sets of parents that do not meet.
+//
+// A floating box takes no part in a sum, in the growth, in the correction, and
+// in the position of the boxes of the layout.
 
 internal void ui__layout_standalone(UI_Box* box, UI_Axis axis) {
   UI_Size size = box->pref_size[axis];
@@ -746,7 +772,8 @@ internal void ui__layout_standalone(UI_Box* box, UI_Axis axis) {
     } break;
     case UI_SizeKind_Text: {
       if(axis == UI_Axis_X) {
-        // natural width: the widest '\n'-separated line
+        // the natural width, which is the width of the widest line between
+        // two newline characters
         F32 w = 0;
         String8 s = box->string;
         U64 start = 0;
@@ -766,7 +793,7 @@ internal void ui__layout_standalone(UI_Box* box, UI_Axis axis) {
         box->fixed_size[axis] = h + pad2;
       }
     } break;
-    default: break; // ChildrenSum / PctOfParent resolve in later passes
+    default: break; // A later pass gives a size to ChildrenSum and to PctOfParent.
   }
   for(UI_Box* child = box->first; child != 0; child = child->next) {
     ui__layout_standalone(child, axis);
@@ -809,7 +836,8 @@ internal void ui__layout_sum(UI_Box* box, UI_Axis axis) {
 internal void ui__layout_grow(UI_Box* box, UI_Axis axis) {
   F32 content = ClampBot(box->fixed_size[axis] - 2 * ui__v2_axis(box->padding, axis), 0);
   if(axis == box->child_axis) {
-    //- weighted split of the parent's leftover among its grow children
+    //- Divide the space that the parent has left between the children that
+    //  grow, in the proportion of their weights.
     F32 total = 0;
     F32 weights = 0;
     U64 n = 0;
@@ -834,7 +862,8 @@ internal void ui__layout_grow(UI_Box* box, UI_Axis axis) {
       }
     }
   } else {
-    //- across the child axis a grow child fills the parent's content
+    //- Across the axis of the children, a child that grows takes the content
+    //  of the parent in full.
     for(UI_Box* child = box->first; child != 0; child = child->next) {
       if(child->flags & UI_BoxFlag_Floating) { continue; }
       if(child->pref_size[axis].kind == UI_SizeKind_Grow) {
@@ -850,8 +879,9 @@ internal void ui__layout_grow(UI_Box* box, UI_Axis axis) {
 internal void ui__layout_violations(UI_Box* box, UI_Axis axis) {
   F32 content = box->fixed_size[axis] - 2 * ui__v2_axis(box->padding, axis);
   if(axis == box->child_axis) {
-    //- children overflow the parent along the layout axis: take back the
-    //  deficit proportionally to size * (1 - strictness)
+    //- The children are larger than the parent along the axis of the layout.
+    //  Take back the difference from each child, in the proportion of its size
+    //  multiplied by (1 - strictness).
     F32 total = 0;
     U64 n = 0;
     for(UI_Box* child = box->first; child != 0; child = child->next) {
@@ -879,7 +909,8 @@ internal void ui__layout_violations(UI_Box* box, UI_Axis axis) {
       }
     }
   } else {
-    //- off-axis: each child clamps toward the parent's content size
+    //- Across that axis, each child clamps to the size of the content of the
+    //  parent.
     for(UI_Box* child = box->first; child != 0; child = child->next) {
       if(child->flags & UI_BoxFlag_Floating) { continue; }
       F32 over = child->fixed_size[axis] - content;
@@ -894,9 +925,11 @@ internal void ui__layout_violations(UI_Box* box, UI_Axis axis) {
   }
 }
 
-// breaks every DrawText box's string into drawn lines: on '\n' always, and
-// greedily on word boundaries against the solved width when the box wraps.
-// A word wider than the available width gets a line alone and overflows.
+// Break the string of each box with DrawText into the lines that the frame
+// draws. The string always breaks at a newline character. Where the box wraps
+// its text, the string also breaks between two words, and each line takes as
+// many words as the width that the solve gave holds. A word that is wider than
+// that width takes a line alone, and goes past the box.
 internal void ui__build_lines(UI_Box* box) {
   if(box->flags & UI_BoxFlag_DrawText) {
     String8 s = box->string;
@@ -965,8 +998,9 @@ internal void ui__layout_position(UI_Box* box) {
       p = (V2){box->rect.min.x + a.x * (box->fixed_size[UI_Axis_X] - child->fixed_size[UI_Axis_X]) + child->floating_pos.x,
                box->rect.min.y + a.y * (box->fixed_size[UI_Axis_Y] - child->fixed_size[UI_Axis_Y]) + child->floating_pos.y};
     } else {
-      // cross-axis alignment: children keep the padding edge only when
-      // aligned Start; oversized children stay pinned to it
+      // The alignment across the axis of the children. A child stands at the
+      // edge of the padding where the alignment is Start alone. A child that
+      // is larger than the parent stays at that edge.
       F32 slack = ClampBot(off_content - child->fixed_size[off], 0) * align;
       if(off == UI_Axis_X) {
         p.x += slack;
@@ -987,10 +1021,13 @@ internal void ui__layout_position(UI_Box* box) {
 ////////////////////////////////
 //~ fp: Command Emission
 //
-// One preorder walk in paint order: background, clip push, text, children,
-// clip pop, border (so borders sit over child spill). The same walk updates
-// each box's persistent rect and animation, and resolves next frame's hot
-// box -- the last hit in paint order is the topmost.
+// One walk from the root down, in the order to draw: the background, the push
+// of the clip, the text, the children, the pop of the clip, and the border. The
+// border comes last, so it draws over a child that goes past the box.
+//
+// The same walk writes the rect and the animation of the state of each box, and
+// finds the hot box of the next frame. The last box that the mouse hits in that
+// order is the box above each other such box.
 
 internal UI_DrawCommand* ui__push_cmd(UI_DrawCommandKind kind) {
   UI_State* s = &ui_state;
@@ -1028,10 +1065,14 @@ internal void ui__emit(UI_Box* box) {
   if(box->flags & UI_BoxFlag_DrawBackground) {
     V4 bg = box->background_color;
     if((box->flags & UI_BoxFlag_Clickable) && box->state != 0) {
-      // the theme's hover/active colors pull the background toward
-      // themselves as the box heats up / is held; alpha is the strength.
-      // Resolved here, after the tag stack unwound -- the box's tags_key
-      // still names the context it was built under
+      // The hover color and the active color of the theme move the background
+      // toward themselves while the box is hot, and while a person holds it.
+      // The alpha of each of those two colors is the strength of that
+      // movement.
+      //
+      // This code reads those colors here, after the stack of tags returned to
+      // its earlier state, because the tags_key of the box still names the set
+      // of tags of its build.
       V4 hover = ui__color_from_key_name(box->tags_key, str8_lit("hover"));
       V4 active = ui__color_from_key_name(box->tags_key, str8_lit("active"));
       F32 fh = hover.w * box->state->hot_t;
@@ -1098,7 +1139,7 @@ internal void ui__emit(UI_Box* box) {
 
 internal UI_DrawList ui_frame_end(void) {
   UI_State* s = &ui_state;
-  Assert(s->parent_stack.top == 1); // begin/end pairs must balance
+  Assert(s->parent_stack.top == 1); // each begin needs its end
   UI_Box* root = s->root;
 
   ui__layout_standalone(root, UI_Axis_X);
@@ -1178,9 +1219,10 @@ internal void ui_spacer(UI_Size size) {
 }
 
 internal void ui_tooltip(String8 string) {
-  // parented to the root: floating_pos is parent-relative, and the mouse is
-  // window-space -- only the root's origin makes those coincide. Also keeps
-  // the tip clear of any panel clip.
+  // The parent of a tooltip is the root box. floating_pos is relative to the
+  // parent, and the position of the mouse is relative to the window, so the
+  // origin of the root is the one origin that makes the two equal. The root
+  // also keeps the tooltip outside the clip of each panel.
   ui_push_parent(ui_root());
   ui_push_tag(str8_lit("tooltip"));
   UI_Box* tip = ui_box(UI_BoxFlag_DrawBackground | UI_BoxFlag_DrawBorder |
@@ -1218,7 +1260,7 @@ internal void ui_column_end(void) {
 }
 
 internal UI_Box* ui_panel_begin(String8 string) {
-  ui_push_tag(str8_lit("panel")); // spans the children until ui_panel_end
+  ui_push_tag(str8_lit("panel")); // It covers the children until ui_panel_end.
   UI_Box* box = ui_box(UI_BoxFlag_DrawBackground | UI_BoxFlag_DrawBorder | UI_BoxFlag_Clip, string);
   box->child_axis = UI_Axis_Y;
   box->corner_radius = 10;

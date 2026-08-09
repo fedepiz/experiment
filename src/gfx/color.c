@@ -28,7 +28,7 @@ internal V4 col_hex(U32 hex) {
 }
 
 internal V4 col_hsva(F32 h, F32 s, F32 v, F32 a) {
-  h = h - floorf(h); // wrap into 0..1 (turns)
+  h = h - floorf(h); // put the value into the range 0 to 1, which is one turn
   s = Clamp(0.0f, s, 1.0f);
   v = Clamp(0.0f, v, 1.0f);
   F32 h6 = h * 6.0f;
@@ -81,8 +81,9 @@ internal V4 col_with_alpha(V4 color, F32 a) {
   return result;
 }
 
-// splitmix64 finalizer: consecutive hashes -- ids above all -- land far apart
-// on the wheel instead of shading into one another
+// The final step of splitmix64. Two hashes that follow each other, and an id
+// is the usual case, then give two colors that are far apart on the wheel, and
+// not two colors that a person cannot tell apart.
 internal U64 col__hash_mix(U64 hash) {
   hash ^= hash >> 30; hash *= 0xbf58476d1ce4e5b9ull;
   hash ^= hash >> 27; hash *= 0x94d049bb133111ebull;
@@ -91,10 +92,11 @@ internal U64 col__hash_mix(U64 hash) {
 }
 
 internal V4 col_rgb_from_hash(U64 hash) {
-  if(hash == 0) { return Col_Transparent; } // nothing to colour
+  if(hash == 0) { return Col_Transparent; } // there is nothing to give a color
   U64 bits = col__hash_mix(hash);
-  // hue takes the whole wheel; saturation and value only span bands that stay
-  // legible, so no draw ever comes back near-black, near-white, or washed out
+  // The hue takes the whole wheel. The saturation and the value take a band
+  // each, and both bands stay easy to see. No result is therefore near black,
+  // near white, or of a low saturation.
   F32 h = (F32)((bits >> 40) & 0xFFFF) / 65536.0f;
   F32 s = 0.55f + (F32)((bits >> 24) & 0xFF) / 255.0f * 0.35f;
   F32 v = 0.65f + (F32)((bits >> 8) & 0xFF) / 255.0f * 0.30f;

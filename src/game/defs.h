@@ -8,29 +8,16 @@
 // list where it needs it.
 //
 // A list is not a namespace. It writes its entries into the enums that own
-// those names already. One line of the stock list becomes a WG_Stock, which is
-// a column of the terrain table, and a TH_Field, which is a column of the
-// database. A new entry therefore appears in every module at the same time,
-// and two lists that a person kept equal by hand cannot become different.
+// those names already. One line of the feature list becomes a BD_Feature on
+// the board, and a TH_IField, which is a column of the database. A new entry
+// therefore appears in every module at the same time, and two lists that a
+// person kept equal by hand cannot become different.
 //
 // Put a list here only when two or more modules must agree on it. A vocabulary
 // with one reader belongs to that reader.
 //
 // This file uses nothing. Each module that expands one of its lists includes
 // it.
-
-////////////////////////////////
-//~ fp: Stocks
-//
-// A stock is what a tile grows, and what a group lives on. Each stock is a
-// scalar at each position, which is a TH_Field. Each stock is also a ceiling
-// and a renewal rate on each terrain row, which is a WG_Stock. The terrain
-// file spells those two numbers `<key>_max` and `<key>_renew_rate`.
-
-#define DF_STOCK_LIST     \
-  X(Crops, "crops")       \
-  X(Grass, "grass")       \
-  X(Wildlife, "wildlife")
 
 ////////////////////////////////
 //~ fp: Features

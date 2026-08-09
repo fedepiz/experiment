@@ -3,20 +3,22 @@
 ////////////////////////////////
 //~ fp: Windows GL Loading
 //
-// opengl32.dll speaks GL 1.1 and nothing newer; every entry point past that
-// lives in the driver and is fetched by name at runtime. Khronos ships
-// glext.h for this, but the slice we use is small enough to spell inline --
-// the same choice as the wgl constants in win/window.c.
+// opengl32.dll holds GL 1.1 and nothing later. Each later entry point is in
+// the driver, and this file reads it by name while the program runs. Khronos
+// supplies glext.h for that purpose. This program uses a small part of GL, so
+// the declarations below are in this file. The wgl constants in win/window.c
+// follow the same rule.
 //
-// Nothing here shadows anything: MS <GL/gl.h> stops at 1.1, so every name
-// below is new to the TU. The pointers are globals named exactly like the GL
-// functions, so the shared render.c code compiles unchanged; r_init calls the
-// loader once wnd_equip_gl has made a context current (wglGetProcAddress
-// answers per-context, and nothing without one).
+// No name below hides another name. The <GL/gl.h> of Microsoft stops at 1.1,
+// so each name below is new to this translation unit. Each pointer is a global
+// with the name of its GL function, so the code in render.c, which each
+// platform shares, needs no change. r_init calls the loader after
+// wnd_equip_gl makes a context current, because wglGetProcAddress answers for
+// the current context, and gives nothing without one.
 
-// The OS_WINDOWS guard keeps the file quiet in clangd, which parses it
-// standalone on every platform (no windows.h off Windows); real builds only
-// include it on Windows anyway, via gfx/render.c.
+// The OS_WINDOWS test makes this file empty for clangd, which parses it alone
+// on each platform, and which has no windows.h on another platform. A real
+// build includes this file on Windows only, through gfx/render.c.
 #if OS_WINDOWS
 
 #define WIN32_LEAN_AND_MEAN
@@ -24,7 +26,7 @@
 #include <windows.h>
 #include <GL/gl.h>
 
-//- fp: types and enums the 1.1 header lacks
+//- fp: the types and the enums that the header of GL 1.1 does not hold
 typedef char     GLchar;
 typedef intptr_t GLintptr;
 typedef intptr_t GLsizeiptr;
@@ -39,7 +41,8 @@ typedef intptr_t GLsizeiptr;
 #define GL_COMPILE_STATUS  0x8B81
 #define GL_LINK_STATUS     0x8B82
 
-//- fp: driver-loaded entry points (signatures per the GL 4.1 spec)
+//- fp: the entry points that come from the driver. Each signature follows the
+//  specification of GL 4.1.
 typedef GLuint (APIENTRY* PFN_glCreateShader)(GLenum type);
 typedef void   (APIENTRY* PFN_glShaderSource)(GLuint shader, GLsizei count, const GLchar* const* string, const GLint* length);
 typedef void   (APIENTRY* PFN_glCompileShader)(GLuint shader);
@@ -81,8 +84,8 @@ R_GL_PROC_LIST
 #undef X
 
 internal void r_gl__load_procs(void) {
-  // any null here means the driver's GL is older than 4.1 core -- no
-  // sensible fallback exists, so stop
+  // A null pointer here shows that the GL of the driver is older than 4.1
+  // core. There is no other path, so the program stops.
 #define X(name) \
   name = (Glue(PFN_, name))(void*)wglGetProcAddress(#name); \
   AssertAlways(name != 0);

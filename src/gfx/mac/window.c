@@ -10,18 +10,21 @@
 ////////////////////////////////
 //~ fp: Cocoa Backend
 //
-// Cocoa wants Objective-C and the unity TU stays C, so the ObjC lives behind
-// the compatibility layer in mac/cocoa.[hm] -- its own TU, linked in by x.sh.
-// This file rides in the unity build like any other backend and translates
-// the dumb boundary into codebase idiom: raw kVK keycodes become WND_Keys,
-// boundary events become arena-pushed WND_Events.
+// Cocoa needs Objective-C, and the unity translation unit stays C. The
+// Objective-C code is therefore behind the layer in mac/cocoa.h and
+// mac/cocoa.m, which is its own translation unit, and which x.sh links.
 //
-// Sizes and positions are in points, not pixels (on retina, 1 point = 2
-// pixels); orientation matches X11 (top-left origin). Nothing cares about the
-// point/pixel distinction yet -- revisit when rendering lands.
+// This file is in the unity build, as each other backend is. It converts the
+// values of that boundary into the style of this codebase: a raw kVK key code
+// becomes a WND_Key, and an event of the boundary becomes a WND_Event on an
+// arena.
 //
-// The OS_MAC guard keeps the file quiet in clangd, which parses it standalone
-// on every platform; real builds only include it on mac anyway, via
+// Each size and each position is in points, and not in pixels. On a screen of
+// a high density one point is two pixels. The orientation is the orientation
+// of X11, from the top left corner.
+//
+// The OS_MAC test makes this file empty for clangd, which parses it alone on
+// each platform. A real build includes this file on a Mac only, through
 // gfx/window.c.
 
 #if OS_MAC
@@ -75,12 +78,13 @@ internal F32 wnd_refresh_rate(void) {
 ////////////////////////////////
 //~ fp: Event Translation
 
-// hardware key codes (kVK_* in Carbon's HIToolbox/Events.h; hex literals here
-// to keep Carbon out of even the compatibility layer)
+// The hardware key codes. Each kVK_ name is in HIToolbox/Events.h of Carbon.
+// The numbers below are hexadecimal, so that Carbon stays outside this file
+// and outside the compatibility layer.
 internal WND_Key wnd__key_from_keycode(U16 code) {
   WND_Key result = WND_Key_Nil;
   switch(code) {
-    //- letters (kVK_ANSI_*)
+    //- the letters, which are the kVK_ANSI_ codes
     case 0x00: result = WND_Key_A; break;
     case 0x0B: result = WND_Key_B; break;
     case 0x08: result = WND_Key_C; break;
@@ -108,7 +112,7 @@ internal WND_Key wnd__key_from_keycode(U16 code) {
     case 0x10: result = WND_Key_Y; break;
     case 0x06: result = WND_Key_Z; break;
 
-    //- digits (kVK_ANSI_0..9)
+    //- the digits, which are the kVK_ANSI_0 to kVK_ANSI_9 codes
     case 0x1D: result = WND_Key_0; break;
     case 0x12: result = WND_Key_1; break;
     case 0x13: result = WND_Key_2; break;
@@ -120,7 +124,7 @@ internal WND_Key wnd__key_from_keycode(U16 code) {
     case 0x1C: result = WND_Key_8; break;
     case 0x19: result = WND_Key_9; break;
 
-    //- function keys
+    //- the function keys
     case 0x7A: result = WND_Key_F1; break;
     case 0x78: result = WND_Key_F2; break;
     case 0x63: result = WND_Key_F3; break;
@@ -134,31 +138,32 @@ internal WND_Key wnd__key_from_keycode(U16 code) {
     case 0x67: result = WND_Key_F11; break;
     case 0x6F: result = WND_Key_F12; break;
 
-    //- arrows
+    //- the arrows
     case 0x7B: result = WND_Key_Left; break;
     case 0x7C: result = WND_Key_Right; break;
     case 0x7E: result = WND_Key_Up; break;
     case 0x7D: result = WND_Key_Down; break;
 
-    //- editing / control
+    //- the keys that edit and control
     case 0x35: result = WND_Key_Escape; break;
     case 0x31: result = WND_Key_Space; break;
     case 0x24: result = WND_Key_Enter; break;
     case 0x30: result = WND_Key_Tab; break;
-    case 0x33: result = WND_Key_Backspace; break; // kVK_Delete is the backspace key
+    case 0x33: result = WND_Key_Backspace; break; // kVK_Delete is the key that removes the character before the cursor
     case 0x75: result = WND_Key_Delete; break;    // kVK_ForwardDelete
-    case 0x72: result = WND_Key_Insert; break;    // kVK_Help sits where Insert does on PC boards
+    case 0x72: result = WND_Key_Insert; break;    // kVK_Help is at the position of Insert on a keyboard of a PC
     case 0x73: result = WND_Key_Home; break;
     case 0x77: result = WND_Key_End; break;
     case 0x74: result = WND_Key_PageUp; break;
     case 0x79: result = WND_Key_PageDown; break;
 
-    //- modifiers (left/right pairs collapse, as in the X11 backend)
+    //- The modifiers. The left key and the right key give one value, as in
+    //  the X11 backend.
     case 0x38: case 0x3C: result = WND_Key_Shift; break;
     case 0x3B: case 0x3E: result = WND_Key_Ctrl; break;
     case 0x3A: case 0x3D: result = WND_Key_Alt; break; // Option
 
-    //- punctuation
+    //- the punctuation
     case 0x1B: result = WND_Key_Minus; break;
     case 0x18: result = WND_Key_Equals; break;
     case 0x2B: result = WND_Key_Comma; break;
