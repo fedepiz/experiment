@@ -2,8 +2,9 @@
 #include "base/arena.h"
 #include "base/strings.h"
 
-// our own (appropriated) formatter -- provides stbsp_vsnprintf, incl. %S for
-// String8. STATIC keeps its symbols internal, like everything else here.
+// The copy of the formatter that this project holds. It supplies
+// stbsp_vsnprintf, and it adds %S for a String8. STATIC keeps its symbols
+// inside this translation unit, as with each other symbol here.
 #define STB_SPRINTF_IMPLEMENTATION
 #define STB_SPRINTF_STATIC
 #include "base/stb_sprintf.h"
@@ -118,7 +119,7 @@ internal String8 push_str8_cat(Arena* arena, String8 a, String8 b) {
 }
 
 internal String8 push_str8fv(Arena* arena, char* fmt, va_list args) {
-  // measure first, then format straight into the arena
+  // Measure the result first, then write the format into the arena.
   va_list args2;
   va_copy(args2, args);
   U64 size = (U64)stbsp_vsnprintf(0, 0, fmt, args);
@@ -158,8 +159,9 @@ internal String8 str8_list_join(Arena* arena, String8List list, StringJoin* opti
   result.size = join.pre.size + list.total_size + sep_count * join.sep.size + join.post.size;
   result.str = push_array_no_zero(arena, U8, result.size + 1);
 
-  // pre/sep/post are nil unless asked for: skip the copy, memmove from a
-  // nil str is UB even for zero bytes
+  // `pre`, `sep` and `post` are nil when the caller does not give them. Skip
+  // the copy for a nil string: a move from a nil pointer is undefined, and it
+  // is undefined for 0 bytes too.
   U8* at = result.str;
   if(join.pre.size) { MemoryCopy(at, join.pre.str, join.pre.size); }
   at += join.pre.size;

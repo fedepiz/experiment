@@ -146,22 +146,17 @@ internal Map_View* map_init(Arena* arena) {
     }
   }
 
-  // network art, by BD_Feature id; finished pieces per connection case
-  struct {
-    U32 network;
-    char* name;
-  } NETWORK_ART[] = {
-      {BD_Feature_River, "river"},
-      {BD_Feature_Road, "road"},
-  };
-  for(U32 i = 0; i < ArrayCount(NETWORK_ART); i += 1) {
+  // network art, by BD_Feature id; finished pieces per connection case. The
+  // art prefix is the feature's own name, so this scans whatever features
+  // exist without naming any of them.
+  for(BD_Feature feature = 0; feature < BD_Feature_COUNT; feature += 1) {
     for(U32 code = 1; code < 16; code += 1) {
       for(U32 variant = 0;; variant += 1) {
-        String8 path = push_str8f(scratch.arena, "assets/tiles/%s_%u_%u.png",
-                                  NETWORK_ART[i].name, code, variant);
+        String8 path = push_str8f(scratch.arena, "assets/tiles/%S_%u_%u.png",
+                                  GM_FEATURE_NAMES[feature], code, variant);
         U32 id = map__load(map, scratch.arena, path);
         if(id == 0) { break; }
-        tl_push_network(&map->tiling, NETWORK_ART[i].network, code, id);
+        tl_push_network(&map->tiling, feature, code, id);
       }
     }
   }
@@ -169,25 +164,15 @@ internal Map_View* map_init(Arena* arena) {
   // pawn art, by GM_Sprite id -- the game names what a thing looks like,
   // these files say how that looks. Variant-scanned like all tile art; a
   // sprite with no files keeps count 0 and the renderer falls back to a
-  // flat shape.
-  struct {
-    GM_Sprite sprite;
-    char* name;
-  } PAWN_ART[] = {
-      {GM_Sprite_Village, "village"},
-      {GM_Sprite_Palace, "palace"},
-      {GM_Sprite_Herders, "herders"},
-      {GM_Sprite_Wagon, "wagon"},
-      {GM_Sprite_Tholos, "tholos"},
-      {GM_Sprite_Band, "band"},
-  };
-  for(U32 i = 0; i < ArrayCount(PAWN_ART); i += 1) {
+  // flat shape. Sprite 0 is nil and has no art.
+  for(GM_Sprite sprite = 1; sprite < GM_Sprite_COUNT; sprite += 1) {
     for(U32 variant = 0; variant < MAP_PAWN_VARIANT_CAP; variant += 1) {
-      String8 path = push_str8f(scratch.arena, "assets/tiles/site_%s_%u.png", PAWN_ART[i].name, variant);
+      String8 path = push_str8f(scratch.arena, "assets/tiles/site_%S_%u.png",
+                                GM_SPRITE_NAMES[sprite], variant);
       U32 id = map__load(map, scratch.arena, path);
       if(id == 0) { break; }
-      map->gm_sprites[PAWN_ART[i].sprite][variant] = id;
-      map->gm_sprite_counts[PAWN_ART[i].sprite] = variant + 1;
+      map->gm_sprites[sprite][variant] = id;
+      map->gm_sprite_counts[sprite] = variant + 1;
     }
   }
 

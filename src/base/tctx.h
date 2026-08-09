@@ -6,17 +6,19 @@
 ////////////////////////////////
 //~ fp: Thread Context
 //
-// One explicit home for all per-thread state; the only thread-local variable
-// in the codebase is a single pointer to it. Every thread -- main included --
-// must equip itself before touching anything per-thread:
+// The thread context is the one place for the state of a thread. The only
+// variable in this project with thread storage is one pointer to it.
 //
-//   TCTX tctx;                    // lives on the thread's own stack
+// Each thread, and the main thread too, must set its context before it uses
+// anything that belongs to a thread:
+//
+//   TCTX tctx;                    // on the stack of that thread
 //   tctx_init_and_equip(&tctx);
 //   ...
 //   tctx_release();
 //
-// An unequipped thread trips an assert on first use rather than silently
-// misbehaving.
+// A thread with no context stops at an assert at its first use, and does not
+// continue with a wrong result.
 
 #define TCTX_SCRATCH_COUNT 2
 
@@ -32,14 +34,16 @@ internal TCTX* tctx_get(void);
 ////////////////////////////////
 //~ fp: Scratch Arenas
 //
-// Per-thread transient arenas for functions that need temporary memory but
-// take no allocator argument. Pass any arenas you are also writing results to
-// as conflicts, so the scratch you get is guaranteed to be a different one --
-// otherwise transient pushes and caller-visible results would interleave on
-// the same arena, and releasing the scratch would rewind away the results.
+// A scratch arena is a temporary arena of one thread. Use one in a function
+// that needs memory for a short time and that takes no arena as a parameter.
 //
-// Two arenas per thread suffice as long as no function needs scratch while
-// holding results on both -- push TCTX_SCRATCH_COUNT up if that ever happens.
+// Give each arena that you also write a result to as a conflict. You then get a
+// different arena. If you do not, the temporary data and the result go on one
+// arena, and the release of the scratch arena removes the result.
+//
+// Two arenas for each thread are enough, while no function needs a scratch
+// arena and holds results on both of them. Make TCTX_SCRATCH_COUNT larger if
+// that happens.
 
 internal ArenaTemp arena_get_scratch(Arena** conflicts, U64 conflict_count);
 internal void      arena_release_scratch(ArenaTemp temp);

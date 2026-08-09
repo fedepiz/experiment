@@ -22,8 +22,9 @@ internal BD_Board* bd_board_alloc(Arena* arena, I32 width, I32 height, U32 path_
   board->entries = push_array_no_zero(arena, BD_PathEntry, board->entry_cap);
   board->points = push_array_no_zero(arena, V2I, tile_count);
   board->point_cap = tile_count;
-  // ~4 tiles per bucket keeps pawn chains short at any sane density; chains
-  // degrade gracefully rather than filling up beyond that
+  // About 4 tiles for each bucket keeps the pawn chains short at any normal
+  // density. A larger density makes the chains longer, and the table does not
+  // fill up.
   board->pawn_bucket_count = 64;
   while(board->pawn_bucket_count * 4 < tile_count) { board->pawn_bucket_count *= 2; }
   board->pawn_buckets = push_array(arena, BD_Pawn*, board->pawn_bucket_count);
@@ -55,6 +56,64 @@ internal F32 bd_distance(V2I a, V2I b) {
 }
 
 ////////////////////////////////
+//~ fp: Disc Walks
+
+internal BD_Disc bd_disc_ring(BD_Board* board, V2I center, F32 radius_min, F32 radius_max) {
+  BD_Disc it = {0};
+  it.center = center;
+  // The square of a radius has no sign, so this function cannot read a
+  // negative radius. A negative radius is a mistake of the caller.
+  Assert(radius_min >= 0 && radius_max >= 0);
+  it.min_sq = radius_min * radius_min;
+  it.max_sq = radius_max * radius_max;
+
+  // The walk reaches the bounding box of the outer radius only, so no walk
+  // reads the whole board. The cast to an integer is exact here: with an
+  // integer center, the largest |dx| in the band is floor(radius_max).
+  I32 reach = (I32)radius_max;
+  it.x0 = ClampBot(center.x - reach, 0);
+  it.y0 = ClampBot(center.y - reach, 0);
+  it.x1 = ClampTop(center.x + reach, board->width - 1);
+  it.y1 = ClampTop(center.y + reach, board->height - 1);
+
+  // one position before the first tile, so the first call to next reaches it
+  it.pos = (V2I){it.x0 - 1, it.y0};
+  return it;
+}
+
+internal BD_Disc bd_disc(BD_Board* board, V2I center, F32 radius) {
+  return bd_disc_ring(board, center, 0, radius);
+}
+
+internal B32 bd_disc_next(BD_Disc* it) {
+  for(;;) {
+    it->pos.x += 1;
+    if(it->pos.x > it->x1) {
+      it->pos.x = it->x0;
+      it->pos.y += 1;
+    }
+    // After the walk moves to the next row, an x that is past the end shows
+    // that the box is empty on that axis. This one test therefore stops a
+    // walk that is complete and a walk that never had a tile.
+    if(it->pos.x > it->x1 || it->pos.y > it->y1) { return 0; }
+
+    I32 dx = it->pos.x - it->center.x;
+    I32 dy = it->pos.y - it->center.y;
+    it->dist_sq = dx * dx + dy * dy;
+    F32 dist_sq = (F32)it->dist_sq;
+    if(dist_sq <= it->max_sq && dist_sq >= it->min_sq) { return 1; }
+  }
+}
+
+internal U64 bd_disc_bound(BD_Disc it) {
+  U64 result = 0;
+  if(it.x0 <= it.x1 && it.y0 <= it.y1) {
+    result = (U64)(it.x1 - it.x0 + 1) * (U64)(it.y1 - it.y0 + 1);
+  }
+  return result;
+}
+
+////////////////////////////////
 //~ fp: Features
 
 internal U8 bd_feature_mask(BD_Board* board, V2I p, BD_Feature feature) {
@@ -69,7 +128,7 @@ internal U8 bd_feature_mask(BD_Board* board, V2I p, BD_Feature feature) {
 //~ fp: Pawns
 
 internal BD_Pawn** bd__pawn_bucket(BD_Board* board, U64 key) {
-  // mixed first: consecutive keys would otherwise crowd one bucket
+  // Mix the key first. Keys that follow each other would fill one bucket.
   return &board->pawn_buckets[rng_mix_u64(key) & (board->pawn_bucket_count - 1)];
 }
 
@@ -118,7 +177,7 @@ internal BD_PawnArray bd_pawns_in_rect(Arena* arena, BD_Board* board, V2I min, V
   I32 y0 = ClampBot(min.y, 0);
   I32 x1 = ClampTop(max.x, board->width - 1);
   I32 y1 = ClampTop(max.y, board->height - 1);
-  // count, then fill -- two cheap passes beat growable storage
+  // Count, then fill. Two small passes are less work than storage that grows.
   U64 count = 0;
   for(I32 y = y0; y <= y1; y += 1) {
     for(I32 x = x0; x <= x1; x += 1) {
@@ -179,11 +238,15 @@ internal BD_TerrainPatch bd_terrain_in_rect(Arena* arena, BD_Board* board, V2I m
 ////////////////////////////////
 //~ fp: Pathfinding -- A* core
 //
-// Search state lives on scratch; only the reconstructed path escapes. The
-// open set is a binary heap with lazy deletion: a relaxed node is re-pushed
-// rather than re-keyed, and stale pops (g no longer the best known) are
-// skipped. Pushes are bounded by the grid's in-degree, so the heap array is
-// sized 4 * tiles + 1 up front and never grows.
+// The state of the search is on the scratch arena. The path is the only
+// result that leaves the function.
+//
+// The open set is a binary heap that deletes late. When the search finds a
+// better cost for a node, it pushes that node again and does not change the
+// entry that is in the heap. It then ignores each entry that it pops with a
+// cost that is no longer the best. The in-degree of the grid limits the number
+// of pushes, so the heap array holds 4 * tiles + 1 entries from the start and
+// never grows.
 
 typedef struct {
   F32 f;
@@ -220,8 +283,8 @@ internal BD__PathNode bd__heap_pop(BD__PathNode* heap, U64* count) {
   return result;
 }
 
-// cost of stepping from `from_tile` toward `dir` into `to_tile` under the
-// board's rules; <= 0 means the step cannot be taken
+// The cost of a step from `from_tile` toward `dir` into `to_tile`, under the
+// rules of the board. A cost of 0 or less means that the step is not possible.
 internal F32 bd__step_cost(BD_Board* board, BD_Tile* from_tile, Dir4 dir, BD_Tile* to_tile) {
   BD_TravelRules* rules = &board->rules;
   F32 cost = 1.0f;
@@ -239,8 +302,9 @@ internal F32 bd__step_cost(BD_Board* board, BD_Tile* from_tile, Dir4 dir, BD_Til
   return cost;
 }
 
-// the cheapest any single step can be, for an admissible A* heuristic;
-// 0 when the rules make everything impassable
+// The smallest cost that one step can have. The A* estimate uses it, and the
+// estimate must never be too large. The result is 0 when the rules make every
+// terrain impassable.
 internal F32 bd__min_step_cost(BD_TravelRules* rules) {
   F32 result = 1.0f;
   if(rules->terrain_cost_count != 0) {
@@ -259,7 +323,8 @@ internal F32 bd__heuristic(V2I a, V2I b, F32 min_cost) {
   return (F32)bd_distance_steps(a, b) * min_cost; // manhattan
 }
 
-// runs A* under board->rules; the path goes on `arena` (count 0 = no path)
+// Search with A*, under board->rules. The path goes on `arena`. A count of 0
+// means that there is no path.
 internal BD_Path bd__path_compute(Arena* arena, BD_Board* board, V2I from, V2I to) {
   BD_Path result = {0};
   if(!bd_in_bounds(board, from) || !bd_in_bounds(board, to)) { return result; }
@@ -381,9 +446,10 @@ internal void bd_path_cache_clear(BD_Board* board) {
   board->point_count = 0;
 }
 
-// find or compute-and-remember the (from, to) entry; 0 when either endpoint
-// is out of bounds. The pointer is only good until the next path query -- it
-// may drop the whole cache to make room.
+// Find the entry for (from, to), or compute it and put it in the cache. The
+// result is 0 when either end is out of bounds. The pointer is valid until the
+// next path query only, because that query can drop the whole cache to make
+// space.
 internal BD_PathEntry* bd__path_entry_lookup(BD_Board* board, V2I from, V2I to) {
   if(!bd_in_bounds(board, from) || !bd_in_bounds(board, to)) { return 0; }
   for(U32 idx = 0; idx < board->entry_count; idx += 1) {
@@ -414,7 +480,7 @@ internal BD_Path bd_path_find(Arena* arena, BD_Board* board, V2I from, V2I to) {
   BD_Path result = {0};
   BD_PathEntry* entry = bd__path_entry_lookup(board, from, to);
   if(entry != 0 && entry->count > 0) {
-    // copied out, not aliased: the cache may drop everything on a later query
+    // Copy the points. Do not point at the cache: a later query can drop it.
     result.points = push_array_no_zero(arena, V2I, entry->count);
     result.count = entry->count;
     result.cost = entry->cost;
@@ -433,69 +499,63 @@ internal V2I bd_path_next_towards(BD_Board* board, V2I from, V2I to) {
 }
 
 ////////////////////////////////
-//~ fp: Influence
+//~ fp: Partition
 
-// `source` felt `dist` tiles away; 0 past its range. Falloff runs to range + 1
-// so the last tile in range still reads above zero.
-internal F32 bd__influence_at(BD_Influence* source, F32 dist) {
+// The strength of `source` at `dist` tiles away. The result is 0 past its
+// range. The falloff runs to range + 1, so the last tile in the range still
+// reads more than 0.
+internal F32 bd__source_at(BD_Source* source, F32 dist) {
   if(dist > source->range) { return 0; }
   F32 t = dist / (source->range + 1.0f);
   F32 result = source->strength;
-  switch(source->decay) {
-    case BD_InfluenceDecay_Linear: {
+  switch(source->falloff) {
+    case BD_Falloff_Linear: {
       result *= 1.0f - t;
     } break;
-    case BD_InfluenceDecay_Quadratic: {
+    case BD_Falloff_Quadratic: {
       F32 falloff = 1.0f - t;
       result *= falloff * falloff;
     } break;
-    default: break; // BD_InfluenceDecay_No: flat out to the range
+    default: break; // BD_Falloff_None: flat out to the range
   }
   return result;
 }
 
-// a key's standing for one tile, when influence alone cannot separate two
-// claims: lowest wins. It is drawn from the key and the tile and nothing
-// else, so the winner is the same whatever order the sources are scanned in,
-// and stays the same every recompute.
-internal U64 bd__influence_tiebreak(U64 key, U64 idx) {
+// The rank of a key at one tile, for the case where the strength cannot
+// separate two sources. The lowest rank wins. The rank comes from the key and
+// the tile and nothing more. The winner is therefore the same in any order of
+// the sources, and the same at each new computation.
+internal U64 bd__partition_tiebreak(U64 key, U64 idx) {
   return rng_hash_u64(idx, key);
 }
 
-internal BD_InfluenceAssignment* bd_influence_map(Arena* arena, BD_Board* board, BD_InfluenceArray sources, U64 key_unassigned) {
+internal BD_PartitionCell* bd_partition(Arena* arena, BD_Board* board, BD_SourceArray sources, U64 key_unassigned) {
   U64 tile_count = (U64)board->width * board->height;
-  BD_InfluenceAssignment* result = push_array_no_zero(arena, BD_InfluenceAssignment, tile_count);
+  BD_PartitionCell* result = push_array_no_zero(arena, BD_PartitionCell, tile_count);
   for(U64 idx = 0; idx < tile_count; idx += 1) {
-    result[idx] = (BD_InfluenceAssignment){.key = key_unassigned};
+    result[idx] = (BD_PartitionCell){.key = key_unassigned};
   }
 
   for(U64 i = 0; i < sources.count; i += 1) {
-    BD_Influence* source = &sources.elems[i];
+    BD_Source* source = &sources.elems[i];
     if(source->range < 0 || source->strength <= 0) { continue; } // range 0 still claims its own tile
     BD_Pawn* pawn = bd_pawn_lookup(board, source->key);
     if(pawn == &BD_NIL_PAWN) { continue; }
 
-    // only the range's bounding box can be reached, so no source pays for
-    // the whole board
-    I32 reach = (I32)source->range;
-    I32 x0 = ClampBot(pawn->pos.x - reach, 0);
-    I32 y0 = ClampBot(pawn->pos.y - reach, 0);
-    I32 x1 = ClampTop(pawn->pos.x + reach, board->width - 1);
-    I32 y1 = ClampTop(pawn->pos.y + reach, board->height - 1);
-    for(I32 y = y0; y <= y1; y += 1) {
-      for(I32 x = x0; x <= x1; x += 1) {
-        F32 influence = bd__influence_at(source, bd_distance(pawn->pos, (V2I){x, y}));
-        if(influence <= 0) { continue; }
-        U64 idx = (U64)y * board->width + x;
-        // strength decides; a dead heat goes to the tile's own tiebreak, so a
-        // contested border comes out speckled between its claimants
-        if(influence > result[idx].strength ||
-           (influence == result[idx].strength &&
-            bd__influence_tiebreak(source->key, idx) <
-                bd__influence_tiebreak(result[idx].key, idx))) {
-          result[idx].key = source->key;
-          result[idx].strength = influence;
-        }
+    // The walk gives the tiles in the range and no others, so the falloff
+    // below reads only the tiles that can give more than 0.
+    for(BD_Disc it = bd_disc(board, pawn->pos, source->range); bd_disc_next(&it);) {
+      F32 strength = bd__source_at(source, sqrtf((F32)it.dist_sq));
+      if(strength <= 0) { continue; }
+      U64 idx = (U64)it.pos.y * board->width + it.pos.x;
+      // The strength decides. Two equal strengths go to the rank of the tile,
+      // so a border alternates between its two sources.
+      if(strength > result[idx].strength ||
+         (strength == result[idx].strength &&
+          bd__partition_tiebreak(source->key, idx) <
+              bd__partition_tiebreak(result[idx].key, idx))) {
+        result[idx].key = source->key;
+        result[idx].strength = strength;
       }
     }
   }

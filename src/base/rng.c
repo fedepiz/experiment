@@ -4,10 +4,10 @@
 ////////////////////////////////
 //~ fp: Random
 
-// the golden-ratio odd constant: an additive step that visits every U64
+// An odd constant from the golden ratio. A step of this size reaches each U64.
 #define RNG__GOLDEN64 0x9E3779B97F4A7C15ull
 
-// the two lattice multipliers position hashes fold coordinates through
+// The two multipliers that a hash of a position applies to its coordinates.
 #define RNG__X_PRIME 374761393u
 #define RNG__Y_PRIME 668265263u
 
@@ -79,9 +79,10 @@ internal U32 rng_next_u32(Rng* rng) {
 
 internal U32 rng_next_u32_below(Rng* rng, U32 bound) {
   if(bound == 0) { return 0; }
-  // Lemire: the high half of a 32x32 product is the result, the low half its
-  // fractional part. Plain modulo would hand the first 2^32 % bound values an
-  // extra chance; rejecting a low half under that threshold removes it.
+  // The method of Lemire. In a product of two 32-bit numbers, the high half is
+  // the result and the low half is the part after the point. A modulo alone
+  // would give the first 2^32 % bound values one more chance than the others.
+  // A rejection of each low half below that limit removes the difference.
   U64 product = (U64)rng_next_u32(rng) * (U64)bound;
   if((U32)product < bound) {
     U32 threshold = (U32)(0u - bound) % bound; // 2^32 mod bound
@@ -95,13 +96,14 @@ internal U32 rng_next_u32_below(Rng* rng, U32 bound) {
 internal I32 rng_next_i32_range(Rng* rng, I32 min, I32 max) {
   if(max <= min) { return min; }
   U64 span = (U64)((I64)max - (I64)min) + 1;
-  // the whole I32 domain overflows a bound, and needs no narrowing anyway
+  // The full range of an I32 is too large for a bound, and it needs no bound.
   if(span > 0xFFFFFFFFull) { return (I32)((I64)min + (I64)rng_next_u32(rng)); }
   return (I32)((I64)min + (I64)rng_next_u32_below(rng, (U32)span));
 }
 
 internal F32 rng_next_f32(Rng* rng) {
-  // 24 bits: F32's mantissa exactly, so no draw rounds to a neighbour
+  // 24 bits, which is the mantissa of an F32. No value therefore moves to a
+  // value near it.
   return (F32)(rng_next_u64(rng) >> 40) * (1.0f / 16777216.0f);
 }
 

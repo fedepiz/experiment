@@ -4,9 +4,9 @@
 #include "base/strings.h"
 #include "base/os.h"
 
-// The OS_MAC guard keeps the file quiet in clangd, which parses it standalone
-// on every platform (no POSIX headers off unix); real builds only include it
-// on mac anyway, via base/os.c.
+// The OS_MAC test makes this file empty for clangd, which parses it alone on
+// each platform, and which has no POSIX headers outside a unix system. A real
+// build includes this file on a Mac only, through base/os.c.
 #if OS_MAC
 
 #include <sys/mman.h>
@@ -20,8 +20,9 @@ internal U64 os_page_size(void) {
 }
 
 internal void* os_reserve(U64 size) {
-  // PROT_NONE: address space only, no pages backing it yet. Darwin has no
-  // MAP_NORESERVE and doesn't charge PROT_NONE mappings, so none is needed.
+  // PROT_NONE takes addresses only, with no pages behind them. Darwin has no
+  // MAP_NORESERVE, and it counts no memory for a PROT_NONE mapping, so this
+  // call needs no such flag.
   void* result = mmap(0, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if(result == MAP_FAILED) { result = 0; }
   return result;
@@ -33,8 +34,8 @@ internal B32 os_commit(void* ptr, U64 size) {
 }
 
 internal void os_decommit(void* ptr, U64 size) {
-  // MADV_FREE, not MADV_DONTNEED: Darwin treats DONTNEED as a near-no-op;
-  // FREE actually lets the kernel reclaim the pages
+  // Use MADV_FREE and not MADV_DONTNEED. On Darwin, DONTNEED does almost
+  // nothing. FREE lets the kernel take the pages back.
   madvise(ptr, size, MADV_FREE);
   mprotect(ptr, size, PROT_NONE);
 }
@@ -57,8 +58,9 @@ internal U64 os_now_us(void) {
 
 internal void os_console_write(String8 s, B32 to_stderr) {
   int fd = to_stderr ? 2 : 1;
-  // write(2) may write fewer bytes than asked (pipe buffers) -- loop on the
-  // remainder; any error (EINTR included) abandons the tail, it's console text
+  // write(2) can move fewer bytes than the call asks for, because a pipe has a
+  // buffer of a fixed size. The loop writes the rest. An error stops the loop,
+  // and EINTR does too, because the data is text for a console.
   U64 written = 0;
   while(written < s.size) {
     ssize_t ret = write(fd, s.str + written, s.size - written);
@@ -70,8 +72,9 @@ internal void os_console_write(String8 s, B32 to_stderr) {
 ////////////////////////////////
 //~ fp: Files
 
-// paths are String8; syscalls want null-terminated -- a scratch copy bridges
-// (push_str8_copy writes the null byte past .size)
+// A path is a String8. A system call needs a null byte at the end of a path, so
+// these functions make a copy on a scratch arena. push_str8_copy writes that
+// null byte after .size.
 internal String8 os_read_entire_file(Arena* arena, String8 path, B32* opt_success) {
   String8 result = {0};
   B32 success = 0;

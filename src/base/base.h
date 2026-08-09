@@ -1,7 +1,7 @@
 #pragma once
 
 ////////////////////////////////
-//~ fp: Base Layer -- all headers, in dependency order
+//~ fp: Base Layer -- each header, in the order of its use
 
 #include "base/core.h"
 #include "base/rng.h"

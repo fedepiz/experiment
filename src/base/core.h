@@ -6,10 +6,10 @@
 ////////////////////////////////
 //~ fp: Context Cracking
 //
-// Normalizes the compiler's predefined macro soup into one fixed vocabulary.
-// Every macro is defined to 1 or 0 by the end of this section -- never left
-// undefined -- so downstream code writes `#if OS_LINUX` and a typo becomes a
-// -Wundef warning instead of a silently-false branch.
+// This section turns the many macros of a compiler into one set of names. At
+// the end of the section each name has the value 1 or the value 0, and no name
+// is absent. Later code therefore writes `#if OS_LINUX`, and a wrong spelling
+// gives a -Wundef warning and not a branch that is quietly false.
 
 #if defined(__clang__)
 # define COMPILER_CLANG 1
@@ -39,7 +39,7 @@
 # error This architecture is not supported yet.
 #endif
 
-//- fp: zero-fill missing context macros
+//- fp: give the value 0 to each name that the tests above did not set
 
 #if !defined(COMPILER_CLANG)
 # define COMPILER_CLANG 0
@@ -66,7 +66,7 @@
 # define ARCH_ARM64 0
 #endif
 
-// Normally set by build.sh; default to debug when compiled some other way.
+// The build script sets this value. A build by other means gets a debug build.
 #if !defined(BUILD_DEBUG)
 # define BUILD_DEBUG 1
 #endif
@@ -74,8 +74,8 @@
 ////////////////////////////////
 //~ fp: Codebase Keywords
 //
-// In a unity build every symbol lives in one translation unit, so `static` no
-// longer says anything about linkage -- these spell out intent instead.
+// This project compiles as one translation unit, so `static` says nothing
+// about the linkage of a symbol. Each name below says what the author intends.
 
 #define internal      static
 #define global        static
@@ -131,7 +131,8 @@ typedef double F64;
 ////////////////////////////////
 //~ fp: Helper Macros
 
-// Wraps multi-statement macros so they behave as one statement after an `if`.
+// Put a macro of more than one statement inside this macro. The result is one
+// statement, which is correct after an `if`.
 #define Stmnt(s) do { s } while(0)
 
 #define ArrayCount(a) (sizeof(a) / sizeof((a)[0]))
@@ -143,7 +144,7 @@ typedef double F64;
 #define ClampBot(x, b) Max(x, b)
 #define Clamp(a, x, b) (((x) < (a)) ? (a) : ((x) > (b)) ? (b) : (x))
 
-// `b` must be a power of two.
+// `b` must be a power of 2.
 #define AlignPow2(x, b)     (((x) + (b) - 1) & (~((b) - 1)))
 #define AlignDownPow2(x, b) ((x) & (~((b) - 1)))
 #define IsPow2(x)           (((x) != 0) && (((x) & ((x) - 1)) == 0))
@@ -152,8 +153,8 @@ typedef double F64;
 
 #define Unused(x) ((void)(x))
 
-// Runs `begin` before the body and `end` after it; the body runs exactly
-// once. A `break` inside the body skips `end`.
+// Run `begin` before the body, and run `end` after it. The body runs one time.
+// A `break` inside the body stops `end`.
 #define DeferLoop(begin, end) for(int Glue(defer__, __LINE__) = ((begin), 0); \
                                   !Glue(defer__, __LINE__);                   \
                                   Glue(defer__, __LINE__) += 1, (end))
@@ -167,7 +168,7 @@ typedef double F64;
 # define AssertBreak() __builtin_trap()
 #endif
 
-// Assert compiles away in release builds; AssertAlways survives them.
+// A release build removes Assert. It keeps AssertAlways.
 #define AssertAlways(c) Stmnt(if(!(c)) { AssertBreak(); })
 #if BUILD_DEBUG
 # define Assert(c) AssertAlways(c)
@@ -190,14 +191,16 @@ typedef double F64;
 ////////////////////////////////
 //~ fp: Linked List Macros
 //
-// f = first, l = last, n = node, p = previous. Nodes are expected to have
-// `next` (and `prev` for DLL) members. Zero is the nil node.
+// In the names below, f is the first node, l is the last node, n is a node,
+// and p is the node before. A node must have a `next` member. A node of a
+// doubly-linked list must also have a `prev` member. The value 0 is the nil
+// node.
 
-//- fp: singly-linked stack
+//- fp: a stack, with one link
 #define SLLStackPush(f, n) ((n)->next = (f), (f) = (n))
 #define SLLStackPop(f)     ((f) = (f)->next)
 
-//- fp: singly-linked queue
+//- fp: a queue, with one link
 #define SLLQueuePush(f, l, n) ((f) == 0 ?                        \
                                ((f) = (l) = (n)) :               \
                                ((l)->next = (n), (l) = (n)),     \
@@ -209,7 +212,7 @@ typedef double F64;
                            ((f) = (l) = 0) :        \
                            ((f) = (f)->next))
 
-//- fp: doubly-linked list
+//- fp: a list, with two links
 #define DLLPushBack(f, l, n) Stmnt(                                        \
   if((f) == 0) { (f) = (l) = (n); (n)->next = (n)->prev = 0; }             \
   else { (n)->prev = (l); (n)->next = 0; (l)->next = (n); (l) = (n); })

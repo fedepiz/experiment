@@ -1,5 +1,5 @@
 ////////////////////////////////
-//~ fp: Base Layer -- all implementations, in dependency order
+//~ fp: Base Layer -- the code of each part, in the order of its use
 
 #include "base/core.c"
 #include "base/rng.c"

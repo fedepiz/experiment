@@ -5,11 +5,14 @@
 ////////////////////////////////
 //~ fp: Arena
 //
-// Linear bump allocator over one big virtual reservation. The arena header
-// lives at the base of its own reservation, so an Arena* is also the base
-// address of the memory it manages. Pages are committed lazily as the position
-// advances; freeing is rewinding the position, not releasing individual
-// allocations.
+// An arena gives out memory from one large reservation of addresses. Each
+// allocation moves a position forward.
+//
+// The header of an arena is at the start of its own reservation, so an Arena*
+// is also the first address of the memory that it manages.
+//
+// The arena commits a page when the position reaches it. To free memory, move
+// the position back. The arena does not free one allocation.
 
 #define ARENA_HEADER_SIZE          64
 #define ARENA_DEFAULT_RESERVE_SIZE GB(1)
@@ -18,14 +21,15 @@
 
 typedef struct Arena Arena;
 struct Arena {
-  U64 res; // reserved bytes, including this header
-  U64 cmt; // committed bytes
-  U64 pos; // bump position, as an offset from the arena base
+  U64 res; // the reserved bytes, with this header
+  U64 cmt; // the committed bytes
+  U64 pos; // the position, as an offset from the start of the arena
 };
 StaticAssert(sizeof(Arena) <= ARENA_HEADER_SIZE, arena_header_fits);
 
-// A position saved at scope entry; arena_temp_end rewinds to it, reclaiming
-// everything pushed inside the scope at zero cost.
+// A position that the caller saves at the start of a scope. arena_temp_end
+// moves the arena back to it, and frees each allocation of that scope at no
+// cost.
 typedef struct {
   Arena* arena;
   U64 pos;

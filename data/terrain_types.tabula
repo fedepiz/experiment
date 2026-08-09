@@ -52,6 +52,9 @@ terrain_type = {
 	move_cost = 0
 	overlay_density = 80
 	elevation = [0.62 1.0]
+	# Wildlife
+	wildlife_max = 10
+	wildlife_renew_rate = 1.0
 }
 terrain_type = {
 	name = hills
@@ -60,6 +63,9 @@ terrain_type = {
 	move_cost = 2.0
 	overlay_density = 80
 	elevation = [0.58 0.62]
+	# Wildlife
+	wildlife_max = 10
+	wildlife_renew_rate = 1.0
 }
 terrain_type = {
 	name = badlands
@@ -69,6 +75,9 @@ terrain_type = {
 	moisture = [0.0 0.38]
 	drainage = [0.4 1.0]
 	temperature = [0.4 1.0]
+	# Wildlife
+	wildlife_max = 10
+	wildlife_renew_rate = 1.0
 }
 terrain_type = {
 	name = desert
@@ -86,6 +95,9 @@ terrain_type = {
 	overlay_density = 80
 	moisture = [0.45 1.0]
 	temperature = [0.0 0.35]
+	# Wildlife
+	wildlife_max = 20
+	wildlife_renew_rate = 1.0
 }
 terrain_type = {
 	name = tundra
@@ -93,6 +105,9 @@ terrain_type = {
 	rank = 10
 	move_cost = 1.5
 	temperature = [0.0 0.30]
+	# Wildlife
+	wildlife_max = 10
+	wildlife_renew_rate = 1.0
 }
 terrain_type = {
 	name = jungle
@@ -102,6 +117,9 @@ terrain_type = {
 	overlay_density = 85
 	moisture = [0.55 1.0]
 	temperature = [0.65 1.0]
+	# Wildlife
+	wildlife_max = 20
+	wildlife_renew_rate = 1.0
 }
 terrain_type = {
 	name = savanna
@@ -111,6 +129,9 @@ terrain_type = {
 	overlay_density = 35
 	moisture = [0.35 0.55]
 	temperature = [0.6 1.0]
+	# Wildlife
+	wildlife_max = 20
+	wildlife_renew_rate = 1.0
 }
 terrain_type = {
 	name = swamp
@@ -119,6 +140,9 @@ terrain_type = {
 	move_cost = 3.0
 	moisture = [0.6 1.0]
 	drainage = [0.0 0.45]
+	# Wildlife
+	wildlife_max = 10
+	wildlife_renew_rate = 1.0
 }
 terrain_type = {
 	name = forest
@@ -127,6 +151,9 @@ terrain_type = {
 	move_cost = 2.0
 	overlay_density = 80
 	moisture = [0.5 1.0]
+	# Wildlife
+	wildlife_max = 40
+	wildlife_renew_rate = 1.0
 }
 terrain_type = {
 	name = plains
@@ -134,4 +161,11 @@ terrain_type = {
 	rank = 16
 	move_cost = 1.0
 	flags = ["fertile"]
+	# Stocks
+	# Grass
+	grass_max = 100
+	grass_renew_rate = 1.0
+	# Wildlife
+	wildlife_max = 20
+	wildlife_renew_rate = 1.0
 }

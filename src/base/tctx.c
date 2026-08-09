@@ -25,7 +25,8 @@ internal void tctx_release(void) {
 }
 
 internal TCTX* tctx_get(void) {
-  // a null here means this thread never called tctx_init_and_equip
+  // A null pointer here means that this thread did not call
+  // tctx_init_and_equip.
   AssertAlways(tctx_thread_local != 0);
   return tctx_thread_local;
 }
@@ -47,7 +48,8 @@ internal ArenaTemp arena_get_scratch(Arena** conflicts, U64 conflict_count) {
       break;
     }
   }
-  // null here means every scratch arena conflicts -- raise TCTX_SCRATCH_COUNT
+  // A null pointer here means that each scratch arena is a conflict. Make
+  // TCTX_SCRATCH_COUNT larger.
   AssertAlways(result.arena != 0);
   return result;
 }

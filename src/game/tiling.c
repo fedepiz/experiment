@@ -62,15 +62,20 @@ internal void tl_push_network(TL_Config* config, U32 network, U32 code, U32 id) 
 ////////////////////////////////
 //~ fp: Cell Query
 
-// position-keyed noise: pure hash of (seed, position, stream), so appearance
-// never flickers frame to frame. `stream` decorrelates the module's separate
-// random decisions at one position; the allocation: 0 overlay pick, 1
-// density roll, 2..2+TL_CLASS_CAP mask variants (by class), networks after.
+// A noise value from a position. It is a hash of the seed, the position and
+// the stream, and nothing more. The appearance therefore does not change from
+// one frame to the next.
+//
+// `stream` separates the random choices that the module makes at one position.
+// Stream 0 chooses an overlay. Stream 1 decides whether a cell has an overlay.
+// Streams 2 to 2+TL_CLASS_CAP choose a mask variant, one stream for each
+// class. The streams of the networks come after those.
 internal U32 tl__noise(U64 seed, V2I p, U32 stream) {
   return rng_hash_2d_stream(seed, p.x, p.y, stream);
 }
 
-// the total covering order: rank decides, class id breaks ties
+// The order in which the classes cover each other. The rank decides. Two equal
+// ranks compare their class ids.
 internal U32 tl__order(TL_Config* config, U32 klass) {
   return ((U32)config->classes[klass].rank << 16) | klass;
 }
@@ -79,7 +84,7 @@ internal TL_Cell tl_cell(TL_Config* config, U32 neighborhood[9],
                          U8 networks[TL_NETWORK_CAP], V2I p) {
   TL_Cell result = {0};
 
-  // bad ids read as class 0 -- the caller's diagnostic path (loud nil color)
+  // A wrong id reads as class 0, which the caller draws in a bright color.
   U32 nb[9];
   for(U32 i = 0; i < 9; i += 1) {
     nb[i] = neighborhood[i] < config->class_count ? neighborhood[i] : 0;
@@ -87,11 +92,14 @@ internal TL_Cell tl_cell(TL_Config* config, U32 neighborhood[9],
   U32 klass = nb[4];
   TL_Class* def = &config->classes[klass];
 
-  //- the NW dual cell's ground stack (corners: NW, N, W, self): bottom
-  // class full, higher classes through their case masks, in covering order.
-  // Windows are cut on the offset grid, so [(p-1)&3] is exactly the
-  // world-space slice of the torus under this dual cell -- pure and mixed
-  // cells alike continue one seamless texture per class.
+  //- fp: the stack of ground at the north west dual cell, whose corners are
+  //  the cells NW, N, W and this one. The class at the bottom draws in full.
+  //  Each class above it draws through the mask of its case, in the order that
+  //  the classes cover each other.
+  //
+  //  The module cuts a window on the offset grid, so [(p-1)&3] is the part of
+  //  the torus under this dual cell. A cell with one class and a cell with
+  //  more both continue one texture for each class, with no seam.
   {
     U32 corners[4] = {nb[0], nb[1], nb[3], nb[4]}; // TL_Corner_* bit order
     U32 wx = (U32)((p.x - 1) & (TL_TORUS_GRID - 1));
@@ -106,13 +114,13 @@ internal TL_Cell tl_cell(TL_Config* config, U32 neighborhood[9],
         present_count += 1;
       }
     }
-    // ascending covering order
+    // in the order that the classes cover each other, from the bottom
     for(U32 i = 1; i < present_count; i += 1) {
       for(U32 j = i; j > 0 && tl__order(config, present[j]) < tl__order(config, present[j - 1]); j -= 1) {
         Swap(U32, present[j], present[j - 1]);
       }
     }
-    // bottom: drawn full, as if there were no border
+    // the class at the bottom, which draws in full, as if there were no border
     {
       U32 bottom = present[0];
       TL_Piece* piece = &result.pieces[result.count];
@@ -142,7 +150,8 @@ internal TL_Cell tl_cell(TL_Config* config, U32 neighborhood[9],
     }
   }
 
-  //- networks, in id order; carrying any suppresses the cell's overlays
+  //- fp: the networks, in the order of their ids. A cell with any network
+  //  draws no overlay.
   B32 networked = 0;
   for(U32 n = 0; n < TL_NETWORK_CAP; n += 1) {
     U32 code = networks[n];
@@ -157,9 +166,10 @@ internal TL_Cell tl_cell(TL_Config* config, U32 neighborhood[9],
     piece->layer = TL_Layer_Network;
   }
 
-  //- overlay art tapers at the region border: sparse edge art there, full
-  // art inside -- with bare gaps so a massif or forest reads as scattered
-  // shapes, not a carpet of one tile art per cell
+  //- fp: the overlay art becomes thin at the border of a region. A cell at the
+  //  border takes the sparse edge art, and a cell inside takes the full art.
+  //  Some cells take no art. A group of mountains or a forest therefore reads
+  //  as separate shapes, and not as one piece of art at every cell.
   if(!networked) {
     B32 on_border = 0;
     for(U32 i = 0; i < 9; i += 1) { on_border |= nb[i] != klass; }

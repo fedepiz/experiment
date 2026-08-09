@@ -7,27 +7,29 @@
 ////////////////////////////////
 //~ fp: Thing Database
 //
-// One contiguous struct of fixed-size tables -- dense rows indexed by slot for
-// facts, index-linked pools for the sparse parts (words, edges). No pointers
-// anywhere inside, so the whole TH_Db is relocatable and saves as one blob.
+// One contiguous structure of tables with a fixed size. A fact is a row, and
+// the index of that row is a slot. A word and an edge are in a pool, and an
+// index joins the parts of that pool. The structure holds no pointer, so you
+// can move the whole TH_Db, and you can save it as one block of bytes.
 
 #define TH_BITSET_WORDS    ((TH_THING_CAP + 63) / 64)
 #define TH_WORD_CAP       8192
 #define TH_WORD_HASH_SLOTS 16384 // power of two, > 2x TH_WORD_CAP: never fills
 #define TH_WORD_CHARS      KB(256)
-// Edges live in chunks: one chunk holds up to TH_EDGE_CHUNK_LEN entries of a
-// single (rel, source) list, so a list walk costs one dependent load per chunk
-// rather than per edge. Chunk links are U16 indices, which fixes the cap at
-// what a U16 addresses; chunk 0 is the nil entry, leaving 1..65535 usable.
+// The edges are in chunks. One chunk holds at most TH_EDGE_CHUNK_LEN entries
+// of one (rel, source) list. A walk of a list therefore reads one address for
+// each chunk, and not one address for each edge. The link between two chunks
+// is a U16 index, so a U16 sets the largest number of chunks. Chunk 0 is the
+// nil chunk, which leaves the chunks 1 to 65535 for a list.
 #define TH_EDGE_CHUNK_LEN 9
 #define TH_EDGE_CHUNK_CAP 65536
 
 StaticAssert(IsPow2(TH_WORD_HASH_SLOTS), th_word_hash_pow2);
 StaticAssert(TH_WORD_HASH_SLOTS >= 2 * TH_WORD_CAP, th_word_hash_room);
 
-// Entries are unordered within a chunk: removal swaps the last entry down into
-// the hole. TH_EDGE_CHUNK_LEN is sized to fill the line exactly -- retune the
-// padding alongside it.
+// The entries in a chunk have no order. To remove one entry, move the last
+// entry into its place. TH_EDGE_CHUNK_LEN makes the chunk fill one cache line
+// exactly. Change the padding when you change that length.
 typedef struct {
   F32 values[TH_EDGE_CHUNK_LEN];
   U16 targets[TH_EDGE_CHUNK_LEN];
@@ -41,8 +43,8 @@ StaticAssert(sizeof(TH__EdgeChunk) == 64, th_edge_chunk_is_one_cache_line);
 StaticAssert(TH_EDGE_CHUNK_LEN <= 255, th_edge_chunk_count_fits_u8);
 
 struct TH_Db {
-  //- fp: things. alive & ~nascent is what iteration sees; doomed things stay
-  // alive until th_commit destroys them.
+  //- fp: the things. An iteration sees the slots in alive and not in nascent.
+  //  A thing in doomed stays alive until th_commit removes it.
   U64 alive[TH_BITSET_WORDS];
   U64 nascent[TH_BITSET_WORDS];
   U64 doomed[TH_BITSET_WORDS];
@@ -52,7 +54,8 @@ struct TH_Db {
   U16 watermark;                // first never-used slot
   U16 doomed_count;             // marks since the last commit
 
-  //- fp: words. Interned once, never freed; word 0 is nil.
+  //- fp: the words. The database stores each word one time and never frees it.
+  //  Word 0 is the nil word.
   U32 word_offset[TH_WORD_CAP];
   U8 word_len[TH_WORD_CAP];
   U16 word_hash[TH_WORD_HASH_SLOTS]; // open-addressed word ids; 0 = empty
@@ -60,25 +63,28 @@ struct TH_Db {
   U32 word_count;
   U32 word_chars_used;
 
-  //- fp: facts, dense: table[kind][slot]. Kind 0 rows sit unused so kinds
-  // index directly; untouched rows cost only zero pages.
+  //- fp: the facts, as table[kind][slot]. The rows of kind 0 stay empty, so a
+  //  kind is a direct index. A row that no code writes costs pages of zeros
+  //  only.
   TH_Phrase labels[TH_Label_COUNT][TH_THING_CAP];
   U64 flags[TH_Flag_COUNT][TH_BITSET_WORDS];
   F32 vars[TH_Var_COUNT][TH_THING_CAP];
   I32 ivars[TH_IVar_COUNT][TH_THING_CAP];
   TH_Id refs[TH_Ref_COUNT][TH_THING_CAP];
 
-  //- fp: edges, pooled: per-(rel, source) chunk lists threaded by index. Chunk
-  // 0 is the nil entry, so 0 terminates lists. The alignment lands each chunk
-  // on its own cache line, which is the point of chunking them.
+  //- fp: the edges, in a pool. Each (rel, source) has a list of chunks, and an
+  //  index joins them. Chunk 0 is the nil chunk, so 0 ends a list. The
+  //  alignment puts each chunk on its own cache line, which is the reason for
+  //  the chunks.
   _Alignas(64) TH__EdgeChunk edge_chunks[TH_EDGE_CHUNK_CAP];
   U16 edge_first[TH_Relation_COUNT][TH_THING_CAP];
   U16 edge_chunk_free;
   U32 edge_chunk_watermark; // counts to TH_EDGE_CHUNK_CAP, so it outgrows a U16
 
-  //- fp: fields, dense: table[kind][cell], cell = y * TH_WORLD_MAX_DIM + x.
-  // Columns are fixed at TH_WORLD_CELLS; world_width/height bound the part in
-  // use. Kind 0 rows sit unused, as with the per-thing tables.
+  //- fp: the fields, as table[kind][cell], where cell = y * TH_WORLD_MAX_DIM +
+  //  x. Each column holds TH_WORLD_CELLS cells. world_width and world_height
+  //  give the part in use. The rows of kind 0 stay empty, as in the tables of
+  //  the things.
   I32 world_width;
   I32 world_height;
   F32 fields[TH_Field_COUNT][TH_WORLD_CELLS];
@@ -110,9 +116,12 @@ internal void th__bit_set(U64* bits, U32 idx, B32 value) {
   }
 }
 
-// ids pack as (slot << 16) | generation, so numeric order is slot-major
+// An id holds (slot << 16) | generation, so the numeric order of two ids
+// follows their slots first.
 
-// live slot for id -- alive now, generation matches; 0 for nil / stale
+// The live slot of an id. The slot must be alive now, and its generation must
+// be equal to the generation of the id. The result is 0 for a nil id and for
+// an old id.
 internal U32 th__slot(TH_Db* db, TH_Id id) {
   U32 slot = id >> 16;
   if(slot == 0 || slot >= TH_THING_CAP) { return 0; }
@@ -125,7 +134,9 @@ internal TH_Id th__id_from_slot(TH_Db* db, U32 slot) {
   return (slot << 16) | db->generation[slot];
 }
 
-// first visible (alive & ~nascent) slot at or after start; nil when none
+// The first slot at `start` or after it that an iteration sees, which is a
+// slot in alive and not in nascent. The result is nil when there is no such
+// slot.
 internal TH_Id th__scan_from(TH_Db* db, U32 start) {
   for(U32 slot = start; slot < db->watermark;) {
     U64 word = (db->alive[slot >> 6] & ~db->nascent[slot >> 6]) >> (slot & 63);
@@ -175,10 +186,13 @@ internal void th_despawn_mark(TH_Db* db, TH_Id id) {
 
 internal void th_commit(TH_Db* db) {
   if(db->doomed_count > 0) {
-    //- fp: rebuild edge lists from the pool, dropping every edge that touches
-    // a doomed thing -- the batched sweep that lets edges store one direction.
-    // A chunk whose source died drops whole; otherwise its dead targets
-    // compact out, and it is recycled only if that empties it.
+    //- fp: build the edge lists again from the pool, and drop each edge that
+    //  touches a doomed thing. This one sweep is the reason that an edge can
+    //  store one direction only.
+    //
+    //  A chunk whose source is gone goes back to the free list whole. In each
+    //  other chunk the sweep removes the targets that are gone, and it frees
+    //  that chunk only when it becomes empty.
     MemoryZero(db->edge_first, sizeof(db->edge_first));
     db->edge_chunk_free = 0;
     for(U32 c = 1; c < db->edge_chunk_watermark; c += 1) {
@@ -205,7 +219,8 @@ internal void th_commit(TH_Db* db) {
         db->edge_first[chunk->rel][chunk->source] = (U16)c;
       }
     }
-    //- fp: destroy doomed things: zero every fact row, stale the id, recycle
+    //- fp: remove each doomed thing. Set each of its fact rows to 0, make its
+    //  id old, and put its slot on the free list.
     for(U32 word_idx = 0; word_idx < TH_BITSET_WORDS; word_idx += 1) {
       for(U64 word = db->doomed[word_idx]; word != 0;) {
         U32 bit = 0;
@@ -226,7 +241,7 @@ internal void th_commit(TH_Db* db) {
     MemoryZeroArray(db->doomed);
     db->doomed_count = 0;
   }
-  //- fp: spawns become visible
+  //- fp: an iteration now sees each thing that a spawn made
   MemoryZeroArray(db->nascent);
 }
 
@@ -445,9 +460,12 @@ internal void th_edge_set(TH_Db* db, TH_Relation rel, TH_Id source, TH_Id target
   U32 src = th__slot(db, source);
   U32 tgt = th__slot(db, target);
   if(src == 0 || tgt == 0 || rel == TH_Relation_Nil || rel >= TH_Relation_COUNT) { return; }
-  //- fp: existing edge: update, or swap-remove when set to 0. `link` trails a
-  // step behind at the field pointing to the chunk in hand, so a chunk that
-  // empties anywhere in the list unlinks in one store and needs no back link.
+  //- fp: an edge that exists. Write its value, or remove it when the value is
+  //  0 by a move of the last entry into its place.
+  //
+  //  `link` stays one step behind, at the field that points to the chunk in
+  //  hand. A chunk that becomes empty at any place in the list therefore
+  //  leaves the list with one store, and the list needs no backward link.
   U16 room = 0; // a chunk of this list with a spare entry, for the insert below
   for(U16* link = &db->edge_first[rel][src]; *link != 0; link = &db->edge_chunks[*link].next) {
     U16 c = *link;
@@ -472,7 +490,8 @@ internal void th_edge_set(TH_Db* db, TH_Relation rel, TH_Id source, TH_Id target
     }
   }
   if(value == 0) { return; }
-  //- fp: new edge: fill a hole an earlier removal left before taking a chunk
+  //- fp: a new edge. Use a free place that an earlier removal left, before you
+  //  take a new chunk.
   if(room != 0) {
     TH__EdgeChunk* chunk = &db->edge_chunks[room];
     chunk->targets[chunk->count] = (U16)tgt;
@@ -480,7 +499,8 @@ internal void th_edge_set(TH_Db* db, TH_Relation rel, TH_Id source, TH_Id target
     chunk->count += 1;
     return;
   }
-  //- fp: new chunk; exhaustion is a capacity tuning failure, so it trips loud
+  //- fp: a new chunk. An empty pool means that TH_EDGE_CHUNK_CAP is too small,
+  //  so an assert stops the program.
   U16 c = db->edge_chunk_free;
   if(c != 0) {
     db->edge_chunk_free = db->edge_chunks[c].next;

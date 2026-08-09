@@ -1,7 +1,7 @@
 #include "base/core.h"
 
 ////////////////////////////////
-//~ fp: Per-OS Backend
+//~ fp: The Code For Each Operating System
 
 #if OS_LINUX
 #include "base/linux/os.c"

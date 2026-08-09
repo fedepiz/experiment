@@ -2,8 +2,9 @@
 
 #include "base/core.h"
 
-// 2^x -- the natural base for framerate-independent exponential rates: the
-// factor per second is exp2(rate), so `rate` reads as doublings per second.
+// 2^x. Use this base for a rate that must not depend on the frame rate. The
+// factor for one second is exp2(rate), so `rate` is the number of times that a
+// value doubles in one second.
 internal F32 f32_exp2(F32 x);
 
 typedef struct {
@@ -20,7 +21,7 @@ internal V2 v2_scaled_add(V2 a, V2 b, F32 c);
 internal F32 v2_magnitude(V2 a);
 internal V2 v2_norm(V2 a, V2 fallback);
 
-// Integer companion to V2, for grid/tile coordinates.
+// The integer form of V2. Use it for the coordinates of a grid or a tile.
 typedef struct {
   I32 x;
   I32 y;
@@ -30,9 +31,9 @@ internal B32 v2i_eq(V2I a, V2I b);
 internal V2I v2i_add(V2I a, V2I b);
 internal V2I v2i_sub(V2I a, V2I b);
 
-// The four grid neighborhoods, clockwise from north -- shared vocabulary for
-// anything 4-connected on a V2I grid. The order is load-bearing: opposite
-// direction == +2 mod 4.
+// The four neighbours of a cell, in order from the north, in the direction of
+// a clock. Each part of the project that joins four cells on a V2I grid uses
+// these names. The order is necessary: the opposite direction is +2, modulo 4.
 typedef U32 Dir4;
 enum {
   Dir4_N,
@@ -55,14 +56,15 @@ typedef struct {
 
 internal V4 v4_splat(F32 v);
 
-// min is the top-left corner, max the bottom-right (y grows downward in
-// window space).
+// `min` is the top left corner, and `max` is the bottom right corner. In the
+// space of a window, y increases downward.
 typedef struct {
   V2 min;
   V2 max;
 } Rect;
 
-// Index order for per-corner data (colors, radii, ...).
+// The order of the indices for data at each corner, such as a color or a
+// radius.
 typedef U32 Corner;
 enum {
   Corner_TL,

@@ -37,7 +37,7 @@ internal void* arena_push(Arena* arena, U64 size, U64 align) {
   U64 pos_pre = AlignPow2(arena->pos, align);
   U64 pos_post = pos_pre + size;
 
-  // extend the committed range if this push runs past it
+  // Commit more memory when this allocation goes past the committed part.
   if(arena->cmt < pos_post && pos_post <= arena->res) {
     U64 cmt_post = AlignPow2(pos_post, ARENA_COMMIT_GRANULARITY);
     cmt_post = ClampTop(cmt_post, arena->res);
@@ -52,8 +52,9 @@ internal void* arena_push(Arena* arena, U64 size, U64 align) {
     arena->pos = pos_post;
   }
 
-  // null here means the reservation was exhausted -- grow the arena's reserve
-  // size, or split the work across arenas
+  // A null pointer here means that the arena has no more reserved addresses.
+  // Make the reserve size of the arena larger, or divide the work between two
+  // arenas.
   AssertAlways(result != 0);
   return result;
 }
@@ -73,7 +74,7 @@ internal void arena_clear(Arena* arena) {
 }
 
 ////////////////////////////////
-//~ fp: Temporary Arena Scopes
+//~ fp: Temporary Scopes On An Arena
 
 internal ArenaTemp arena_temp_begin(Arena* arena) {
   ArenaTemp temp = {arena, arena->pos};

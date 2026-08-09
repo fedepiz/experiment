@@ -3,44 +3,49 @@
 #include "base/math.h"
 #include "base/strings.h"
 #include "base/arena.h"
+#include "game/defs.h"
 
-// Max number of things that can possibly exist
+// the largest number of things that can exist
 #define TH_THING_CAP 65000
 
-// Max world dimensions: fields (per-position facts, below) are fixed columns
-// of TH_WORLD_MAX_DIM^2 cells, so the world can never outgrow them. World
-// generation asserts its dimensions against this.
+// The largest size of the world. A field is a fact at each position, and each
+// field column holds TH_WORLD_MAX_DIM^2 cells, so the world can never become
+// larger. World generation asserts its size against this limit.
 #define TH_WORLD_MAX_DIM 256
 #define TH_WORLD_CELLS   (TH_WORLD_MAX_DIM * TH_WORLD_MAX_DIM)
 
-// The structure that contains the database of things.
-// KEEP CONTIGUOUS and relocatable (ie, no stored pointers)
-// This way we can save and restore by binary blobs
+// The database of things. Keep it contiguous, and keep it possible to move:
+// store no pointers in it. You can then save it and load it as one block of
+// bytes.
 typedef struct TH_Db TH_Db;
 
-// A thing id: slot and generation packed into one U32. 0 is guaranteed to be
-// the NIL id, never given out, so `id != 0` tests validity and `==` compares.
-// Numeric order is a stable total order for sorting and nothing more.
+// A thing id holds a slot and a generation in one U32. Id 0 is always the nil
+// id, and the database never gives it out. Test `id != 0` for a valid id, and
+// use `==` to compare two ids. The numeric order of the ids is stable, which
+// makes it useful for a sort and for nothing more.
 typedef U32 TH_Id;
 
-// Reads are total: nil and stale ids resolve to shared nil objects, read-only
-// by convention -- nothing may ever write through a nil.
+// All reads are total. A nil id and an old id both resolve to a shared nil
+// object, which is read-only by convention. Never write through a nil object.
 //
-// Two halves share this file: database mechanism (spawn/commit, iteration,
-// words, the accessors), and the game's fact schema -- the members of the
-// enums below (labels, flags, vars, fields, relations). Extend the schema
-// freely by adding members; the mechanism does not care what they mean.
+// This file holds two parts. The first part is the mechanism of the database:
+// spawn and commit, iteration, words, and the accessors. The second part is
+// the fact schema of the game, which is the members of the enums below:
+// labels, flags, vars, fields and relations. Add a member to extend the
+// schema. The mechanism does not read the meaning of a member.
 
 internal TH_Db* th_init_db(Arena* arena);
 
-// A spawned thing exists at once -- its id is valid and writable -- but stays
-// invisible to iteration until th_commit. Despawn only marks: the thing stays
-// live until th_commit destroys it (edges dropped, rows zeroed, id stale).
+// A thing that you spawn exists at once: its id is valid, and you can write to
+// it. An iteration does not see the thing until th_commit. Despawn puts a mark
+// on the thing. The thing stays live until th_commit removes it: th_commit
+// then drops its edges, sets its rows to 0, and makes its id old.
 internal TH_Id th_spawn(TH_Db* db); // nil when all TH_THING_CAP slots are live
 internal void th_despawn_mark(TH_Db* db, TH_Id id);
 internal void th_commit(TH_Db* db);
 
-// Iterator over live things. When th_first/th_next return 0, we are done
+// The iterator over the live things. A result of 0 shows that the iteration is
+// complete.
 internal TH_Id th_first(TH_Db* db);
 internal TH_Id th_next(TH_Db* db, TH_Id id);
 
@@ -69,61 +74,66 @@ enum {
 
 internal TH_Phrase* th_label(TH_Db* db, TH_Id id, TH_Label label);
 
-// Flags are booleans, implemented as a bitset. A flag doubles as a set of
-// things: get is the O(1) membership test, and the flagged iterators below
-// walk the members.
+// A flag is a boolean. The database holds each flag as a bitset. A flag is
+// also a set of things: get is the test for a member, which costs one
+// operation, and the iterators below walk the members.
 
 typedef U8 TH_Flag;
 enum {
   TH_Flag_Nil,
-  TH_Flag_Debug,        // A test mark
-  TH_Flag_Placed,       // standing on the board: reconciled to a pawn each tick
-  TH_Flag_Mobile,       // the entity can move
-  TH_Flag_HasInfluence, // claims the land around it; tiles it wins are homed to it
+  TH_Flag_Debug,        // a mark for a test
+  TH_Flag_Placed,       // stands on the board. The game gives it a pawn each tick.
+  TH_Flag_Mobile,       // the thing can move
+  TH_Flag_HasInfluence, // claims the land near it. Each tile that it wins is its home.
   TH_Flag_COUNT,
 };
 
 internal B32 th_flag_get(TH_Db* db, TH_Id id, TH_Flag flag);
-// Return the old value
+// set gives you the value that the flag had before
 internal B32 th_flag_set(TH_Db* db, TH_Id id, TH_Flag flag, B32 value);
 
-// Iterate the things carrying `flag`, same protocol as th_first/th_next
+// The iterator over the things with `flag`. Its protocol is the protocol of
+// th_first and th_next.
 internal TH_Id th_first_flagged(TH_Db* db, TH_Flag flag);
 internal TH_Id th_next_flagged(TH_Db* db, TH_Flag flag, TH_Id id);
 
-// Variables: scalars
+// a variable is a scalar at each thing
 typedef U16 TH_Var;
 enum {
   TH_Var_Nil,
   TH_Var_MovePts,
   TH_Var_Population,
+  TH_Var_FoodStore,
   TH_Var_COUNT
 };
 
 internal F32* th_var(TH_Db* db, TH_Id id, TH_Var var);
 internal F32 th_var_get(TH_Db* db, TH_Id id, TH_Var var);
-// Safer write than *th_var() = ...; no-op on a nil id
+// a safer write than *th_var() = ... : it does nothing for a nil id
 internal void th_var_set(TH_Db* db, TH_Id id, TH_Var var, F32 value);
 
-// Integer scalars: ticks, amounts, encoded enumerations -- anything that must
-// stay exact beyond F32's 2^24 integer ceiling
+// An integer variable holds a tick count, an amount, or a value of an enum.
+// Use it for each number that must stay exact above 2^24, which is the largest
+// integer that an F32 holds exactly.
 typedef U16 TH_IVar;
 enum {
   TH_IVar_Nil,
   TH_IVar_X,
   TH_IVar_Y,
   TH_IVar_Sprite,
+  TH_IVar_WayOfLife,
   TH_IVar_COUNT
 };
 
 internal I32* th_ivar(TH_Db* db, TH_Id id, TH_IVar ivar);
 internal I32 th_ivar_get(TH_Db* db, TH_Id id, TH_IVar ivar);
-// Safer write than *th_ivar() = ...; no-op on a nil id
+// a safer write than *th_ivar() = ... : it does nothing for a nil id
 internal void th_ivar_set(TH_Db* db, TH_Id id, TH_IVar ivar, I32 value);
 
-// Refs: one target per thing per ref kind -- single references like owner,
-// goal, next. Only thing -> target is stored; reverse lookups ("who refs X?")
-// come out via analysis.
+// A ref holds one target for each thing, for each kind of ref. Use it for a
+// single reference such as an owner, a goal or a next. The database stores the
+// direction from the thing to the target only. To find the things that point
+// at a target, examine the refs of all the things.
 typedef U16 TH_Ref;
 enum {
   TH_Ref_Nil,
@@ -135,9 +145,10 @@ enum {
 internal TH_Id th_ref_get(TH_Db* db, TH_Ref ref, TH_Id thing);
 internal void th_ref_set(TH_Db* db, TH_Ref ref, TH_Id thing, TH_Id target);
 
-// Many to many relations. Fungible amounts are edges to an archetype thing
-// (value = amount); an item with state of its own is a full thing carried via
-// a ref instead.
+// A relation holds many targets for each thing. Hold an amount of an item that
+// has no state as an edge to a thing that stands for that kind of item, where
+// the value of the edge is the amount. Hold an item that has a state of its
+// own as a thing, and point at that thing with a ref.
 typedef U16 TH_Relation;
 enum {
   TH_Relation_Nil,
@@ -154,76 +165,89 @@ typedef struct {
   TH_EdgeEntry* entries;
 } TH_Edges;
 
-// Return value of an edge, returning fallback if the edge is missing
+// the value of one edge of a list. It gives `fallback` when the edge is absent.
 internal F32 th_edge_value(TH_Edges edges, TH_Id id, F32 fallback);
 
-// Every outgoing edge of `source` under `rel`, pushed on `arena`
+// each edge that goes out of `source` under `rel`, pushed on `arena`
 internal TH_Edges th_edges(Arena* arena, TH_Db* db, TH_Relation rel, TH_Id source);
 
-// Value of one edge without materializing the list, fallback when it is missing
+// The value of one edge, without a list. It gives `fallback` when the edge is
+// absent.
 internal F32 th_edge_get(TH_Db* db, TH_Relation rel, TH_Id source, TH_Id target, F32 fallback);
 
-// Relations are (logically) matrices: a set of value 0 is equivalent to a removal
+// A relation is a matrix. A set with a value of 0 removes the edge.
 internal void th_edge_set(TH_Db* db, TH_Relation rel, TH_Id source, TH_Id target, F32 value);
 
-// Fields: per-position facts, the positional mirror of the per-thing families
-// above -- one dense column per kind, indexed by tile position instead of
-// thing slot. Tiles have no identity or lifecycle; a position is its own key.
-// The world's actual size (set once by world generation, at most
-// TH_WORLD_MAX_DIM per axis) bounds reads and writes: out-of-world positions
-// resolve to the shared nil objects, read-only by convention.
+// A field is a fact at each position. It is the positional form of the
+// families above. Each kind of field is one column, and the index of the
+// column is a tile position and not a thing slot.
+//
+// A tile has no identity and no lifetime. Its position is its key.
+//
+// World generation sets the size of the world one time, and each axis is at
+// most TH_WORLD_MAX_DIM. That size limits each read and each write. A position
+// outside the world resolves to a shared nil object, which is read-only by
+// convention.
 
 internal void th_world_size_set(TH_Db* db, I32 width, I32 height);
 internal V2I th_world_size(TH_Db* db);
 internal B32 th_world_in_bounds(TH_Db* db, V2I pos);
 
-// Field variables: scalars per position
+// a field variable is a scalar at each position
 typedef U16 TH_Field;
 enum {
   TH_Field_Nil,
+  // One column for each stock (defs.h). The database and the terrain table
+  // therefore agree on what a tile grows.
+#define X(name, key) TH_Field_##name,
+  DF_STOCK_LIST
+#undef X
   TH_Field_COUNT
 };
+StaticAssert(TH_Field_Nil == 0, th_field_nil_first);
 
 internal F32* th_field(TH_Db* db, V2I pos, TH_Field field);
 internal F32 th_field_get(TH_Db* db, V2I pos, TH_Field field);
-// Safer write than *th_field() = ...; no-op out of the world
+// a safer write than *th_field() = ... : it does nothing outside the world
 internal void th_field_set(TH_Db* db, V2I pos, TH_Field field, F32 value);
 
-// Integer field scalars: ids, masks, encoded enumerations
+// an integer field variable holds an id, a mask, or a value of an enum
 typedef U16 TH_IField;
 enum {
   TH_IField_Nil,
-  TH_IField_Terrain,   // terrain type id (see worldgen's terrain table)
-  TH_IField_RiverMask, // feature connection masks, bit d = toward Dir4 d
-  TH_IField_RoadMask,
+  TH_IField_Terrain, // the id of a terrain type. See the terrain table of worldgen.
+  // one connection mask for each feature (defs.h), bit d = toward Dir4 d
+#define X(name, key) TH_IField_##name##Mask,
+  DF_FEATURE_LIST
+#undef X
   TH_IField_COUNT
 };
+StaticAssert(TH_IField_Nil == 0, th_ifield_nil_first);
 
 internal I32* th_ifield(TH_Db* db, V2I pos, TH_IField ifield);
 internal I32 th_ifield_get(TH_Db* db, V2I pos, TH_IField ifield);
-// Safer write than *th_ifield() = ...; no-op out of the world
+// a safer write than *th_ifield() = ... : it does nothing outside the world
 internal void th_ifield_set(TH_Db* db, V2I pos, TH_IField ifield, I32 value);
 
-// Single-bit access into mask ifields; bits index 0..31. Set returns the old
-// value (like th_flag_set) and no-ops out of the world.
+// Read and write one bit of a mask field. The index of a bit is 0 to 31. Set
+// gives you the value that the bit had before, as th_flag_set does, and it
+// does nothing outside the world.
 internal B32 th_ifield_get_bit(TH_Db* db, V2I pos, TH_IField ifield, U32 bit);
 internal B32 th_ifield_set_bit(TH_Db* db, V2I pos, TH_IField ifield, U32 bit, B32 value);
 
-// Field refs: one thing per position per ref kind. Reads validate the target,
-// so a despawned thing reads back as nil.
+// A field ref holds one thing at each position, for each kind of ref. A read
+// examines the target, so a thing that the database removed reads back as nil.
 typedef U16 TH_FieldRef;
 enum {
   TH_FieldRef_Nil,
-  // Assigns the tile to be associated
-  // with some group
-  TH_FieldRef_Home,
+  TH_FieldRef_Home, // the group that the tile belongs to
   TH_FieldRef_COUNT
 };
 
 internal TH_Id th_field_ref_get(TH_Db* db, TH_FieldRef ref, V2I pos);
 internal void th_field_ref_set(TH_Db* db, TH_FieldRef ref, V2I pos, TH_Id target);
 
-// Field flags: booleans per position, implemented as bitsets
+// a field flag is a boolean at each position. The database holds it as a bitset.
 typedef U8 TH_FieldFlag;
 enum {
   TH_FieldFlag_Nil,
@@ -231,5 +255,5 @@ enum {
 };
 
 internal B32 th_field_flag_get(TH_Db* db, V2I pos, TH_FieldFlag flag);
-// Return the old value
+// set gives you the value that the flag had before
 internal B32 th_field_flag_set(TH_Db* db, V2I pos, TH_FieldFlag flag, B32 value);
