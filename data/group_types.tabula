@@ -5,7 +5,7 @@
 #                   from. Two groups whose discs cross divide the food of each
 #                   tile that both discs hold.
 #   population_cap  the most people that can live in one group of this type
-#   storage_share   the part of the food of each tick that the leadership takes
+#   storage_share   the part of the food of each tick that goes to the granary
 #                   before the people eat
 #   storage_cap     the food that the granary holds. A share above this limit
 #                   is lost.
@@ -47,7 +47,7 @@ group_type = {
 	storage_share = 0.18
 	storage_cap = 300
 	# Farmers read fertile ground as rich and dry or cold ground as empty.
-	# The reach is short and the leadership takes much, so a village turns a
+	# The reach is short and the granary takes much, so a village turns a
 	# small area into many people and a large granary.
 	feeds = { flags = ["fertile"] yield = 1.20 }
 	feeds = { terrain = plains    yield = 0.60 }

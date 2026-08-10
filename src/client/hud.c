@@ -85,8 +85,9 @@ internal void hud_replay_draw_list(UI_DrawList list) {
 }
 
 // One line of a label and a value. The label is at the left, in the color of
-// the text, and the value is at the right.
-internal void hud__stat_row(String8 label, String8 value, V4 value_color) {
+// the text, and the value is at the right. A row with a hover string shows
+// that string in a tooltip while the mouse rests on the row.
+internal void hud__stat_row(String8 label, String8 value, V4 value_color, String8 hover) {
   UI_Box* row = ui_row_begin(label);
   row->pref_size[UI_Axis_X] = ui_size_pct(1, 0);
   ui_label(label);
@@ -95,17 +96,48 @@ internal void hud__stat_row(String8 label, String8 value, V4 value_color) {
   ui_label(value);
   ui_pop_text_color();
   ui_row_end();
+  if(hover.size > 0) {
+    row->flags |= UI_BoxFlag_Clickable;
+    if(ui_signal(row).hovered) {
+      ui_tooltip(hover);
+    }
+  }
+}
+
+// One typed row of the facts. The game names the form of the row in `type`:
+// `text` and `number` show `value`, `balance` shows `value` with its sign, and
+// `x_of_y` shows "value of limit". A change of a tick belongs in the hover of
+// the row, and never in the line.
+internal void hud__typed_row(Arena* arena, String8 key, TB_Value* row) {
+  String8 type = tb_get_str8(row, str8_lit("type"), str8_lit(""));
+  String8 name = tb_get_str8(row, str8_lit("name"), key);
+  String8 hover = tb_get_str8(row, str8_lit("hover"), str8_lit(""));
+  String8 text = {0};
+  V4 color = ui_color_from_name(str8_lit("accent"));
+  if(str8_match(type, str8_lit("text"), 0)) {
+    text = tb_get_str8(row, str8_lit("value"), str8_lit(""));
+    color = ui_color_from_name(str8_lit("text"));
+  } else if(str8_match(type, str8_lit("number"), 0)) {
+    text = tb_get(row, str8_lit("value"))->text;
+  } else if(str8_match(type, str8_lit("balance"), 0)) {
+    text = push_str8f(arena, "%+g", tb_get_num(row, str8_lit("value"), 0));
+  } else if(str8_match(type, str8_lit("x_of_y"), 0)) {
+    text = push_str8f(arena, "%g of %g", tb_get_num(row, str8_lit("value"), 0),
+                      tb_get_num(row, str8_lit("limit"), 0));
+  }
+  hud__stat_row(name, text, color, hover);
 }
 
 // The part of the panel of the selection that reads each member of the tree of
 // facts. A new member therefore shows with no change to this file.
 //
-// A number becomes a row, and the value takes the accent color. A list becomes
-// one value. An object becomes a header of a section, in a color of a low
-// contrast, and the members of that object become the rows below that header.
+// An object that holds a `type` becomes one typed row. An object without a
+// `type` becomes a header of a section, in a color of a low contrast, and the
+// members of that object become the rows below that header. A plain string or
+// number becomes a simple row.
 //
 // `omit` names one key of the top level that this function does not show, which
-// is the key of the title above.
+// is the key of the title above and the `name` of a section.
 //
 // Each string is on the arena of the caller, for the time of the build.
 internal void hud__fact_rows(TB_Value* object, String8 omit) {
@@ -116,26 +148,21 @@ internal void hud__fact_rows(TB_Value* object, String8 omit) {
     switch(value->kind) {
       case TB_ValueKind_Identifier:
       case TB_ValueKind_String: {
-        hud__stat_row(node->key, value->text, ui_color_from_name(str8_lit("text")));
+        hud__stat_row(node->key, value->text, ui_color_from_name(str8_lit("text")), str8_lit(""));
       } break;
       case TB_ValueKind_Number: {
-        hud__stat_row(node->key, value->text, ui_color_from_name(str8_lit("accent")));
-      } break;
-      case TB_ValueKind_List: {
-        String8List parts = {0};
-        for(TB_Value* el = value->first; el != 0; el = el->next) {
-          str8_list_push(scratch.arena, &parts, el->text);
-        }
-        StringJoin join = {str8_lit(""), str8_lit(", "), str8_lit("")};
-        String8 value = str8_list_join(scratch.arena, parts, &join);
-        hud__stat_row(node->key, value, ui_color_from_name(str8_lit("text")));
+        hud__stat_row(node->key, value->text, ui_color_from_name(str8_lit("accent")), str8_lit(""));
       } break;
       case TB_ValueKind_Object: {
-        ui_spacer(ui_size_points(2, 1));
-        ui_push_text_color(ui_color_from_name(str8_lit("muted")));
-        ui_label(node->key);
-        ui_pop_text_color();
-        hud__fact_rows(value, str8_lit(""));
+        if(!tb_value_is_nil(tb_get(value, str8_lit("type")))) {
+          hud__typed_row(scratch.arena, node->key, value);
+        } else {
+          ui_spacer(ui_size_points(2, 1));
+          ui_push_text_color(ui_color_from_name(str8_lit("muted")));
+          ui_label(tb_get_str8(value, str8_lit("name"), node->key));
+          ui_pop_text_color();
+          hud__fact_rows(value, str8_lit("name"));
+        }
       } break;
       default: break;
     }
@@ -158,7 +185,8 @@ internal void hud__selection_panel(TB_Value* info) {
     {
       String8 title = tb_get_str8(info, str8_lit("name"), str8_lit(""));
       if(title.size == 0) {
-        title = tb_get_str8(tb_get(info, str8_lit("tile")), str8_lit("terrain"), str8_lit("tile"));
+        TB_Value* terrain = tb_get(tb_get(info, str8_lit("tile")), str8_lit("terrain"));
+        title = tb_get_str8(terrain, str8_lit("value"), str8_lit("tile"));
       }
       ui_push_font_size(19);
       ui_label(title);

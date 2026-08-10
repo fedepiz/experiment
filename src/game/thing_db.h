@@ -107,7 +107,7 @@ enum {
   // The four numbers of the economy of the last tick. The tick writes them,
   // and the display reads them. Each one is a rate: the amount of one tick.
   TH_Var_FoodIn,    // the food that the land gave
-  TH_Var_FoodShare, // the part of that food that the leadership took
+  TH_Var_FoodShare, // the part of that food that went to the granary
   TH_Var_FoodTaken, // the part of that share that the granary held
   TH_Var_FoodDrawn, // the food that came out of the granary to feed the people
   TH_Var_COUNT
@@ -218,13 +218,13 @@ typedef U16 TH_IField;
 enum {
   TH_IField_Nil,
   TH_IField_Terrain, // the id of a terrain type. See the terrain table of worldgen.
-  // one connection mask for each feature (defs.h), bit d = toward Dir4 d
+// one connection mask for each feature (defs.h), bit d = toward Dir4 d
 #define X(name, key) TH_IField_##name##Mask,
   DF_FEATURE_LIST
 #undef X
-  // The groups that reach this tile. Each tick writes it again. A group that
-  // draws from the tile divides the yield of the tile by this count.
-  TH_IField_Claims,
+      // The groups that reach this tile. Each tick writes it again. A group that
+      // draws from the tile divides the yield of the tile by this count.
+      TH_IField_Claims,
   TH_IField_COUNT
 };
 StaticAssert(TH_IField_Nil == 0, th_ifield_nil_first);

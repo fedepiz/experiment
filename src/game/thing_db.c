@@ -13,7 +13,7 @@
 // can move the whole TH_Db, and you can save it as one block of bytes.
 
 #define TH_BITSET_WORDS    ((TH_THING_CAP + 63) / 64)
-#define TH_WORD_CAP       8192
+#define TH_WORD_CAP        8192
 #define TH_WORD_HASH_SLOTS 16384 // power of two, > 2x TH_WORD_CAP: never fills
 #define TH_WORD_CHARS      KB(256)
 // The edges are in chunks. One chunk holds at most TH_EDGE_CHUNK_LEN entries
@@ -33,10 +33,10 @@ StaticAssert(TH_WORD_HASH_SLOTS >= 2 * TH_WORD_CAP, th_word_hash_room);
 typedef struct {
   F32 values[TH_EDGE_CHUNK_LEN];
   U16 targets[TH_EDGE_CHUNK_LEN];
-  U16 next;   // next chunk of the same (rel, source); freelist link while free
-  U16 rel;    // TH_Relation_Nil marks a free chunk
+  U16 next; // next chunk of the same (rel, source); freelist link while free
+  U16 rel;  // TH_Relation_Nil marks a free chunk
   U16 source;
-  U8 count;   // entries in use
+  U8 count; // entries in use
   U8 pad_[3];
 } TH__EdgeChunk;
 StaticAssert(sizeof(TH__EdgeChunk) == 64, th_edge_chunk_is_one_cache_line);
@@ -50,9 +50,9 @@ struct TH_Db {
   U64 doomed[TH_BITSET_WORDS];
   U16 generation[TH_THING_CAP];
   U16 free_next[TH_THING_CAP]; // freelist links through despawned slots
-  U16 first_free;               // 0 = empty; slot 0 is never on the list
-  U16 watermark;                // first never-used slot
-  U16 doomed_count;             // marks since the last commit
+  U16 first_free;              // 0 = empty; slot 0 is never on the list
+  U16 watermark;               // first never-used slot
+  U16 doomed_count;            // marks since the last commit
 
   //- fp: the words. The database stores each word one time and never frees it.
   //  Word 0 is the nil word.
@@ -155,8 +155,8 @@ internal TH_Id th__scan_from(TH_Db* db, U32 start) {
 
 internal TH_Db* th_init_db(Arena* arena) {
   TH_Db* db = push_array(arena, TH_Db, 1);
-  db->watermark = 1;      // slot 0 is the nil thing
-  db->word_count = 1;     // word 0 is the nil word
+  db->watermark = 1;            // slot 0 is the nil thing
+  db->word_count = 1;           // word 0 is the nil word
   db->edge_chunk_watermark = 1; // chunk 0 is the nil entry
   return db;
 }

@@ -14,21 +14,15 @@
 #include "gfx/color.h"
 #include "tabula.h"
 
-// The whole part of a value, toward the lower number.
-//
-// Each quantity of the economy is a whole number: a group draws whole food,
-// holds whole food in its granary, and holds whole people. The arithmetic uses
-// F32, because a yield and a share are fractions. This function makes each
-// result of that arithmetic a whole number again.
+// Each quantity of the economy is whole, and the arithmetic that makes it is
+// F32.
 internal F32 gm__floor(F32 value) {
   F32 result = (F32)(I64)value;
   if(result > value) { result -= 1.0f; } // a cast of a value below 0 goes up
   return result;
 }
 
-// A value that is not a quantity, at two decimals for the display. A quantity
-// is already a whole number and needs no such step. This function is for a
-// ratio, such as the part of a tile that one group of several takes.
+// For a ratio, which is the one number of the display that is not whole.
 internal F32 gm__display_ratio(F32 value) {
   F32 offset = (value < 0) ? -0.5f : 0.5f;
   F32 result = (F32)(I32)(value * 100.0f + offset) / 100.0f;
@@ -39,34 +33,18 @@ internal F32 gm__display_ratio(F32 value) {
 ////////////////////////////////
 //~ fp: Group Types
 //
-// A group type is a way of life. It holds what a group is called and how it
-// looks, and the numbers that decide what the land gives that group and how
-// many people can live there.
-//
 // The table is private to this file. No layer above the game reads a group
 // type: the display gets the numbers of a group through gm_info, as a tabula.
 //
-// Row 0 is the nil type (ZII). A group with row 0 draws nothing, and each
-// phase of the economy passes over it.
+// Row 0 is the nil type (ZII). A group with row 0 draws nothing.
 //
-// gm__group_types_load fills the whole table from the rows of a tabula file,
-// in the order of the file. A second load therefore gives the same table. Call
-// it after wg_terrain_table_load, because a feeding rule names a terrain and a
-// terrain flag of that table.
+// Load after wg_terrain_table_load: a feeding rule names a terrain of it.
 
 #define GM_GROUP_TYPE_CAP 16
 #define GM_FEED_RULE_CAP  16
 
-// One rule of the feeding table of a type. A rule matches a tile when the
-// terrain of that tile is the terrain of the rule, where the rule names one,
-// and when that terrain holds each flag of the rule. A rule that names no
-// terrain and no flag matches each tile, which gives the type a yield on any
-// ground.
-//
-// The yield of each rule that matches goes into the sum. The traits of a tile
-// therefore add together: land that is plains and that is also fertile takes
-// the yield of both rules. The best ground is therefore much better than the
-// average ground.
+// A rule with no terrain and no flag matches each tile. Every rule that
+// matches adds its yield, so the traits of a tile add together.
 typedef struct {
   U32 terrain;               // the terrain id, or 0 for any terrain
   WG_TerrainFlags flags_all; // each flag that the terrain must hold
@@ -78,10 +56,7 @@ typedef struct {
   GM_Sprite sprite;   // how a group of this type looks
   F32 range;          // the radius of the disc that the group draws from
   F32 population_cap; // the most people that can live here
-  // The part of the food of each tick that goes to the leadership before the
-  // people eat. A larger share fills the granary in fewer ticks, and leaves
-  // less food for the people in each tick.
-  F32 storage_share;
+  F32 storage_share; // the part of each tick's food that goes to the granary first
   F32 storage_cap; // the food that the granary holds
   GM_FeedRule rules[GM_FEED_RULE_CAP];
   U32 rule_count;
@@ -213,9 +188,7 @@ internal const GM_GroupType* gm__group_type_of(TH_Db* db, TH_Id id) {
   return &GM_GROUP_TYPES[idx];
 }
 
-// The food of one tile for one type, before the division between the groups
-// that reach that tile. The yield of each rule that matches goes into the
-// sum.
+// Before the division between the groups that reach that tile.
 internal F32 gm__tile_yield(TH_Db* db, const GM_GroupType* type, V2I pos) {
   U32 terrain = (U32)th_ifield_get(db, pos, TH_IField_Terrain);
   if(terrain >= WG_TERRAIN_TYPE_COUNT) { return 0.0f; }
@@ -515,33 +488,46 @@ internal String8 gm__thing_name(Arena* arena, TH_Db* db, TH_Id id) {
   return th_resolve_phrase(arena, db, *th_label(db, id, TH_Label_Name), str8_lit(""));
 }
 
+// The forms of `type` are in hud__typed_row.
+internal TB_Value* gm__fact_row(Arena* arena, TB_Value* out, String8 key, String8 name, String8 type) {
+  TB_Value* row = tb_add_object(arena, out, key);
+  tb_add_str8(arena, row, str8_lit("name"), name);
+  tb_add_str8(arena, row, str8_lit("type"), type);
+  return row;
+}
+
 internal void gm__tile_facts(Arena* arena, GM_Game* game, TB_Value* out, V2I pos) {
   TH_Db* db = game->db;
-  TB_Value* xy = tb_add_list(arena, out, str8_lit("pos"));
-  tb_list_push_num(arena, xy, (F32)pos.x);
-  tb_list_push_num(arena, xy, (F32)pos.y);
+  TB_Value* xy = gm__fact_row(arena, out, str8_lit("pos"), str8_lit("Position"), str8_lit("text"));
+  tb_add_str8(arena, xy, str8_lit("value"), push_str8f(arena, "%d, %d", pos.x, pos.y));
 
   U32 terrain = (U32)th_ifield_get(db, pos, TH_IField_Terrain);
-  tb_add_str8(arena, out, str8_lit("terrain"), wg_terrain_name(terrain));
+  TB_Value* terrain_row = gm__fact_row(arena, out, str8_lit("terrain"), str8_lit("Terrain"), str8_lit("text"));
+  tb_add_str8(arena, terrain_row, str8_lit("value"), wg_terrain_name(terrain));
   if(terrain < WG_TERRAIN_TYPE_COUNT) {
-    tb_add_num(arena, out, str8_lit("move_cost"), WG_TERRAIN_TYPES[terrain].move_cost);
+    TB_Value* cost = gm__fact_row(arena, out, str8_lit("move_cost"), str8_lit("Move Cost"), str8_lit("number"));
+    tb_add_num(arena, cost, str8_lit("value"), WG_TERRAIN_TYPES[terrain].move_cost);
   }
 
   BD_Tile* tile = bd_tile_at(game->board, pos);
-  TB_Value* features = 0;
+  String8List features = {0};
   for(BD_Feature feature = 0; feature < BD_Feature_COUNT; feature += 1) {
     if(tile->features[feature] == 0) { continue; }
-    // Make the list at the first feature, so a tile with no feature carries
-    // no empty list.
-    if(features == 0) { features = tb_add_list(arena, out, str8_lit("features")); }
-    tb_list_push_str8(arena, features, GM_FEATURE_NAMES[feature]);
+    str8_list_push(arena, &features, GM_FEATURE_NAMES[feature]);
+  }
+  // A tile with no feature carries no features row.
+  if(features.node_count > 0) {
+    StringJoin join = {str8_lit(""), str8_lit(", "), str8_lit("")};
+    TB_Value* row = gm__fact_row(arena, out, str8_lit("features"), str8_lit("Features"), str8_lit("text"));
+    tb_add_str8(arena, row, str8_lit("value"), str8_list_join(arena, features, &join));
   }
 
   TH_Id home = th_field_ref_get(db, TH_FieldRef_Home, pos);
   if(home != 0) {
     String8 name = gm__thing_name(arena, db, home);
     if(name.size > 0) {
-      tb_add_str8(arena, out, str8_lit("home"), name);
+      TB_Value* row = gm__fact_row(arena, out, str8_lit("home"), str8_lit("Home"), str8_lit("text"));
+      tb_add_str8(arena, row, str8_lit("value"), name);
     }
   }
 
@@ -549,20 +535,14 @@ internal void gm__tile_facts(Arena* arena, GM_Game* game, TB_Value* out, V2I pos
   // takes. A tile that two groups reach gives each of them one half.
   I32 claims = th_ifield_get(db, pos, TH_IField_Claims);
   if(claims > 0) {
-    tb_add_num(arena, out, str8_lit("drawn by"), (F32)claims);
-    tb_add_num(arena, out, str8_lit("share each"), gm__display_ratio(1.0f / (F32)claims));
+    TB_Value* drawn = gm__fact_row(arena, out, str8_lit("drawn_by"), str8_lit("Drawn By"), str8_lit("number"));
+    tb_add_num(arena, drawn, str8_lit("value"), (F32)claims);
+    TB_Value* share = gm__fact_row(arena, out, str8_lit("share_each"), str8_lit("Share Each"), str8_lit("number"));
+    tb_add_num(arena, share, str8_lit("value"), gm__display_ratio(1.0f / (F32)claims));
   }
 }
 
-// The economy of one group, for the display. A thing with no group type adds
-// nothing here, so the panel of a wagon holds no food and no granary.
-//
-// Each number of the food object is the amount of one tick:
-//   from land   what the tiles of the disc gave, after each overlap divided them
-//   to leaders  the share that the leadership took, before the people ate
-//   upkeep      the food that the people ate, which is one for each person
-//   balance     from land - to leaders - upkeep. A balance below 0 comes out
-//               of the granary, and the change of the granary shows that.
+// A thing with no group type adds nothing, so a wagon holds no food row.
 internal void gm__group_facts(Arena* arena, TH_Db* db, TB_Value* out, TH_Id id) {
   U32 type_idx = (U32)th_ivar_get(db, id, TH_IVar_GroupType);
   if(type_idx == 0 || type_idx >= GM_GROUP_TYPE_COUNT) { return; }
@@ -574,28 +554,31 @@ internal void gm__group_facts(Arena* arena, TH_Db* db, TB_Value* out, TH_Id id) 
   F32 taken = th_var_get(db, id, TH_Var_FoodTaken);
   F32 drawn = th_var_get(db, id, TH_Var_FoodDrawn);
 
-  tb_add_str8(arena, out, str8_lit("way of life"), type->name);
-  tb_add_num(arena, out, str8_lit("people"), population);
-  tb_add_num(arena, out, str8_lit("people cap"), type->population_cap);
+  TB_Value* way = gm__fact_row(arena, out, str8_lit("way_of_life"), str8_lit("Way of Life"), str8_lit("text"));
+  tb_add_str8(arena, way, str8_lit("value"), type->name);
 
-  // Each number below is already a whole number, because every phase of the
-  // economy writes a whole number.
-  TB_Value* food = tb_add_object(arena, out, str8_lit("food"));
-  tb_add_num(arena, food, str8_lit("from land"), food_in);
-  tb_add_num(arena, food, str8_lit("to leaders"), share);
-  tb_add_num(arena, food, str8_lit("upkeep"), population);
-  tb_add_num(arena, food, str8_lit("balance"), food_in - share - population);
+  TB_Value* people = gm__fact_row(arena, out, str8_lit("people"), str8_lit("People"), str8_lit("x_of_y"));
+  tb_add_num(arena, people, str8_lit("value"), population);
+  tb_add_num(arena, people, str8_lit("limit"), type->population_cap);
 
-  TB_Value* granary = tb_add_object(arena, out, str8_lit("granary"));
-  tb_add_num(arena, granary, str8_lit("stored"), th_var_get(db, id, TH_Var_FoodStore));
-  tb_add_num(arena, granary, str8_lit("capacity"), type->storage_cap);
-  tb_add_num(arena, granary, str8_lit("change"), taken - drawn);
-  // The part of the share that the granary had no room for. This row appears
-  // only where that part is above 0, which is the state of a full granary.
+  TB_Value* food = gm__fact_row(arena, out, str8_lit("food"), str8_lit("Food"), str8_lit("balance"));
+  tb_add_num(arena, food, str8_lit("value"), food_in - share - population);
+  tb_add_str8(arena, food, str8_lit("hover"),
+              push_str8f(arena, "land %g - granary %g - upkeep %g", food_in, share, population));
+
+  TB_Value* granary = gm__fact_row(arena, out, str8_lit("granary"), str8_lit("Granary"), str8_lit("x_of_y"));
+  tb_add_num(arena, granary, str8_lit("value"), th_var_get(db, id, TH_Var_FoodStore));
+  tb_add_num(arena, granary, str8_lit("limit"), type->storage_cap);
+  // The change of this tick, and the part of the share that the granary had no
+  // room for. That part is above 0 only where the granary is full.
+  F32 change = taken - drawn;
   F32 wasted = share - taken;
+  String8 hover = (change == 0) ? str8_lit("no change this tick")
+                                : push_str8f(arena, "%+g this tick", change);
   if(wasted > 0) {
-    tb_add_num(arena, granary, str8_lit("wasted"), wasted);
+    hover = push_str8f(arena, "%S, %g wasted: the granary is full", hover, wasted);
   }
+  tb_add_str8(arena, granary, str8_lit("hover"), hover);
 }
 
 internal void gm__selection_info(Arena* arena, GM_Game* game, TB_Value* root) {
@@ -603,21 +586,16 @@ internal void gm__selection_info(Arena* arena, GM_Game* game, TB_Value* root) {
   GM_Selection selection = game->selection;
   if(selection.kind == GM_SelectionKind_Nil) { return; }
   TB_Value* info = tb_add_object(arena, root, str8_lit("selection"));
-  switch(selection.kind) {
-    case GM_SelectionKind_Tile: {
-      tb_add_str8(arena, info, str8_lit("kind"), str8_lit("tile"));
-    } break;
-    case GM_SelectionKind_Thing: {
-      tb_add_str8(arena, info, str8_lit("kind"), str8_lit("thing"));
-      GM_Sprite sprite = (GM_Sprite)Clamp(0, th_ivar_get(db, selection.id, TH_IVar_Sprite), GM_Sprite_COUNT - 1);
-      String8 name = gm__thing_name(arena, db, selection.id);
-      if(name.size == 0) { name = GM_SPRITE_NAMES[sprite]; }
-      tb_add_str8(arena, info, str8_lit("name"), name);
-      tb_add_str8(arena, info, str8_lit("sprite"), GM_SPRITE_NAMES[sprite]);
-      gm__group_facts(arena, db, info, selection.id);
-    } break;
+  if(selection.kind == GM_SelectionKind_Thing) {
+    GM_Sprite sprite = (GM_Sprite)Clamp(0, th_ivar_get(db, selection.id, TH_IVar_Sprite), GM_Sprite_COUNT - 1);
+    String8 name = gm__thing_name(arena, db, selection.id);
+    if(name.size == 0) { name = GM_SPRITE_NAMES[sprite]; }
+    tb_add_str8(arena, info, str8_lit("name"), name);
+    gm__group_facts(arena, db, info, selection.id);
   }
-  gm__tile_facts(arena, game, tb_add_object(arena, info, str8_lit("tile")), selection.tile);
+  TB_Value* tile = tb_add_object(arena, info, str8_lit("tile"));
+  tb_add_str8(arena, tile, str8_lit("name"), str8_lit("Tile"));
+  gm__tile_facts(arena, game, tile, selection.tile);
 }
 
 internal TB_Value* gm_info(Arena* arena, GM_Game* game) {
@@ -625,6 +603,55 @@ internal TB_Value* gm_info(Arena* arena, GM_Game* game) {
   gm__selection_info(arena, game, info);
   return info;
 }
+
+////////////////////////////////
+//~ fp: Economy
+
+// Each read and each write is of this group, so the tick can run the groups
+// in any order.
+internal void gm__group_economy(GM_Game* game, TH_Id id, const GM_GroupType* type) {
+  TH_Db* db = game->db;
+
+  // The sum keeps its decimals to the end, so many small yields still come to
+  // food.
+  F32 food_in = 0;
+  if(type->range > 0) {
+    for(BD_Disc it = bd_disc(game->board, gm__xy_get(db, id), type->range);
+        bd_disc_next(&it);) {
+      I32 claims = th_ifield_get(db, it.pos, TH_IField_Claims);
+      if(claims <= 0) { continue; } // this group covers the tile, so the count is 1 or more
+      food_in += gm__tile_yield(db, type, it.pos) / (F32)claims;
+    }
+  }
+  food_in = gm__floor(food_in);
+
+  // The share leaves the people either way, room for it or not.
+  F32 store = th_var_get(db, id, TH_Var_FoodStore);
+  F32 share = gm__floor(food_in * type->storage_share);
+  F32 taken = Min(share, ClampBot(type->storage_cap - store, 0.0f));
+  store += taken;
+
+  // One person eats one food.
+  F32 population = th_var_get(db, id, TH_Var_Population);
+  F32 available = food_in - share;
+  F32 drawn = Min(ClampBot(population - available, 0.0f), store);
+  store -= drawn;
+
+  if(available > population + 1.0f && population < type->population_cap) {
+    population += 1.0f;
+  }
+
+  // Store and population are state; the four food numbers are the record.
+  th_var_set(db, id, TH_Var_FoodStore, store);
+  th_var_set(db, id, TH_Var_Population, population);
+  th_var_set(db, id, TH_Var_FoodIn, food_in);
+  th_var_set(db, id, TH_Var_FoodShare, share);
+  th_var_set(db, id, TH_Var_FoodTaken, taken);
+  th_var_set(db, id, TH_Var_FoodDrawn, drawn);
+}
+
+////////////////////////////////
+//~ fp: Tick
 
 #define GM_TICK_DT       0.1f // seconds of sim per tick; every rate below is per-tick
 #define GM_TICK_BANK_MAX 0.5f // at most 5 banked ticks replay after a stall
@@ -638,24 +665,37 @@ internal void gm_update(GM_Game* game, F32 dt) {
     game->tick_num++;
     game->move_timer -= GM_TICK_DT;
 
-    // The tick, in phases. Each phase reads every thing that it concerns
-    // before the next phase starts. Inside a phase the things are therefore
-    // independent, and the order of the slots cannot decide a result.
-    //
-    // Each phase states what it reads and what it writes. A phase that reads
-    // across the things what it also writes across the things would break the
-    // rule above. No phase does that.
+    // No phase reads across the things what it also writes across the things,
+    // so the order of the slots decides no result.
+
+    // One general pass over the things, so other lists can join it later.
+    const U32 GROUPS_THINGS_CAP = 2048;
+    typedef struct {
+      TH_Id id;
+      const GM_GroupType* type;
+    } Group;
+
+    typedef struct {
+      U32 count;
+      Group* elems;
+    } Groups;
+
+    Groups groups = {0};
+    groups.elems = push_array_no_zero(scratch.arena, Group, GROUPS_THINGS_CAP);
+
+
+    for(TH_Id this = th_first(db); this != 0; this = th_next(db, this)) {
+      if(th_flag_get(db, this, TH_Flag_HasInfluence)) {
+        Assert(groups.count < GROUPS_THINGS_CAP);
+        Group* group = &groups.elems[groups.count++];
+        group->id = this;
+        group->type = gm__group_type_of(db, this);
+      }
+    }
 
     //- fp: Project -- reads: group positions, types; writes: Claims, Home
-    // Each group covers a disc of the range of its type. The phase counts, at
-    // each tile, the groups that reach it. A count of 2 or more is an overlap,
-    // and the Draw phase below divides the food of such a tile between those
-    // groups.
-    //
-    // A count is a sum, so the order of the groups cannot change it. Home is
-    // the nearest group that reaches the tile. Where two groups are at one
-    // distance, the group of the lower slot wins. Only the display reads Home,
-    // so that tie changes no result of the simulation.
+    // Claims is a sum, so the order of the groups cannot change it. Home ties
+    // to the lower slot, and only the display reads Home.
     {
       V2I world_size = th_world_size(db);
       U64 cell_count = (U64)world_size.x * (U64)world_size.y;
@@ -670,113 +710,32 @@ internal void gm_update(GM_Game* game, F32 dt) {
           th_field_ref_set(db, TH_FieldRef_Home, (V2I){x, y}, 0);
         }
       }
-      for(TH_Id this = th_first_flagged(db, TH_Flag_HasInfluence);
-          this != 0; this = th_next_flagged(db, TH_Flag_HasInfluence, this)) {
-        const GM_GroupType* type = gm__group_type_of(db, this);
-        if(type->range <= 0) { continue; }
-        for(BD_Disc it = bd_disc(game->board, gm__xy_get(db, this), type->range);
+
+      for(U32 i = 0; i < groups.count; i += 1) {
+        Group group = groups.elems[i];
+        if(group.type->range <= 0) { continue; }
+        for(BD_Disc it = bd_disc(game->board, gm__xy_get(db, group.id), group.type->range);
             bd_disc_next(&it);) {
           *th_ifield(db, it.pos, TH_IField_Claims) += 1;
           U64 cell = (U64)it.pos.y * world_size.x + it.pos.x;
           if(it.dist_sq < best_dist_sq[cell]) {
             best_dist_sq[cell] = it.dist_sq;
-            th_field_ref_set(db, TH_FieldRef_Home, it.pos, this);
+            th_field_ref_set(db, TH_FieldRef_Home, it.pos, group.id);
           }
         }
       }
     }
 
-    //- fp: Draw -- reads: Claims, terrain, types; writes: food in
-    // For each tile of its disc, a group takes the yield of that tile divided
-    // by the number of groups that reach it. One group on a tile therefore
-    // takes the whole yield, and two groups take one half each. The sum across
-    // the groups is the yield of the tile, so a group gets less food where
-    // another group draws from the same tile.
-    //
-    // The sum keeps its decimals across the tiles, and the food of the group
-    // is the whole part of that sum. A yield of a fraction therefore still
-    // counts: 40 tiles of 0.3 give 12 food. The whole part comes at the end,
-    // so the small yields of the poor ground add together instead of falling
-    // to 0 one tile at a time.
-    for(TH_Id this = th_first_flagged(db, TH_Flag_HasInfluence);
-        this != 0; this = th_next_flagged(db, TH_Flag_HasInfluence, this)) {
-      const GM_GroupType* type = gm__group_type_of(db, this);
-      F32 food_in = 0;
-      if(type->range > 0) {
-        for(BD_Disc it = bd_disc(game->board, gm__xy_get(db, this), type->range);
-            bd_disc_next(&it);) {
-          I32 claims = th_ifield_get(db, it.pos, TH_IField_Claims);
-          // This group covers the tile, so the count is 1 or more. The test
-          // prevents a division by 0.
-          if(claims <= 0) { continue; }
-          food_in += gm__tile_yield(db, type, it.pos) / (F32)claims;
-        }
-      }
-      th_var_set(db, this, TH_Var_FoodIn, gm__floor(food_in));
-    }
-
-    //- fp: Store -- reads: food in, granary, types; writes: granary, share, taken
-    // The share of the leadership comes off the food of this tick before the
-    // people eat. The share leaves the food of the people in each case. The
-    // granary then holds as much of that share as it has room for, and the
-    // rest of the share is lost. A group with a full granary therefore loses
-    // that food, and must spend from the granary to keep the next share.
-    for(TH_Id this = th_first_flagged(db, TH_Flag_HasInfluence);
-        this != 0; this = th_next_flagged(db, TH_Flag_HasInfluence, this)) {
-      const GM_GroupType* type = gm__group_type_of(db, this);
-      F32 food_in = th_var_get(db, this, TH_Var_FoodIn);
-      F32 store = th_var_get(db, this, TH_Var_FoodStore);
-      F32 share = gm__floor(food_in * type->storage_share);
-      F32 room = ClampBot(type->storage_cap - store, 0.0f);
-      F32 taken = Min(share, room);
-      th_var_set(db, this, TH_Var_FoodStore, store + taken);
-      th_var_set(db, this, TH_Var_FoodShare, share);
-      th_var_set(db, this, TH_Var_FoodTaken, taken);
-    }
-
-    //- fp: Feed -- reads: food in, share, population, granary; writes: granary, drawn
-    // One person eats one food in one tick. The food that the share left
-    // covers the people first, and the granary covers what is missing. A
-    // granary at 0 covers nothing more. The population does not become smaller
-    // yet, so the population of a group with too little food does not change.
-    for(TH_Id this = th_first_flagged(db, TH_Flag_HasInfluence);
-        this != 0; this = th_next_flagged(db, TH_Flag_HasInfluence, this)) {
-      F32 available = th_var_get(db, this, TH_Var_FoodIn) - th_var_get(db, this, TH_Var_FoodShare);
-      F32 demand = th_var_get(db, this, TH_Var_Population);
-      F32 drawn = 0;
-      if(available < demand) {
-        F32 store = th_var_get(db, this, TH_Var_FoodStore);
-        drawn = Min(demand - available, store);
-        th_var_set(db, this, TH_Var_FoodStore, store - drawn);
-      }
-      th_var_set(db, this, TH_Var_FoodDrawn, drawn);
-    }
-
-    //- fp: Grow -- reads: food in, share, population, types; writes: population
-    // The population grows by one person where the food that the share left
-    // feeds the people of now and that one person, and where the population is
-    // below the limit of the type. Food above both limits is lost, because
-    // this economy holds no food outside the granary.
-    //
-    // The test reads population + 1 and not population, so a group grows only
-    // where it can feed the person that it adds. A group at rest therefore
-    // keeps one food spare in each tick, and does not stand at the point where
-    // any loss becomes a shortage.
-    for(TH_Id this = th_first_flagged(db, TH_Flag_HasInfluence);
-        this != 0; this = th_next_flagged(db, TH_Flag_HasInfluence, this)) {
-      const GM_GroupType* type = gm__group_type_of(db, this);
-      F32 available = th_var_get(db, this, TH_Var_FoodIn) - th_var_get(db, this, TH_Var_FoodShare);
-      F32 population = th_var_get(db, this, TH_Var_Population);
-      if(available > population + 1.0f && population < type->population_cap) {
-        th_var_set(db, this, TH_Var_Population, population + 1.0f);
-      }
+    //- fp: Economy -- reads: Claims, terrain, types, group facts; writes: group facts
+    // The rules are in gm__group_economy. A group reads and writes its own
+    // facts only, so the whole economy is one pass in any order.
+    for(U32 i = 0; i < groups.count; i += 1) {
+      gm__group_economy(game, groups.elems[i].id, groups.elems[i].type);
     }
 
     //- fp: Move -- reads: goals, board; writes: positions, move points
-    // This phase is last in the tick. The Claim phase of the next tick divides
-    // the board between the positions that this phase leaves. The area of a
-    // thing and the position of that thing therefore always agree inside one
-    // tick.
+    // Last in the tick, so the area of a thing and the position of that thing
+    // always agree inside one tick.
     for(TH_Id this = th_first(db); this != 0; this = th_next(db, this)) {
       if(th_flag_get(db, this, TH_Flag_Placed) && th_flag_get(db, this, TH_Flag_Mobile)) {
         // One point for each tick, which is one step across plains. The store
