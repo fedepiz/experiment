@@ -1,0 +1,76 @@
+# Group types: a way of life. Each row gives a group its name, its art, and
+# the four numbers of its economy.
+#
+#   range           the radius, in tiles, of the disc that the group draws
+#                   from. Two groups whose discs cross divide the food of each
+#                   tile that both discs hold.
+#   population_cap  the most people that can live in one group of this type
+#   storage_share   the part of the food of each tick that the leadership takes
+#                   before the people eat
+#   storage_cap     the food that the granary holds. A share above this limit
+#                   is lost.
+#
+# A `feeds` entry gives the food of one tile in one tick. An entry matches a
+# tile when the terrain of the tile is the terrain of the entry, and when that
+# terrain holds each flag of the entry. An entry with no terrain and no flag
+# matches each tile.
+#
+# Each entry that matches adds its food. A plains tile carries the `fertile`
+# flag, so a village reads both the plains entry and the fertile entry there.
+
+group_type = {
+	name = band
+	sprite = band
+	range = 6
+	population_cap = 60
+	storage_share = 0.05
+	storage_cap = 40
+	# Foragers read a little food across many kinds of ground, and read no
+	# ground as empty except ice, rock and water.
+	feeds = { terrain = forest   yield = 0.30 }
+	feeds = { terrain = taiga    yield = 0.24 }
+	feeds = { terrain = jungle   yield = 0.24 }
+	feeds = { terrain = savanna  yield = 0.26 }
+	feeds = { terrain = plains   yield = 0.24 }
+	feeds = { terrain = swamp    yield = 0.20 }
+	feeds = { terrain = hills    yield = 0.14 }
+	feeds = { terrain = tundra   yield = 0.08 }
+	feeds = { terrain = badlands yield = 0.05 }
+	feeds = { terrain = beach    yield = 0.12 }
+}
+
+group_type = {
+	name = village
+	sprite = village
+	range = 4
+	population_cap = 240
+	storage_share = 0.18
+	storage_cap = 300
+	# Farmers read fertile ground as rich and dry or cold ground as empty.
+	# The reach is short and the leadership takes much, so a village turns a
+	# small area into many people and a large granary.
+	feeds = { flags = ["fertile"] yield = 1.20 }
+	feeds = { terrain = plains    yield = 0.60 }
+	feeds = { terrain = savanna   yield = 0.24 }
+	feeds = { terrain = swamp     yield = 0.18 }
+	feeds = { terrain = forest    yield = 0.15 }
+	feeds = { terrain = hills     yield = 0.10 }
+}
+
+group_type = {
+	name = herders
+	sprite = herders
+	range = 9
+	population_cap = 90
+	storage_share = 0.08
+	storage_cap = 70
+	# Pastoralists read grass as food across a wide reach, and read closed
+	# ground such as forest and jungle as empty. The wide reach crosses the
+	# disc of a neighbour more often than a short reach does.
+	feeds = { terrain = savanna  yield = 0.30 }
+	feeds = { terrain = plains   yield = 0.26 }
+	feeds = { terrain = hills    yield = 0.16 }
+	feeds = { terrain = tundra   yield = 0.12 }
+	feeds = { terrain = badlands yield = 0.06 }
+	feeds = { terrain = desert   yield = 0.03 }
+}

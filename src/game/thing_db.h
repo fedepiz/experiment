@@ -102,6 +102,14 @@ typedef U16 TH_Var;
 enum {
   TH_Var_Nil,
   TH_Var_MovePts,
+  TH_Var_Population,
+  TH_Var_FoodStore, // the food in the granary now
+  // The four numbers of the economy of the last tick. The tick writes them,
+  // and the display reads them. Each one is a rate: the amount of one tick.
+  TH_Var_FoodIn,    // the food that the land gave
+  TH_Var_FoodShare, // the part of that food that the leadership took
+  TH_Var_FoodTaken, // the part of that share that the granary held
+  TH_Var_FoodDrawn, // the food that came out of the granary to feed the people
   TH_Var_COUNT
 };
 
@@ -119,6 +127,7 @@ enum {
   TH_IVar_X,
   TH_IVar_Y,
   TH_IVar_Sprite,
+  TH_IVar_GroupType, // the row of the group type table. See game.h.
   TH_IVar_COUNT
 };
 
@@ -213,6 +222,9 @@ enum {
 #define X(name, key) TH_IField_##name##Mask,
   DF_FEATURE_LIST
 #undef X
+  // The groups that reach this tile. Each tick writes it again. A group that
+  // draws from the tile divides the yield of the tile by this count.
+  TH_IField_Claims,
   TH_IField_COUNT
 };
 StaticAssert(TH_IField_Nil == 0, th_ifield_nil_first);

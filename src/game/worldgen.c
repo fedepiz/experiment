@@ -117,6 +117,18 @@ typedef struct {
 const WG_TerrainFlagsDef WG_TERRAIN_FLAG_DEFS[] = {
     {"fertile", WG_TerrainFlag_Fertile}};
 
+internal WG_TerrainFlags wg_terrain_flag_by_name(String8 name) {
+  WG_TerrainFlags result = 0;
+  for(U32 i = 0; i < ArrayCount(WG_TERRAIN_FLAG_DEFS); i += 1) {
+    const WG_TerrainFlagsDef* def = &WG_TERRAIN_FLAG_DEFS[i];
+    if(str8_match(str8_cstring(def->name), name, 0)) {
+      result = def->flags;
+      break;
+    }
+  }
+  return result;
+}
+
 internal void wg_terrain_table_load(String8 path) {
   ArenaTemp scratch = arena_get_scratch(0, 0);
   TB_Value* root = tb_parse_file_and_report(scratch.arena, path);
@@ -166,18 +178,11 @@ internal void wg_terrain_table_load(String8 path) {
     }
     for(TB_Value* elem = flag_list->first; elem != 0; elem = elem->next) {
       String8 flag_name = tb_str8_from_value(elem, str8_lit(""));
-      B32 known = 0;
-      for(U32 i = 0; i < ArrayCount(WG_TERRAIN_FLAG_DEFS); i += 1) {
-        const WG_TerrainFlagsDef* def = &WG_TERRAIN_FLAG_DEFS[i];
-        if(str8_match(str8_cstring(def->name), flag_name, 0)) {
-          type->flags |= def->flags;
-          known = 1;
-          break;
-        }
-      }
-      if(!known) {
+      WG_TerrainFlags flag = wg_terrain_flag_by_name(flag_name);
+      if(flag == 0) {
         eprintf_str8("%S: terrain '%S': unknown flag '%S'\n", path, name, flag_name);
       }
+      type->flags |= flag;
     }
   }
   wg__report_band_gaps(path);

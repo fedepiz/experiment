@@ -82,6 +82,10 @@ internal String8 wg_terrain_name(U32 type);    // empty for an index past the co
 internal U32 wg_terrain_by_name(String8 name); // 0, the nil terrain, for an unknown name
 internal const WG_TerrainType* wg_terrain_type_get(U32 idx);
 
+// The flag of this name. A name that the table does not hold gives 0, which
+// the caller must report: a wrong spelling must not read as "no flag".
+internal WG_TerrainFlags wg_terrain_flag_by_name(String8 name);
+
 ////////////////////////////////
 //~ fp: Terrain Classification
 //
