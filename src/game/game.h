@@ -67,6 +67,8 @@ typedef struct {
   TH_Id id; // Thing only
 } GM_Selection;
 
+typedef struct GM_UpdateInfo GM_UpdateInfo;
+
 typedef struct {
   B32 initialised;
   B32 paused;
@@ -75,6 +77,7 @@ typedef struct {
   BD_Board* board;
   F32 move_timer;
   GM_Selection selection;
+  GM_UpdateInfo* update_info;
 } GM_Game;
 
 internal void gm_init(Arena* arena, GM_Game* game, U64 seed);
@@ -106,33 +109,51 @@ global String8 GM_SPRITE_NAMES[GM_Sprite_COUNT] = {
 #undef X
 };
 
-// A map item is one entry of the stream that the display layer draws. That
-// layer draws from these items alone, in the order of the list: first the
-// ground cells, then the objects that stand on them. Each item is complete: a
-// cell carries the terrain of its neighbours. The display layer therefore
-// reads nothing but the list.
+// The map items are what the display layer draws. They carry no meaning of the
+// game: a shape does not say that it is a territory, a person or a boundary,
+// because the display layer has no use for that and cannot keep it correct.
+//
+// There are two lists, and they part where a real seam is. A shape is a
+// finished order to draw. The ground is not: it is what the art system of the
+// display layer reads to choose the pieces of a tile, and only that layer
+// knows those pieces.
+//
+// The display layer reads nothing but these lists.
+
+// One tile of the window. A cell outside the board is a ring cell: it takes a
+// boundary shape from its neighbours, and draws no ground of its own.
 typedef struct {
   V2I pos;
-  V4 color;
-  // The ground cell. has_terrain is false at a ring cell outside the board.
-  // Such a cell takes a boundary shape from its neighbours, and draws no
-  // ground of its own.
-  B8 has_terrain;
   BD_Terrain neighbours[9];      // the 3x3 tiles around pos, row by row. A tile
                                  // off the board reads 0.
   U8 features[BD_Feature_COUNT]; // the connection masks at pos
-  // the pawn that stands at pos, which the display layer draws above the ground
-  B8 has_pawn;
-  GM_Sprite sprite;
-  TH_Id id; // the thing. Its identity is stable, which suits a choice of art.
-  // The mark of the selection at pos, which the display layer draws above
-  // everything. The display layer chooses how the mark looks.
-  B8 has_highlight;
-} GM_MapItem;
+} GM_MapGround;
+
+// One shape across one tile, above the ground.
+//
+// The list is in the order of the draw, and a shape covers each shape before
+// it. A position can appear more than one time: two things that reach one tile
+// give that tile two shapes.
+typedef struct {
+  V2I pos;
+  V4 color;         // the color of the shape, or the tint of its art. It is the
+                    // color to draw, with its alpha, and not a color to adjust.
+  GM_Sprite sprite; // the art of the shape. The nil sprite asks for no art, and
+                    // draws the color across the whole tile.
+  TH_Id id;         // chooses between the variants of the art. It is stable for
+                    // the life of a thing, so the choice is stable too.
+} GM_MapShape;
 
 typedef struct {
-  U64 count;
-  GM_MapItem* items;
+  GM_MapGround* ground;
+  U64 ground_count;
+  GM_MapShape* shapes;
+  U64 shape_count;
+  // The tile of the selection, which the display layer marks above everything.
+  // The mark takes a color of the theme, so the display layer owns how it
+  // looks, and it is not a shape.
+  B32 has_mark;
+  V2I mark;
 } GM_MapItems;
 
 typedef U32 GM_MapModeFlags;

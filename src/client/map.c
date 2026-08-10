@@ -74,16 +74,16 @@ internal void map_world_changed(Map_View* map, Arena* arena, I32 board_w, I32 bo
   map->cells = push_array(arena, TL_Cell, (U64)map->cache_w * (U64)map->cache_h);
 }
 
-internal TL_Cell* map__cell(Map_View* map, GM_MapItem* item) {
-  TL_Cell* cell = &map->cells[item->pos.y * map->cache_w + item->pos.x];
+internal TL_Cell* map__cell(Map_View* map, GM_MapGround* ground) {
+  TL_Cell* cell = &map->cells[ground->pos.y * map->cache_w + ground->pos.x];
   if(cell->count == 0) {
     U32 nb[9];
-    for(U32 i = 0; i < 9; i += 1) { nb[i] = item->neighbours[i]; }
+    for(U32 i = 0; i < 9; i += 1) { nb[i] = ground->neighbours[i]; }
     U8 networks[TL_NETWORK_CAP] = {0};
     for(BD_Feature feature = 0; feature < BD_Feature_COUNT; feature += 1) {
-      networks[feature] = item->features[feature];
+      networks[feature] = ground->features[feature];
     }
-    *cell = tl_cell(&map->tiling, nb, networks, item->pos);
+    *cell = tl_cell(&map->tiling, nb, networks, ground->pos);
   }
   return cell;
 }
@@ -193,19 +193,6 @@ internal Map_View* map_init(Arena* arena) {
 }
 
 
-// The order of the draw: the layers of the tiler first, then the shade of each
-// tile, then the items of the surface, then the marks above everything. The
-// layers of the tiler come first because of how the art is built: a boundary
-// that goes into the tile next to it must not cover a piece of overlay art.
-#define MAP_LAYER_SHADING   TL_Layer_COUNT
-#define MAP_LAYER_SURFACE   (TL_Layer_COUNT + 1)
-#define MAP_LAYER_HIGHLIGHT (TL_Layer_COUNT + 2)
-#define MAP_LAYER_COUNT     (TL_Layer_COUNT + 3)
-
-// The alpha of the color that shades a tile, which sets how much of the ground
-// below that color a person sees.
-#define MAP_SHADING_ALPHA 0.35f
-
 // The rect in world space of the tile at (x, y). A position with a fraction is
 // on the dual grid. The rect becomes smaller by `inset` units of the world at
 // each side.
@@ -231,141 +218,78 @@ internal V2I map_tile_from_screen(D_Camera camera, V2 screen) {
   return tile;
 }
 
-internal void map_draw(Map_View* map, GM_MapItems items, D_Camera camera) {
-  // One shape that this module can draw now. A sprite of 0 says that the shape
-  // is a color.
-  typedef struct {
-    Rect rect;
-    U32 sprite; // an index into map->sprites. A value of 0 says that there is none.
-    U32 mask;   // the mask of the sprite. A value of 0 says that there is none.
-    V4 color;   // The tint of the sprite, where a value of 0 keeps its colors. Where sprite is 0, it is the color of the shape.
-    F32 rounding;
-    F32 outline; // A value above 0 draws an outline of that thickness, in units of the world, and does not fill the shape.
-  } MapDrawCmd;
+// The ground of one layer of the tiler, across the whole window.
+//
+// A boundary piece covers a part of each cell around its own cell, so a whole
+// layer must go down before the next layer starts. See tiling.h. This is the
+// one order that the lists of the items do not already give, so it is the one
+// loop over a layer in this module.
+//
+// A piece takes no tint: a piece of the ground is on the dual grid, half a
+// cell from the tile of its item, so a color of one tile cannot go on it.
+internal void map__draw_ground(Map_View* map, GM_MapItems items, TL_Layer layer) {
+  for(U64 i = 0; i < items.ground_count; i += 1) {
+    GM_MapGround* ground = &items.ground[i];
+    TL_Cell* cell = map__cell(map, ground);
+    for(U32 pi = 0; pi < cell->count; pi += 1) {
+      TL_Piece* piece = &cell->pieces[pi];
+      if(piece->layer != layer || piece->id == 0) { continue; }
+      Rect r = map_tile_rect(ground->pos.x + piece->offset.x,
+                             ground->pos.y + piece->offset.y, 0);
+      if(piece->mask_id != 0) {
+        d_sprite_masked(map->sprites[piece->id], map->sprites[piece->mask_id], r, (V4){0});
+      } else {
+        d_sprite(map->sprites[piece->id], r, (V4){0});
+      }
+    }
+  }
+}
 
+// The shapes above the ground, in the order of the list. A shape says what to
+// draw and where, and says nothing about what it stands for, so this loop
+// reads the art alone. It has three cases:
+//
+//   the nil sprite     the shape asks for no art, and the color goes across
+//                      the whole tile
+//   art that exists    the art across the whole tile, with the color of the
+//                      shape as its tint, where white keeps the colors of the
+//                      art
+//   art that is absent a placeholder, because the loader found no file for the
+//                      sprite that the shape names
+internal void map__draw_shapes(Map_View* map, GM_MapItems items) {
+  for(U64 i = 0; i < items.shape_count; i += 1) {
+    GM_MapShape* shape = &items.shapes[i];
+    U32 variant_count = map->gm_sprite_counts[shape->sprite];
+    if(shape->sprite == GM_Sprite_Nil) {
+      d_rect(map_tile_rect(shape->pos.x, shape->pos.y, 0), shape->color);
+    } else if(variant_count > 0) {
+      // A hash of the id chooses the variant, so that variant stays equal for
+      // the life of the thing, and two things take two variants.
+      U32 variant = (U32)(rng_hash_u64(0, shape->id) % variant_count);
+      D_Sprite sprite = map->sprites[map->gm_sprites[shape->sprite][variant]];
+      d_sprite(sprite, map_tile_rect(shape->pos.x, shape->pos.y, 0), shape->color);
+    } else {
+      F32 inset = MAP_TILE * 0.2f;
+      F32 rounding = (MAP_TILE - 2 * inset) * 0.35f;
+      d_rect_rounded(map_tile_rect(shape->pos.x, shape->pos.y, inset), shape->color, rounding);
+    }
+  }
+}
+
+// The ground first, because a shape stands above it. The shapes next, in the
+// order of their list. The mark of the selection last, above everything.
+internal void map_draw(Map_View* map, GM_MapItems items, D_Camera camera) {
   V2 vp = wnd_size();
   d_rect((Rect){{0, 0}, {vp.x, vp.y}}, (V4){0.06f, 0.06f, 0.08f, 1});
 
-  ArenaTemp scratch = arena_get_scratch(0, 0);
-
-  //- Find the size of each layer, which is one slot for each piece and for each
-  //  item of the surface. Those sizes are upper limits, because a piece that
-  //  gives nothing leaves its slot empty. This pass also fills the cache of the
-  //  cells, so the pass below reads that cache.
-  U64 cap[MAP_LAYER_COUNT] = {0};
-  for(U64 i = 0; i < items.count; i += 1) {
-    GM_MapItem* item = &items.items[i];
-    if(item->has_highlight) {
-      cap[MAP_LAYER_HIGHLIGHT] += 1;
-      continue;
-    }
-    if(item->has_pawn) {
-      cap[MAP_LAYER_SURFACE] += 1;
-      continue;
-    }
-    TL_Cell* cell = map__cell(map, item);
-    for(U32 pi = 0; pi < cell->count; pi += 1) { cap[cell->pieces[pi].layer] += 1; }
-    if(item->color.w > 0) { cap[MAP_LAYER_SHADING] += 1; }
-  }
-  U64 base[MAP_LAYER_COUNT];
-  U64 total = 0;
-  for(U32 layer = 0; layer < MAP_LAYER_COUNT; layer += 1) {
-    base[layer] = total;
-    total += cap[layer];
-  }
-  MapDrawCmd* cmds = push_array_no_zero(scratch.arena, MapDrawCmd, total);
-  U64 count[MAP_LAYER_COUNT] = {0};
-
-  //- Read each item one time, and put each shape in a slot of its layer.
-  for(U64 i = 0; i < items.count; i += 1) {
-    GM_MapItem* item = &items.items[i];
-    if(item->has_highlight) {
-      MapDrawCmd* cmd = &cmds[base[MAP_LAYER_HIGHLIGHT] + count[MAP_LAYER_HIGHLIGHT]];
-      count[MAP_LAYER_HIGHLIGHT] += 1;
-      *cmd = (MapDrawCmd){
-          .rect = map_tile_rect(item->pos.x, item->pos.y, 0),
-          .color = ui_color_from_name(str8_lit("accent")),
-          .outline = 1.0f,
-      };
-      continue;
-    }
-    if(!item->has_pawn) { // The cells of the ground, with the ring outside the board. The pass above counts the same cells.
-      TL_Cell* cell = map__cell(map, item);
-      for(U32 pi = 0; pi < cell->count; pi += 1) {
-        TL_Piece* piece = &cell->pieces[pi];
-        // There is no tint here. A piece of the ground is on the dual grid,
-        // half a cell from the tile of this item, so a color of one tile
-        // cannot go on such a piece.
-        Rect r = map_tile_rect(item->pos.x + piece->offset.x, item->pos.y + piece->offset.y, 0);
-        MapDrawCmd* cmd = &cmds[base[piece->layer] + count[piece->layer]];
-        *cmd = (MapDrawCmd){.rect = r, .sprite = piece->id, .mask = piece->mask_id};
-        count[piece->layer] += 1;
-      }
-
-      // The shade takes its own quad, on the grid of the map, where the tile
-      // is.
-      if(item->color.w > 0) {
-        MapDrawCmd* cmd = &cmds[base[MAP_LAYER_SHADING] + count[MAP_LAYER_SHADING]];
-        count[MAP_LAYER_SHADING] += 1;
-        *cmd = (MapDrawCmd){
-            .rect = map_tile_rect(item->pos.x, item->pos.y, 0),
-            .color = col_with_alpha(item->color, MAP_SHADING_ALPHA),
-        };
-      }
-    }
-
-    if(item->has_pawn) {
-      U32 variant_count = map->gm_sprite_counts[item->sprite];
-
-      F32 inset = 0.0;
-      F32 rounding = 0.0;
-      U32 sprite = 0;
-
-      if(variant_count > 0) {
-        // The whole tile. The art holds its own shape, and the color of the
-        // item goes on it as a tint, where white keeps the colors of the art.
-        // A hash of the id of the thing chooses the variant, so that variant
-        // stays equal for the life of the thing, and two things take two
-        // variants.
-        U32 variant = (U32)(rng_hash_u64(0, item->id) % variant_count);
-        sprite = map->gm_sprites[item->sprite][variant];
-      } else {
-        inset = MAP_TILE * 0.2f;
-        rounding = (MAP_TILE - 2 * inset) * 0.35f;
-      }
-
-      MapDrawCmd* cmd = &cmds[base[MAP_LAYER_SURFACE] + count[MAP_LAYER_SURFACE]];
-      count[MAP_LAYER_SURFACE] += 1;
-      *cmd = (MapDrawCmd){
-          .rect = map_tile_rect(item->pos.x, item->pos.y, inset),
-          .sprite = sprite,
-          .rounding = rounding,
-          .color = item->color,
-      };
-    }
-  }
-
-  //- Draw the layers in their order, and the shapes of each layer in the order
-  //  of the pass above.
   d_camera_begin(camera);
-  for(U32 layer = 0; layer < MAP_LAYER_COUNT; layer += 1) {
-    for(U64 i = 0; i < count[layer]; i += 1) {
-      MapDrawCmd* cmd = &cmds[base[layer] + i];
-      if(cmd->sprite != 0) {
-        if(cmd->mask != 0) {
-          d_sprite_masked(map->sprites[cmd->sprite], map->sprites[cmd->mask], cmd->rect, cmd->color);
-        } else {
-          d_sprite(map->sprites[cmd->sprite], cmd->rect, cmd->color);
-        }
-      } else if(cmd->outline > 0) {
-        d_rect_outline(cmd->rect, cmd->color, cmd->outline);
-      } else if(cmd->rounding > 0) {
-        d_rect_rounded(cmd->rect, cmd->color, cmd->rounding);
-      } else {
-        d_rect(cmd->rect, cmd->color);
-      }
-    }
+  for(TL_Layer layer = 0; layer < TL_Layer_COUNT; layer += 1) {
+    map__draw_ground(map, items, layer);
+  }
+  map__draw_shapes(map, items);
+  if(items.has_mark) {
+    d_rect_outline(map_tile_rect(items.mark.x, items.mark.y, 0),
+                   ui_color_from_name(str8_lit("accent")), 1.0f);
   }
   d_camera_end();
-  arena_release_scratch(scratch);
 }
