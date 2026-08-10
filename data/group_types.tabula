@@ -44,17 +44,12 @@ group_type = {
 	sprite = village
 	range = 4
 	population_cap = 240
-	storage_share = 0.18
+	storage_share = 0.1
 	storage_cap = 300
 	# Farmers read fertile ground as rich and dry or cold ground as empty.
 	# The reach is short and the granary takes much, so a village turns a
 	# small area into many people and a large granary.
-	feeds = { flags = ["fertile"] yield = 1.20 }
-	feeds = { terrain = plains    yield = 0.60 }
-	feeds = { terrain = savanna   yield = 0.24 }
-	feeds = { terrain = swamp     yield = 0.18 }
-	feeds = { terrain = forest    yield = 0.15 }
-	feeds = { terrain = hills     yield = 0.10 }
+	feeds = { flags = ["fertile"] yield = 4.0  }
 }
 
 group_type = {
