@@ -39,33 +39,32 @@ Value_Kind :: enum {
 }
 
 Value :: struct {
-	next: ^Value, // the next element, where this value is an element of a list
-
-	kind: Value_Kind,
+	next:         ^Value, // the next element, where this value is an element of a list
+	kind:         Value_Kind,
 
 	// The text of the source. Each kind that holds no other value sets it: the
 	// identifier itself, the contents of the string without the quotation marks,
 	// or the exact text of the number.
-	text: string,
+	text:         string,
 
 	// The value of the number, where the kind is Number. `text` still holds the
 	// text of the source, so "1.50" writes again as it was, and `number` is
 	// ready for arithmetic.
-	number: f32,
+	number:       f32,
 
 	// the elements, where the kind is List
-	first: ^Value,
-	last: ^Value,
-	count: int,
+	first:        ^Value,
+	last:         ^Value,
+	count:        int,
 
 	// the members, where the kind is Object
 	first_member: ^Node,
-	last_member: ^Node,
+	last_member:  ^Node,
 	member_count: int,
 
 	// The offset in bytes of the first character of this value in the source.
 	// An error report uses it.
-	src_offset: int,
+	src_offset:   int,
 }
 
 ////////////////////////////////
@@ -79,12 +78,10 @@ Value :: struct {
 // whose members are the pairs at the top level of the file.
 
 Node :: struct {
-	next: ^Node,
-	prev: ^Node,
-
-	key: string,
-	value: Value,
-
+	next:       ^Node,
+	prev:       ^Node,
+	key:        string,
+	value:      Value,
 	src_offset: int,
 }
 
@@ -96,13 +93,14 @@ Node :: struct {
 // list is on the allocator of the tree.
 
 Error :: struct {
-	message: string,
+	message:    string,
 	src_offset: int,
-	line: int,   // The first line is 1.
-	column: int, // The first column is 1.
+	line:       int, // The first line is 1.
+	column:     int, // The first column is 1.
 }
 
-@(private) ERROR_CHUNK_CAP :: 16
+@(private)
+ERROR_CHUNK_CAP :: 16
 Error_List :: chunk.List(Error, ERROR_CHUNK_CAP)
 
 ////////////////////////////////
@@ -144,22 +142,23 @@ Token_Kind :: enum {
 
 @(private)
 Token :: struct {
-	kind: Token_Kind,
-	text: string, // the text of an atom, or the contents of a string without the quotation marks
+	kind:   Token_Kind,
+	text:   string, // the text of an atom, or the contents of a string without the quotation marks
 	offset: int,
 }
 
 @(private)
 Parser :: struct {
 	allocator: mem.Allocator,
-	source: string,
-	at: int,      // the position of the lexer in the source
-	token: Token, // the next token, which the parser reads before it needs it
-	depth: int,   // the objects and the lists inside each other, which limits the recursion
-	errors: Error_List,
+	source:    string,
+	at:        int, // the position of the lexer in the source
+	token:     Token, // the next token, which the parser reads before it needs it
+	depth:     int, // the objects and the lists inside each other, which limits the recursion
+	errors:    Error_List,
 }
 
-@(private) MAX_DEPTH :: 256
+@(private)
+MAX_DEPTH :: 256
 
 @(private)
 line_col_from_offset :: proc(source: string, offset: int) -> (line, col: int) {
@@ -167,7 +166,7 @@ line_col_from_offset :: proc(source: string, offset: int) -> (line, col: int) {
 	col = 1
 	offset := min(offset, len(source))
 	for idx in 0 ..< offset {
-		if source[idx] == '\n' { line += 1; col = 1 } else { col += 1 }
+		if source[idx] == '\n' {line += 1; col = 1} else {col += 1}
 	}
 	return
 }
@@ -188,8 +187,16 @@ is_whitespace :: proc(c: u8) -> bool {
 
 @(private)
 is_atom_terminator :: proc(c: u8) -> bool {
-	return is_whitespace(c) || c == '{' || c == '}' || c == '[' || c == ']' ||
-	       c == '=' || c == '"' || c == '#'
+	return(
+		is_whitespace(c) ||
+		c == '{' ||
+		c == '}' ||
+		c == '[' ||
+		c == ']' ||
+		c == '=' ||
+		c == '"' ||
+		c == '#' \
+	)
 }
 
 @(private)
@@ -199,9 +206,9 @@ lex_token :: proc(parser: ^Parser) -> Token {
 	// Step over each space, and over each comment, which starts at a number
 	// sign and ends at the end of its line.
 	for {
-		for parser.at < len(src) && is_whitespace(src[parser.at]) { parser.at += 1 }
+		for parser.at < len(src) && is_whitespace(src[parser.at]) {parser.at += 1}
 		if parser.at < len(src) && src[parser.at] == '#' {
-			for parser.at < len(src) && src[parser.at] != '\n' { parser.at += 1 }
+			for parser.at < len(src) && src[parser.at] != '\n' {parser.at += 1}
 			continue
 		}
 		break
@@ -209,21 +216,26 @@ lex_token :: proc(parser: ^Parser) -> Token {
 
 	token: Token
 	token.offset = parser.at
-	if parser.at >= len(src) { return token } // the end of the input
+	if parser.at >= len(src) {return token} 	// the end of the input
 
 	c := src[parser.at]
 	switch c {
-	case '{': token.kind = .L_Brace; parser.at += 1
-	case '}': token.kind = .R_Brace; parser.at += 1
-	case '[': token.kind = .L_Bracket; parser.at += 1
-	case ']': token.kind = .R_Bracket; parser.at += 1
-	case '=': token.kind = .Equals; parser.at += 1
+	case '{':
+		token.kind = .L_Brace; parser.at += 1
+	case '}':
+		token.kind = .R_Brace; parser.at += 1
+	case '[':
+		token.kind = .L_Bracket; parser.at += 1
+	case ']':
+		token.kind = .R_Bracket; parser.at += 1
+	case '=':
+		token.kind = .Equals; parser.at += 1
 
 	case '"':
 		token.kind = .String
 		contents_first := parser.at + 1
 		close := contents_first
-		for close < len(src) && src[close] != '"' { close += 1 }
+		for close < len(src) && src[close] != '"' {close += 1}
 		token.text = src[contents_first:close]
 		if close < len(src) {
 			parser.at = close + 1
@@ -235,7 +247,7 @@ lex_token :: proc(parser: ^Parser) -> Token {
 	case:
 		token.kind = .Atom
 		first := parser.at
-		for parser.at < len(src) && !is_atom_terminator(src[parser.at]) { parser.at += 1 }
+		for parser.at < len(src) && !is_atom_terminator(src[parser.at]) {parser.at += 1}
 		token.text = src[first:parser.at]
 	}
 	return token
@@ -257,7 +269,7 @@ advance :: proc(parser: ^Parser) {
 f32_from_atom :: proc(text: string) -> (f32, bool) {
 	at := 0
 	negative := false
-	if at < len(text) && text[at] == '-' { negative = true; at += 1 }
+	if at < len(text) && text[at] == '-' {negative = true; at += 1}
 
 	int_digits := 0
 	value: f64 = 0
@@ -266,7 +278,7 @@ f32_from_atom :: proc(text: string) -> (f32, bool) {
 		at += 1
 		int_digits += 1
 	}
-	if int_digits == 0 { return 0, false }
+	if int_digits == 0 {return 0, false}
 
 	if at < len(text) && text[at] == '.' {
 		at += 1
@@ -278,10 +290,10 @@ f32_from_atom :: proc(text: string) -> (f32, bool) {
 			at += 1
 			frac_digits += 1
 		}
-		if frac_digits == 0 { return 0, false }
+		if frac_digits == 0 {return 0, false}
 	}
 
-	if at != len(text) { return 0, false }
+	if at != len(text) {return 0, false}
 	return f32(negative ? -value : value), true
 }
 
@@ -345,7 +357,7 @@ parse_value :: proc(parser: ^Parser, out: ^Value) {
 			parser.depth += 1
 			for {
 				k := parser.token.kind
-				if k == .R_Bracket { advance(parser); break }
+				if k == .R_Bracket {advance(parser); break}
 				if k == .EOF {
 					errorf(parser, token.offset, "unterminated list")
 					break
@@ -387,7 +399,7 @@ parse_members :: proc(parser: ^Parser, object: ^Value, is_root: bool) {
 		token := parser.token
 		switch token.kind {
 		case .EOF:
-			if !is_root { errorf(parser, open_offset, "unterminated object") }
+			if !is_root {errorf(parser, open_offset, "unterminated object")}
 			return
 
 		case .R_Brace:
@@ -440,7 +452,7 @@ parse_members :: proc(parser: ^Parser, object: ^Value, is_root: bool) {
 //~ fp: Parse Result
 
 Parse_Result :: struct {
-	root: ^Value, // The object that the parser makes. Read errors.count to find a problem.
+	root:   ^Value, // The object that the parser makes. Read errors.count to find a problem.
 	errors: Error_List,
 }
 
@@ -493,7 +505,7 @@ parse_file_and_report :: proc(path: string, allocator := context.allocator) -> ^
 
 get :: proc(object: ^Value, key: string) -> ^Value {
 	object := object
-	if object == nil { object = &nil_value }
+	if object == nil {object = &nil_value}
 	result := &nil_value
 	if object.kind == .Object {
 		for node := object.first_member; node != nil; node = node.next {
@@ -543,7 +555,7 @@ get_num :: proc(object: ^Value, key: string) -> (f32, bool) #optional_ok {
 // list of less than three elements each read as not ok.
 get_v4 :: proc(object: ^Value, key: string) -> (result: geo.V4, ok: bool) #optional_ok {
 	list := get(object, key)
-	if list.kind != .List || list.count < 3 { return {}, false }
+	if list.kind != .List || list.count < 3 {return {}, false}
 	result = {0, 0, 0, 1}
 	i := 0
 	for el := list.first; el != nil && i < 4; el = el.next {
@@ -551,6 +563,36 @@ get_v4 :: proc(object: ^Value, key: string) -> (result: geo.V4, ok: bool) #optio
 		i += 1
 	}
 	return result, true
+}
+
+////////////////////////////////
+//~ fp: Iteration
+//
+// The iterator walks the members of an object, in the order of the source:
+//
+//   it := tabula.iterator(object)
+//   for key, value in tabula.iterate(&it) { ... }
+//
+// The value is the value inside the node, so a write through it changes the
+// tree. A pointer of nil, a value that is not an object, and the nil value
+// each give an iterator with no members.
+
+Member_Iterator :: struct {
+	node: ^Node,
+}
+
+iterator :: proc(object: ^Value) -> Member_Iterator {
+	if object == nil || object.kind != .Object {return {}}
+	return {object.first_member}
+}
+
+iterate :: proc(it: ^Member_Iterator) -> (key: string, value: ^Value, ok: bool) {
+	if it.node == nil {return}
+	key = it.node.key
+	value = &it.node.value
+	ok = true
+	it.node = it.node.next
+	return
 }
 
 ////////////////////////////////
@@ -587,7 +629,7 @@ build_list :: proc(allocator := context.allocator) -> ^Value {
 //  and the caller writes it. Each function below add writes that value itself.
 
 add :: proc(object: ^Value, key: string, allocator := context.allocator) -> ^Value {
-	if object == nil || object.kind != .Object { return &nil_value }
+	if object == nil || object.kind != .Object {return &nil_value}
 	node := new(Node, allocator)
 	node.key = key
 	node_push_back(object, node)
@@ -630,7 +672,7 @@ add_list :: proc(object: ^Value, key: string, allocator := context.allocator) ->
 //- fp: the elements of a list, with the same rules
 
 list_push :: proc(list: ^Value, allocator := context.allocator) -> ^Value {
-	if list == nil || list.kind != .List { return &nil_value }
+	if list == nil || list.kind != .List {return &nil_value}
 	element := new(Value, allocator)
 	if list.first == nil {
 		list.first = element
@@ -677,8 +719,14 @@ list_push_object :: proc(list: ^Value, allocator := context.allocator) -> ^Value
 // terminal can find a position from a line in that format.
 
 string_from_error :: proc(label: string, error: ^Error, allocator := context.allocator) -> string {
-	return fmt.aprintf("%s:%d:%d: %s", label, error.line, error.column, error.message,
-	                   allocator = allocator)
+	return fmt.aprintf(
+		"%s:%d:%d: %s",
+		label,
+		error.line,
+		error.column,
+		error.message,
+		allocator = allocator,
+	)
 }
 
 // it writes to stderr
@@ -700,7 +748,10 @@ print_errors :: proc(label: string, errors: Error_List) {
 
 @(test)
 numbers_and_identifiers :: proc(t: ^testing.T) {
-	result := parse("a = 1.50 b = 1.2.3 c = - d = -3.5 e = 2x f = \"quoted\"", context.temp_allocator)
+	result := parse(
+		"a = 1.50 b = 1.2.3 c = - d = -3.5 e = 2x f = \"quoted\"",
+		context.temp_allocator,
+	)
 	testing.expect_value(t, result.errors.count, 0)
 
 	a := get(result.root, "a")
@@ -783,6 +834,33 @@ errors_and_positions :: proc(t: ^testing.T) {
 }
 
 @(test)
+member_iteration :: proc(t: ^testing.T) {
+	result := parse("a = 1 b = two c = { }", context.temp_allocator)
+
+	keys: [8]string
+	count := 0
+	it := iterator(result.root)
+	for key, value in iterate(&it) {
+		keys[count] = key
+		testing.expect(t, value != nil)
+		count += 1
+	}
+	testing.expect_value(t, count, 3)
+	testing.expect_value(t, keys[0], "a")
+	testing.expect_value(t, keys[1], "b")
+	testing.expect_value(t, keys[2], "c")
+
+	// A nil pointer, a value that is not an object, and an empty object each
+	// give no members.
+	nil_it := iterator(nil)
+	for _, _ in iterate(&nil_it) {testing.fail(t)}
+	number_it := iterator(get(result.root, "a"))
+	for _, _ in iterate(&number_it) {testing.fail(t)}
+	empty_it := iterator(get(result.root, "c"))
+	for _, _ in iterate(&empty_it) {testing.fail(t)}
+}
+
+@(test)
 builder :: proc(t: ^testing.T) {
 	root := build_object(context.temp_allocator)
 	add_num(root, "fps", 59.5, context.temp_allocator)
@@ -806,10 +884,14 @@ builder :: proc(t: ^testing.T) {
 // Each file parses with no error, as it does through the C parser. The reads
 // below hold a few values that the files are known to hold.
 
-@(private) TERRAIN_TYPES_SRC :: #load("../../data/terrain_types.tabula", string)
-@(private) UI_SRC :: #load("../../data/ui.tabula", string)
-@(private) WORLD_SRC :: #load("../../data/world.tabula", string)
-@(private) GROUP_TYPES_SRC :: #load("../../data/group_types.tabula", string)
+@(private)
+TERRAIN_TYPES_SRC :: #load("../../data/terrain_types.tabula", string)
+@(private)
+UI_SRC :: #load("../../data/ui.tabula", string)
+@(private)
+WORLD_SRC :: #load("../../data/world.tabula", string)
+@(private)
+GROUP_TYPES_SRC :: #load("../../data/group_types.tabula", string)
 
 @(test)
 project_data_files :: proc(t: ^testing.T) {
@@ -831,3 +913,4 @@ project_data_files :: proc(t: ^testing.T) {
 	group := parse(GROUP_TYPES_SRC, context.temp_allocator)
 	testing.expect_value(t, group.errors.count, 0)
 }
+

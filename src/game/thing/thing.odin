@@ -31,17 +31,23 @@ THING_CAP :: 65000
 WORLD_MAX_DIM :: 256
 WORLD_CELLS :: WORLD_MAX_DIM * WORLD_MAX_DIM
 
-@(private) BITSET_WORDS :: (THING_CAP + 63) / 64
-@(private) WORD_CAP :: 8192
-@(private) WORD_HASH_SLOTS :: 16384 // power of two, > 2x WORD_CAP: never fills
-@(private) WORD_CHARS :: 256 * 1024
+@(private)
+BITSET_WORDS :: (THING_CAP + 63) / 64
+@(private)
+WORD_CAP :: 8192
+@(private)
+WORD_HASH_SLOTS :: 16384 // power of two, > 2x WORD_CAP: never fills
+@(private)
+WORD_CHARS :: 256 * 1024
 // The edges are in chunks. One chunk holds at most EDGE_CHUNK_LEN entries of
 // one (rel, source) list. A walk of a list therefore reads one address for
 // each chunk, and not one address for each edge. The link between two chunks
 // is a u16 index, so a u16 sets the largest number of chunks. Chunk 0 is the
 // nil chunk, which leaves the chunks 1 to 65535 for a list.
-@(private) EDGE_CHUNK_LEN :: 9
-@(private) EDGE_CHUNK_CAP :: 65536
+@(private)
+EDGE_CHUNK_LEN :: 9
+@(private)
+EDGE_CHUNK_CAP :: 65536
 
 #assert(WORD_HASH_SLOTS & (WORD_HASH_SLOTS - 1) == 0)
 #assert(WORD_HASH_SLOTS >= 2 * WORD_CAP)
@@ -60,7 +66,7 @@ PHRASE_MAX_LEN :: 4
 Word :: distinct u16
 
 Phrase :: struct {
-	len: u8,
+	len:   u8,
 	words: [PHRASE_MAX_LEN]Word,
 }
 
@@ -74,9 +80,10 @@ Label :: enum {
 // operation, and the iterators below walk the members.
 Flag :: enum {
 	None,
-	Debug,         // a mark for a test
-	Placed,        // stands on the board. The game gives it a pawn each tick.
-	Mobile,        // the thing can move
+	Debug, // a mark for a test
+	Player, // is this the player
+	Placed, // stands on the board. The game gives it a pawn each tick.
+	Mobile, // the thing can move
 	Has_Influence, // claims the land near it. Each tile that it wins is its home.
 }
 
@@ -88,7 +95,7 @@ Var :: enum {
 	Food_Store, // the food in the granary now
 	// The four numbers of the economy of the last tick. The tick writes them,
 	// and the display reads them. Each one is a rate: the amount of one tick.
-	Food_In,    // the food that the land gave
+	Food_In, // the food that the land gave
 	Food_Share, // the part of that food that went to the granary
 	Food_Taken, // the part of that share that the granary held
 	Food_Drawn, // the food that came out of the granary to feed the people
@@ -168,12 +175,12 @@ Field_Flag :: enum {
 // exactly.
 @(private)
 Edge_Chunk :: struct #align (64) {
-	values: [EDGE_CHUNK_LEN]f32,
+	values:  [EDGE_CHUNK_LEN]f32,
 	targets: [EDGE_CHUNK_LEN]u16,
-	next: u16, // next chunk of the same (rel, source); freelist link while free
-	rel: u16,  // Relation.None marks a free chunk
-	source: u16,
-	count: u8, // entries in use
+	next:    u16, // next chunk of the same (rel, source); freelist link while free
+	rel:     u16, // Relation.None marks a free chunk
+	source:  u16,
+	count:   u8, // entries in use
 }
 #assert(size_of(Edge_Chunk) == 64)
 #assert(EDGE_CHUNK_LEN <= 255)
@@ -181,52 +188,52 @@ Edge_Chunk :: struct #align (64) {
 Db :: struct {
 	//- fp: the things. An iteration sees the slots in alive and not in nascent.
 	//  A thing in doomed stays alive until commit removes it.
-	alive: [BITSET_WORDS]u64,
-	nascent: [BITSET_WORDS]u64,
-	doomed: [BITSET_WORDS]u64,
-	generation: [THING_CAP]u16,
-	free_next: [THING_CAP]u16, // freelist links through despawned slots
-	first_free: u16,           // 0 = empty; slot 0 is never on the list
-	watermark: u16,            // first never-used slot
-	doomed_count: u16,         // marks since the last commit
+	alive:                [BITSET_WORDS]u64,
+	nascent:              [BITSET_WORDS]u64,
+	doomed:               [BITSET_WORDS]u64,
+	generation:           [THING_CAP]u16,
+	free_next:            [THING_CAP]u16, // freelist links through despawned slots
+	first_free:           u16, // 0 = empty; slot 0 is never on the list
+	watermark:            u16, // first never-used slot
+	doomed_count:         u16, // marks since the last commit
 
 	//- fp: the words. The database stores each word one time and never frees
 	//  it. Word 0 is the nil word.
-	word_offset: [WORD_CAP]u32,
-	word_len: [WORD_CAP]u8,
-	word_hash: [WORD_HASH_SLOTS]u16, // open-addressed word ids; 0 = empty
-	word_chars: [WORD_CHARS]u8,
-	word_count: u32,
-	word_chars_used: u32,
+	word_offset:          [WORD_CAP]u32,
+	word_len:             [WORD_CAP]u8,
+	word_hash:            [WORD_HASH_SLOTS]u16, // open-addressed word ids; 0 = empty
+	word_chars:           [WORD_CHARS]u8,
+	word_count:           u32,
+	word_chars_used:      u32,
 
 	//- fp: the facts, as table[kind][slot]. The rows of kind None stay empty,
 	//  so a kind is a direct index. A row that no code writes costs pages of
 	//  zeros only.
-	labels: [Label][THING_CAP]Phrase,
-	flags: [Flag][BITSET_WORDS]u64,
-	vars: [Var][THING_CAP]f32,
-	ivars: [I_Var][THING_CAP]i32,
-	refs: [Ref][THING_CAP]Id,
+	labels:               [Label][THING_CAP]Phrase,
+	flags:                [Flag][BITSET_WORDS]u64,
+	vars:                 [Var][THING_CAP]f32,
+	ivars:                [I_Var][THING_CAP]i32,
+	refs:                 [Ref][THING_CAP]Id,
 
 	//- fp: the edges, in a pool. Each (rel, source) has a list of chunks, and
 	//  an index joins them. Chunk 0 is the nil chunk, so 0 ends a list. The
 	//  alignment puts each chunk on its own cache line, which is the reason for
 	//  the chunks.
-	edge_chunks: [EDGE_CHUNK_CAP]Edge_Chunk,
-	edge_first: [Relation][THING_CAP]u16,
-	edge_chunk_free: u16,
+	edge_chunks:          [EDGE_CHUNK_CAP]Edge_Chunk,
+	edge_first:           [Relation][THING_CAP]u16,
+	edge_chunk_free:      u16,
 	edge_chunk_watermark: u32, // counts to EDGE_CHUNK_CAP, so it outgrows a u16
 
 	//- fp: the fields, as table[kind][cell], where cell = y * WORLD_MAX_DIM +
 	//  x. Each column holds WORLD_CELLS cells. world_width and world_height
 	//  give the part in use. The rows of kind None stay empty, as in the
 	//  tables of the things.
-	world_width: int,
-	world_height: int,
-	fields: [Field][WORLD_CELLS]f32,
-	ifields: [I_Field][WORLD_CELLS]i32,
-	field_refs: [Field_Ref][WORLD_CELLS]Id,
-	field_flags: [Field_Flag][WORLD_CELLS / 64]u64,
+	world_width:          int,
+	world_height:         int,
+	fields:               [Field][WORLD_CELLS]f32,
+	ifields:              [I_Field][WORLD_CELLS]i32,
+	field_refs:           [Field_Ref][WORLD_CELLS]Id,
+	field_flags:          [Field_Flag][WORLD_CELLS / 64]u64,
 }
 
 ////////////////////////////////
@@ -263,9 +270,9 @@ bit_write :: proc(bits: []u64, idx: int, value: bool) {
 @(private)
 live_slot :: proc(db: ^Db, id: Id) -> int {
 	s := int(u32(id) >> 16)
-	if s == 0 || s >= THING_CAP { return 0 }
-	if !bit_get(db.alive[:], s) { return 0 }
-	if db.generation[s] != u16(u32(id) & 0xFFFF) { return 0 }
+	if s == 0 || s >= THING_CAP {return 0}
+	if !bit_get(db.alive[:], s) {return 0}
+	if db.generation[s] != u16(u32(id) & 0xFFFF) {return 0}
 	return s
 }
 
@@ -285,7 +292,7 @@ scan_from :: proc(db: ^Db, start: int) -> Id {
 			s = (s &~ 63) + 64
 			continue
 		}
-		if word & 1 != 0 { return id_from_slot(db, s) }
+		if word & 1 != 0 {return id_from_slot(db, s)}
 		s += 1
 	}
 	return 0
@@ -296,8 +303,8 @@ scan_from :: proc(db: ^Db, start: int) -> Id {
 
 init :: proc(allocator := context.allocator) -> ^Db {
 	db := new(Db, allocator)
-	db.watermark = 1            // slot 0 is the nil thing
-	db.word_count = 1           // word 0 is the nil word
+	db.watermark = 1 // slot 0 is the nil thing
+	db.word_count = 1 // word 0 is the nil word
 	db.edge_chunk_watermark = 1 // chunk 0 is the nil entry
 	return db
 }
@@ -306,7 +313,7 @@ init :: proc(allocator := context.allocator) -> ^Db {
 // it. An iteration does not see the thing until commit. Despawn puts a mark on
 // the thing. The thing stays live until commit removes it: commit then drops
 // its edges, sets its rows to 0, and makes its id old.
-spawn :: proc(db: ^Db) -> Id { // nil when all THING_CAP slots are live
+spawn :: proc(db: ^Db) -> Id { 	// nil when all THING_CAP slots are live
 	s := int(db.first_free)
 	if s != 0 {
 		db.first_free = db.free_next[s]
@@ -369,14 +376,14 @@ commit :: proc(db: ^Db) {
 		for word_idx in 0 ..< BITSET_WORDS {
 			for word := db.doomed[word_idx]; word != 0; {
 				bit: uint = 0
-				for word & (1 << bit) == 0 { bit += 1 }
+				for word & (1 << bit) == 0 {bit += 1}
 				word &~= 1 << bit
 				s := word_idx * 64 + int(bit)
-				for label_kind in Label { if label_kind != .None { db.labels[label_kind][s] = {} } }
-				for flag in Flag { if flag != .None { bit_write(db.flags[flag][:], s, false) } }
-				for v in Var { if v != .None { db.vars[v][s] = 0 } }
-				for iv in I_Var { if iv != .None { db.ivars[iv][s] = 0 } }
-				for r in Ref { if r != .None { db.refs[r][s] = 0 } }
+				for label_kind in Label {if label_kind != .None {db.labels[label_kind][s] = {}}}
+				for flag in Flag {if flag != .None {bit_write(db.flags[flag][:], s, false)}}
+				for v in Var {if v != .None {db.vars[v][s] = 0}}
+				for iv in I_Var {if iv != .None {db.ivars[iv][s] = 0}}
+				for r in Ref {if r != .None {db.refs[r][s] = 0}}
 				db.generation[s] += 1
 				bit_write(db.alive[:], s, false)
 				db.free_next[s] = db.first_free
@@ -402,7 +409,7 @@ first :: proc(db: ^Db) -> Id {
 }
 
 next :: proc(db: ^Db, id: Id) -> Id {
-	if id == 0 { return 0 }
+	if id == 0 {return 0}
 	return scan_from(db, int(u32(id) >> 16) + 1)
 }
 
@@ -410,13 +417,13 @@ next :: proc(db: ^Db, id: Id) -> Id {
 // first and next.
 first_flagged :: proc(db: ^Db, flag: Flag) -> Id {
 	id := first(db)
-	for id != 0 && !flag_get(db, id, flag) { id = next(db, id) }
+	for id != 0 && !flag_get(db, id, flag) {id = next(db, id)}
 	return id
 }
 
 next_flagged :: proc(db: ^Db, flag: Flag, id: Id) -> Id {
 	id := next(db, id)
-	for id != 0 && !flag_get(db, id, flag) { id = next(db, id) }
+	for id != 0 && !flag_get(db, id, flag) {id = next(db, id)}
 	return id
 }
 
@@ -438,13 +445,13 @@ hash_str :: proc(s: string) -> u64 {
 }
 
 define_word :: proc(db: ^Db, source: string) -> Word {
-	if len(source) == 0 || len(source) > 255 { return 0 }
+	if len(source) == 0 || len(source) > 255 {return 0}
 	mask := u32(WORD_HASH_SLOTS - 1)
 	for probe := u32(hash_str(source)) & mask;; probe = (probe + 1) & mask {
 		word := db.word_hash[probe]
 		if word == 0 {
-			if db.word_count >= WORD_CAP { return 0 }
-			if int(db.word_chars_used) + len(source) > WORD_CHARS { return 0 }
+			if db.word_count >= WORD_CAP {return 0}
+			if int(db.word_chars_used) + len(source) > WORD_CHARS {return 0}
 			w := Word(db.word_count)
 			db.word_count += 1
 			db.word_offset[int(w)] = db.word_chars_used
@@ -454,31 +461,36 @@ define_word :: proc(db: ^Db, source: string) -> Word {
 			db.word_hash[probe] = u16(w)
 			return w
 		}
-		if word_str(db, Word(word)) == source { return Word(word) }
+		if word_str(db, Word(word)) == source {return Word(word)}
 	}
 }
 
 resolve_word :: proc(db: ^Db, word: Word, fallback: string) -> string {
-	if word == 0 || u32(word) >= db.word_count { return fallback }
+	if word == 0 || u32(word) >= db.word_count {return fallback}
 	return word_str(db, word)
 }
 
-push_word :: proc(phrase: ^Phrase, word: Word) -> bool { // false when full
-	if int(phrase.len) >= PHRASE_MAX_LEN { return false }
+push_word :: proc(phrase: ^Phrase, word: Word) -> bool { 	// false when full
+	if int(phrase.len) >= PHRASE_MAX_LEN {return false}
 	phrase.words[phrase.len] = word
 	phrase.len += 1
 	return true
 }
 
-resolve_phrase :: proc(db: ^Db, phrase: Phrase, fallback: string, allocator := context.allocator) -> string {
+resolve_phrase :: proc(
+	db: ^Db,
+	phrase: Phrase,
+	fallback: string,
+	allocator := context.allocator,
+) -> string {
 	parts: [PHRASE_MAX_LEN]string
 	n := 0
 	l := min(int(phrase.len), PHRASE_MAX_LEN)
 	for idx in 0 ..< l {
 		word := resolve_word(db, phrase.words[idx], "")
-		if len(word) > 0 { parts[n] = word; n += 1 }
+		if len(word) > 0 {parts[n] = word; n += 1}
 	}
-	if n == 0 { return fallback }
+	if n == 0 {return fallback}
 	return strings.join(parts[:n], " ", allocator)
 }
 
@@ -487,7 +499,7 @@ resolve_phrase :: proc(db: ^Db, phrase: Phrase, fallback: string, allocator := c
 
 label :: proc(db: ^Db, id: Id, label_kind: Label) -> ^Phrase {
 	s := live_slot(db, id)
-	if s == 0 || label_kind == .None { return &nil_phrase }
+	if s == 0 || label_kind == .None {return &nil_phrase}
 	return &db.labels[label_kind][s]
 }
 
@@ -496,14 +508,14 @@ label :: proc(db: ^Db, id: Id, label_kind: Label) -> ^Phrase {
 
 flag_get :: proc(db: ^Db, id: Id, flag: Flag) -> bool {
 	s := live_slot(db, id)
-	if s == 0 || flag == .None { return false }
+	if s == 0 || flag == .None {return false}
 	return bit_get(db.flags[flag][:], s)
 }
 
 // set gives you the value that the flag had before
 flag_set :: proc(db: ^Db, id: Id, flag: Flag, value: bool) -> bool {
 	s := live_slot(db, id)
-	if s == 0 || flag == .None { return false }
+	if s == 0 || flag == .None {return false}
 	old := bit_get(db.flags[flag][:], s)
 	bit_write(db.flags[flag][:], s, value)
 	return old
@@ -514,7 +526,7 @@ flag_set :: proc(db: ^Db, id: Id, flag: Flag, value: bool) -> bool {
 
 var :: proc(db: ^Db, id: Id, v: Var) -> ^f32 {
 	s := live_slot(db, id)
-	if s == 0 || v == .None { return &nil_var }
+	if s == 0 || v == .None {return &nil_var}
 	return &db.vars[v][s]
 }
 
@@ -525,12 +537,12 @@ var_get :: proc(db: ^Db, id: Id, v: Var) -> f32 {
 // a safer write than var(...)^ = ... : it does nothing for a nil id
 var_set :: proc(db: ^Db, id: Id, v: Var, value: f32) {
 	p := var(db, id, v)
-	if p != &nil_var { p^ = value }
+	if p != &nil_var {p^ = value}
 }
 
 ivar :: proc(db: ^Db, id: Id, iv: I_Var) -> ^i32 {
 	s := live_slot(db, id)
-	if s == 0 || iv == .None { return &nil_ivar }
+	if s == 0 || iv == .None {return &nil_ivar}
 	return &db.ivars[iv][s]
 }
 
@@ -541,7 +553,7 @@ ivar_get :: proc(db: ^Db, id: Id, iv: I_Var) -> i32 {
 // a safer write than ivar(...)^ = ... : it does nothing for a nil id
 ivar_set :: proc(db: ^Db, id: Id, iv: I_Var, value: i32) {
 	p := ivar(db, id, iv)
-	if p != &nil_ivar { p^ = value }
+	if p != &nil_ivar {p^ = value}
 }
 
 ////////////////////////////////
@@ -549,17 +561,17 @@ ivar_set :: proc(db: ^Db, id: Id, iv: I_Var, value: i32) {
 
 ref_get :: proc(db: ^Db, ref: Ref, id: Id) -> Id {
 	s := live_slot(db, id)
-	if s == 0 || ref == .None { return 0 }
+	if s == 0 || ref == .None {return 0}
 	target := db.refs[ref][s]
-	if live_slot(db, target) == 0 { return 0 } // target despawned since
+	if live_slot(db, target) == 0 {return 0} 	// target despawned since
 	return target
 }
 
 ref_set :: proc(db: ^Db, ref: Ref, id: Id, target: Id) {
 	target := target
 	s := live_slot(db, id)
-	if s == 0 || ref == .None { return }
-	if live_slot(db, target) == 0 { target = 0 } // nil / stale clears
+	if s == 0 || ref == .None {return}
+	if live_slot(db, target) == 0 {target = 0} 	// nil / stale clears
 	db.refs[ref][s] = target
 }
 
@@ -567,14 +579,14 @@ ref_set :: proc(db: ^Db, ref: Ref, id: Id, target: Id) {
 //~ fp: Relations
 
 Edge_Entry :: struct {
-	id: Id,
+	id:    Id,
 	value: f32,
 }
 
 // the value of one edge of a list. It gives `fallback` when the edge is absent.
 edge_value :: proc(edges_list: []Edge_Entry, id: Id, fallback: f32) -> f32 {
 	for &entry in edges_list {
-		if entry.id == id { return entry.value }
+		if entry.id == id {return entry.value}
 	}
 	return fallback
 }
@@ -582,7 +594,7 @@ edge_value :: proc(edges_list: []Edge_Entry, id: Id, fallback: f32) -> f32 {
 // each edge that goes out of `source` under `rel`, pushed on `allocator`
 edges :: proc(db: ^Db, rel: Relation, source: Id, allocator := context.allocator) -> []Edge_Entry {
 	s := live_slot(db, source)
-	if s == 0 || rel == .None { return nil }
+	if s == 0 || rel == .None {return nil}
 	count := 0
 	for c := db.edge_first[rel][s]; c != 0; c = db.edge_chunks[c].next {
 		count += int(db.edge_chunks[c].count)
@@ -604,11 +616,11 @@ edges :: proc(db: ^Db, rel: Relation, source: Id, allocator := context.allocator
 edge_get :: proc(db: ^Db, rel: Relation, source: Id, target: Id, fallback: f32) -> f32 {
 	src := live_slot(db, source)
 	tgt := live_slot(db, target)
-	if src == 0 || tgt == 0 || rel == .None { return fallback }
+	if src == 0 || tgt == 0 || rel == .None {return fallback}
 	for c := db.edge_first[rel][src]; c != 0; c = db.edge_chunks[c].next {
 		edge_chunk := &db.edge_chunks[c]
 		for i in 0 ..< int(edge_chunk.count) {
-			if int(edge_chunk.targets[i]) == tgt { return edge_chunk.values[i] }
+			if int(edge_chunk.targets[i]) == tgt {return edge_chunk.values[i]}
 		}
 	}
 	return fallback
@@ -618,7 +630,7 @@ edge_get :: proc(db: ^Db, rel: Relation, source: Id, target: Id, fallback: f32) 
 edge_set :: proc(db: ^Db, rel: Relation, source: Id, target: Id, value: f32) {
 	src := live_slot(db, source)
 	tgt := live_slot(db, target)
-	if src == 0 || tgt == 0 || rel == .None { return }
+	if src == 0 || tgt == 0 || rel == .None {return}
 	//- fp: an edge that exists. Write its value, or remove it when the value
 	//  is 0 by a move of the last entry into its place.
 	//
@@ -629,9 +641,9 @@ edge_set :: proc(db: ^Db, rel: Relation, source: Id, target: Id, value: f32) {
 	for link := &db.edge_first[rel][src]; link^ != 0; link = &db.edge_chunks[link^].next {
 		c := link^
 		edge_chunk := &db.edge_chunks[c]
-		if int(edge_chunk.count) < EDGE_CHUNK_LEN { room = c }
+		if int(edge_chunk.count) < EDGE_CHUNK_LEN {room = c}
 		for i in 0 ..< int(edge_chunk.count) {
-			if int(edge_chunk.targets[i]) != tgt { continue }
+			if int(edge_chunk.targets[i]) != tgt {continue}
 			if value != 0 {
 				edge_chunk.values[i] = value
 				return
@@ -648,7 +660,7 @@ edge_set :: proc(db: ^Db, rel: Relation, source: Id, target: Id, value: f32) {
 			return
 		}
 	}
-	if value == 0 { return }
+	if value == 0 {return}
 	//- fp: a new edge. Use a free place that an earlier removal left, before
 	//  you take a new chunk.
 	if room != 0 {
@@ -671,10 +683,10 @@ edge_set :: proc(db: ^Db, rel: Relation, source: Id, target: Id, value: f32) {
 	}
 	edge_chunk := &db.edge_chunks[c]
 	edge_chunk^ = {
-		rel = u16(rel),
+		rel    = u16(rel),
 		source = u16(src),
-		count = 1,
-		next = db.edge_first[rel][src],
+		count  = 1,
+		next   = db.edge_first[rel][src],
 	}
 	edge_chunk.targets[0] = u16(tgt)
 	edge_chunk.values[0] = value
@@ -701,8 +713,7 @@ world_size :: proc(db: ^Db) -> geo.V2i {
 }
 
 world_in_bounds :: proc(db: ^Db, pos: geo.V2i) -> bool {
-	return 0 <= pos.x && pos.x < db.world_width &&
-	       0 <= pos.y && pos.y < db.world_height
+	return 0 <= pos.x && pos.x < db.world_width && 0 <= pos.y && pos.y < db.world_height
 }
 
 @(private)
@@ -711,7 +722,7 @@ cell :: proc(pos: geo.V2i) -> int {
 }
 
 field :: proc(db: ^Db, pos: geo.V2i, f: Field) -> ^f32 {
-	if !world_in_bounds(db, pos) || f == .None { return &nil_var }
+	if !world_in_bounds(db, pos) || f == .None {return &nil_var}
 	return &db.fields[f][cell(pos)]
 }
 
@@ -722,11 +733,11 @@ field_get :: proc(db: ^Db, pos: geo.V2i, f: Field) -> f32 {
 // a safer write than field(...)^ = ... : it does nothing outside the world
 field_set :: proc(db: ^Db, pos: geo.V2i, f: Field, value: f32) {
 	p := field(db, pos, f)
-	if p != &nil_var { p^ = value }
+	if p != &nil_var {p^ = value}
 }
 
 ifield :: proc(db: ^Db, pos: geo.V2i, f: I_Field) -> ^i32 {
-	if !world_in_bounds(db, pos) || f == .None { return &nil_ivar }
+	if !world_in_bounds(db, pos) || f == .None {return &nil_ivar}
 	return &db.ifields[f][cell(pos)]
 }
 
@@ -737,7 +748,7 @@ ifield_get :: proc(db: ^Db, pos: geo.V2i, f: I_Field) -> i32 {
 // a safer write than ifield(...)^ = ... : it does nothing outside the world
 ifield_set :: proc(db: ^Db, pos: geo.V2i, f: I_Field, value: i32) {
 	p := ifield(db, pos, f)
-	if p != &nil_ivar { p^ = value }
+	if p != &nil_ivar {p^ = value}
 }
 
 // Set every cell of one column to 0, which is its nil value (ZII). The write
@@ -745,7 +756,7 @@ ifield_set :: proc(db: ^Db, pos: geo.V2i, f: I_Field, value: i32) {
 // unreachable by a read, and it holds 0 already, so this is correct and stays
 // one operation.
 ifield_clear :: proc(db: ^Db, f: I_Field) {
-	if f == .None { return }
+	if f == .None {return}
 	db.ifields[f] = {}
 }
 
@@ -753,13 +764,13 @@ ifield_clear :: proc(db: ^Db, f: I_Field) {
 // gives you the value that the bit had before, as flag_set does, and it does
 // nothing outside the world.
 ifield_get_bit :: proc(db: ^Db, pos: geo.V2i, f: I_Field, bit: uint) -> bool {
-	if bit >= 32 { return false }
+	if bit >= 32 {return false}
 	return (ifield_get(db, pos, f) >> bit) & 1 != 0
 }
 
 ifield_set_bit :: proc(db: ^Db, pos: geo.V2i, f: I_Field, bit: uint, value: bool) -> bool {
 	p := ifield(db, pos, f)
-	if p == &nil_ivar || bit >= 32 { return false }
+	if p == &nil_ivar || bit >= 32 {return false}
 	old := (p^ >> bit) & 1 != 0
 	if value {
 		p^ |= i32(1 << bit)
@@ -770,35 +781,36 @@ ifield_set_bit :: proc(db: ^Db, pos: geo.V2i, f: I_Field, bit: uint, value: bool
 }
 
 field_ref_get :: proc(db: ^Db, ref: Field_Ref, pos: geo.V2i) -> Id {
-	if !world_in_bounds(db, pos) || ref == .None { return 0 }
+	if !world_in_bounds(db, pos) || ref == .None {return 0}
 	target := db.field_refs[ref][cell(pos)]
-	if live_slot(db, target) == 0 { return 0 } // target despawned since
+	if live_slot(db, target) == 0 {return 0} 	// target despawned since
 	return target
 }
 
 field_ref_set :: proc(db: ^Db, ref: Field_Ref, pos: geo.V2i, target: Id) {
 	target := target
-	if !world_in_bounds(db, pos) || ref == .None { return }
-	if live_slot(db, target) == 0 { target = 0 } // nil / stale clears
+	if !world_in_bounds(db, pos) || ref == .None {return}
+	if live_slot(db, target) == 0 {target = 0} 	// nil / stale clears
 	db.field_refs[ref][cell(pos)] = target
 }
 
 // set every cell of the column to the nil id, as ifield_clear does
 field_ref_clear :: proc(db: ^Db, ref: Field_Ref) {
-	if ref == .None { return }
+	if ref == .None {return}
 	db.field_refs[ref] = {}
 }
 
 field_flag_get :: proc(db: ^Db, pos: geo.V2i, flag: Field_Flag) -> bool {
-	if !world_in_bounds(db, pos) || flag == .None { return false }
+	if !world_in_bounds(db, pos) || flag == .None {return false}
 	return bit_get(db.field_flags[flag][:], cell(pos))
 }
 
 // set gives you the value that the flag had before
 field_flag_set :: proc(db: ^Db, pos: geo.V2i, flag: Field_Flag, value: bool) -> bool {
-	if !world_in_bounds(db, pos) || flag == .None { return false }
+	if !world_in_bounds(db, pos) || flag == .None {return false}
 	c := cell(pos)
 	old := bit_get(db.field_flags[flag][:], c)
 	bit_write(db.field_flags[flag][:], c, value)
 	return old
 }
+

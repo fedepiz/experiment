@@ -516,7 +516,7 @@ init :: proc(game: ^Game, seed: u64) {
 	// The arena survives the zeroing below: the game owns it for the run of
 	// the program, and each new world clears it.
 	if !game.arena_ready {
-		if virtual.arena_init_growing(&game.arena) != nil { panic("out of memory: game arena") }
+		if virtual.arena_init_growing(&game.arena) != nil {panic("out of memory: game arena")}
 	}
 	allocator := virtual.arena_allocator(&game.arena)
 	free_all(allocator)
@@ -581,6 +581,7 @@ init :: proc(game: ^Game, seed: u64) {
 		{"Redhill", {88, 118}, "band", 10},
 	}
 
+	is_first := true
 	for spawn in GROUP_SPAWNS {
 		// An unknown name gives row 0: a group with no reach and no people,
 		// which is clearly broken on the screen.
@@ -599,6 +600,8 @@ init :: proc(game: ^Game, seed: u64) {
 		thing.var_set(db, id, .Population, floor_whole(spawn.population))
 		thing.flag_set(db, id, .Has_Influence, true)
 		thing.flag_set(db, id, .Placed, true)
+		thing.flag_set(db, id, .Player, is_first)
+		is_first = false
 	}
 
 	thing.commit(db)
@@ -783,6 +786,27 @@ group_facts :: proc(
 		)
 	}
 	tabula.add_string(granary, "hover", hover, allocator)
+
+
+	actions := tabula.add_object(out, "actions", allocator)
+
+	if thing.flag_get(db, id, .Player) {
+		tabula.add_string(actions, "label", "This is the player.", allocator)
+	} else {
+		tabula.add_string(actions, "label", "This is a target", allocator)
+		{
+			act := tabula.add_object(actions, "action", allocator)
+			tabula.add_string(act, "kind", "talk")
+			tabula.add_string(act, "name", "Talk", allocator)
+
+		}
+		{
+			act := tabula.add_object(actions, "action", allocator)
+			tabula.add_string(act, "kind", "attack")
+			tabula.add_string(act, "name", "Attack", allocator)
+
+		}
+	}
 }
 
 @(private)
@@ -1144,3 +1168,4 @@ map_items :: proc(game: ^Game, mode: Map_Mode, allocator := context.allocator) -
 
 	return out
 }
+

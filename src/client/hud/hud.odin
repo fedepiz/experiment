@@ -5,7 +5,6 @@ import "core:fmt"
 import "../"
 import "../../chunk"
 import "../../draw"
-import "../../game"
 import "../../geo"
 import "../../tabula"
 import "../../ui"
@@ -121,8 +120,7 @@ typed_row :: proc(key: string, row: ^tabula.Value) {
 	case "balance":
 		text = fmt.tprintf("%+g", tabula.get_num(row, "value"))
 	case "x_of_y":
-		text = fmt.tprintf("%g of %g", tabula.get_num(row, "value"),
-		                   tabula.get_num(row, "limit"))
+		text = fmt.tprintf("%g of %g", tabula.get_num(row, "value"), tabula.get_num(row, "limit"))
 	}
 	stat_row(name, text, color, hover)
 }
@@ -142,7 +140,7 @@ typed_row :: proc(key: string, row: ^tabula.Value) {
 @(private)
 fact_rows :: proc(object: ^tabula.Value, omit: string) {
 	for node := object.first_member; node != nil; node = node.next {
-		if len(omit) > 0 && node.key == omit { continue }
+		if len(omit) > 0 && node.key == omit {continue}
 		value := &node.value
 		#partial switch value.kind {
 		case .Identifier, .String:
@@ -168,27 +166,58 @@ fact_rows :: proc(object: ^tabula.Value, omit: string) {
 // then the rows of the facts.
 @(private)
 selection_panel :: proc(info: ^tabula.Value) {
-	if !tabula.value_is_nil(info) {
-		ui.push_padding({12, 10})
-		panel := ui.panel_begin("selection_panel")
-		ui.pop_padding()
+	if tabula.value_is_nil(info) {return}
+
+	{
+		panel := ui.panel("selection_panel")
+		panel.padding = {12, 10}
 		panel.flags += {.Floating}
 		panel.floating_anchor = {0, 0}
 		panel.floating_pos = {12, 12}
 		panel.pref_size[.X] = ui.size_points(240, 1)
-		{
-			title, has_title := tabula.get_string(info, "name")
-			if !has_title {
-				terrain := tabula.get(tabula.get(info, "tile"), "terrain")
-				title = tabula.get_string(terrain, "value") or_else "tile"
-			}
-			ui.push_font_size(19)
-			ui.label(title)
-			ui.pop_font_size()
-			fact_rows(info, "name")
+
+		title, has_title := tabula.get_string(info, "name")
+		if !has_title {
+			terrain := tabula.get(tabula.get(info, "tile"), "terrain")
+			title = tabula.get_string(terrain, "value") or_else "tile"
 		}
-		ui.panel_end()
+		ui.push_font_size(19)
+		ui.label(title)
+		ui.pop_font_size()
+		fact_rows(info, "name")
 	}
+
+	actions := tabula.get(info, "actions")
+
+	if !tabula.value_is_nil(actions) {
+		panel := ui.panel("action_panel")
+		panel.padding = {12, 10}
+		panel.flags += {.Floating}
+		panel.floating_anchor = {0.0, 0.45}
+		panel.floating_pos = {12, 12}
+		panel.pref_size[.X] = ui.size_points(240, 1)
+
+		ui.push_font_size(19)
+		ui.label("Actions")
+		ui.pop_font_size()
+
+		it := tabula.iterator(actions)
+		ui.push_pref_width({kind = .Points, value = 100, strictness = 1})
+		for key, value in tabula.iterate(&it) {
+			switch (key) {
+			case "label":
+				ui.label(value.text)
+			case "action":
+				name := tabula.get_string(value, "name") or_else "???"
+				if ui.button(name).clicked {
+					fmt.printf("Button %v clicked\n", name)
+				}
+
+			}
+		}
+		ui.pop_pref_width()
+	}
+
 }
 
 // A bar along the bottom edge, at the width of the window. Each button of that
@@ -197,9 +226,8 @@ selection_panel :: proc(info: ^tabula.Value) {
 // alone.
 @(private)
 action_bar :: proc(cmd: ^client.Command) {
-	ui.push_padding({10, 0})
-	bar := ui.panel_begin("action_bar")
-	ui.pop_padding()
+	bar := ui.panel("action_bar")
+	bar.padding = {10, 0}
 	bar.flags += {.Floating}
 	bar.floating_anchor = {0, 1}
 	bar.pref_size[.X] = ui.size_pct(1, 1)
@@ -214,21 +242,18 @@ action_bar :: proc(cmd: ^client.Command) {
 	}
 	ui.pop_child_align()
 	ui.pop_pref_height()
-	ui.panel_end()
 }
 
 // The top right corner, which shows the value that fps_update writes.
 @(private)
 fps_panel :: proc(info: ^tabula.Value) {
-	ui.push_padding({8, 4})
-	panel := ui.panel_begin("fps_panel")
-	ui.pop_padding()
+	panel := ui.panel("fps_panel")
+	panel.padding = {8, 4}
 	panel.flags += {.Floating}
 	panel.floating_anchor = {1, 0}
 	panel.floating_pos = {-12, 12}
 	text := tabula.get_string(info, "fps") or_else "NO FPS"
 	ui.labelf("FPS: %s", text)
-	ui.panel_end()
 }
 
 build :: proc(font: draw.Font, info: ^tabula.Value, cmd: ^client.Command) {
@@ -236,7 +261,8 @@ build :: proc(font: draw.Font, info: ^tabula.Value, cmd: ^client.Command) {
 	ui.push_font_size(15)
 	ui.push_child_gap(8)
 
-	selection_panel(tabula.get(info, "selection"))
+	selection := tabula.get(info, "selection")
+	selection_panel(selection)
 	action_bar(cmd)
 	fps_panel(info)
 
@@ -244,3 +270,4 @@ build :: proc(font: draw.Font, info: ^tabula.Value, cmd: ^client.Command) {
 	ui.pop_font_size()
 	ui.pop_font()
 }
+

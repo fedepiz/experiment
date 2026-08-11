@@ -1487,6 +1487,10 @@ panel_end :: proc() {
 
 //- fp: The scoped forms. Each one runs its end when the scope of the caller
 //  ends, which is what the DeferLoop macros of the C build did.
+//
+//  Rule: a scoped call is the first statement of its scope. Style the widget
+//  through the pointer it gives back, not with a push before the call: a box
+//  stays writable until frame_end, so the two ways are equal.
 
 @(deferred_none = pop_tag)
 tag :: proc(t: string) {
