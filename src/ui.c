@@ -102,10 +102,6 @@ typedef struct {
     U64 top;
   } parent_stack;
   struct {
-    U64 items[UI_STACK_CAP];
-    U64 top;
-  } seed_stack;
-  struct {
     String8 items[UI_STACK_CAP];
     U64 top;
   } tag_stack;
@@ -113,62 +109,13 @@ typedef struct {
     U64 items[UI_STACK_CAP];
     U64 top;
   } tag_key_stack;
-  struct {
-    UI_Size items[UI_STACK_CAP];
-    U64 top;
-  } pref_width_stack;
-  struct {
-    UI_Size items[UI_STACK_CAP];
-    U64 top;
-  } pref_height_stack;
-  struct {
-    U64 items[UI_STACK_CAP];
-    U64 top;
-  } font_stack;
-  struct {
-    F32 items[UI_STACK_CAP];
-    U64 top;
-  } font_size_stack;
-  struct {
-    V4 items[UI_STACK_CAP];
-    U64 top;
-  } text_color_stack;
-  struct {
-    UI_TextAlign items[UI_STACK_CAP];
-    U64 top;
-  } text_align_stack;
-  struct {
-    V4 items[UI_STACK_CAP];
-    U64 top;
-  } background_color_stack;
-  struct {
-    V4 items[UI_STACK_CAP];
-    U64 top;
-  } border_color_stack;
-  struct {
-    F32 items[UI_STACK_CAP];
-    U64 top;
-  } border_thickness_stack;
-  struct {
-    F32 items[UI_STACK_CAP];
-    U64 top;
-  } corner_radius_stack;
-  struct {
-    UI_Axis items[UI_STACK_CAP];
-    U64 top;
-  } child_axis_stack;
-  struct {
-    UI_Align items[UI_STACK_CAP];
-    U64 top;
-  } child_align_stack;
-  struct {
-    V2 items[UI_STACK_CAP];
-    U64 top;
-  } padding_stack;
-  struct {
-    F32 items[UI_STACK_CAP];
-    U64 top;
-  } child_gap_stack;
+#define X(name, type, default_value) \
+  struct {                           \
+    type items[UI_STACK_CAP];        \
+    U64 top;                         \
+  } name##_stack;
+  UI_STYLE_STACK_LIST
+#undef X
 } UI_State;
 
 global UI_State ui_state;
@@ -314,96 +261,12 @@ internal void ui_push_parent(UI_Box* box) {
 internal void ui_pop_parent(void) {
   ui__pop(parent_stack);
 }
-internal void ui_push_seed(U64 seed) {
-  ui__push(seed_stack, seed);
-}
-internal void ui_pop_seed(void) {
-  ui__pop(seed_stack);
-}
-internal void ui_push_pref_width(UI_Size size) {
-  ui__push(pref_width_stack, size);
-}
-internal void ui_pop_pref_width(void) {
-  ui__pop(pref_width_stack);
-}
-internal void ui_push_pref_height(UI_Size size) {
-  ui__push(pref_height_stack, size);
-}
-internal void ui_pop_pref_height(void) {
-  ui__pop(pref_height_stack);
-}
-internal void ui_push_font(U64 font) {
-  ui__push(font_stack, font);
-}
-internal void ui_pop_font(void) {
-  ui__pop(font_stack);
-}
-internal void ui_push_font_size(F32 size) {
-  ui__push(font_size_stack, size);
-}
-internal void ui_pop_font_size(void) {
-  ui__pop(font_size_stack);
-}
-internal void ui_push_text_color(V4 color) {
-  ui__push(text_color_stack, color);
-}
-internal void ui_pop_text_color(void) {
-  ui__pop(text_color_stack);
-}
-internal void ui_push_text_align(UI_TextAlign align) {
-  ui__push(text_align_stack, align);
-}
-internal void ui_pop_text_align(void) {
-  ui__pop(text_align_stack);
-}
-internal void ui_push_background_color(V4 color) {
-  ui__push(background_color_stack, color);
-}
-internal void ui_pop_background_color(void) {
-  ui__pop(background_color_stack);
-}
-internal void ui_push_border_color(V4 color) {
-  ui__push(border_color_stack, color);
-}
-internal void ui_pop_border_color(void) {
-  ui__pop(border_color_stack);
-}
-internal void ui_push_border_thickness(F32 thickness) {
-  ui__push(border_thickness_stack, thickness);
-}
-internal void ui_pop_border_thickness(void) {
-  ui__pop(border_thickness_stack);
-}
-internal void ui_push_corner_radius(F32 radius) {
-  ui__push(corner_radius_stack, radius);
-}
-internal void ui_pop_corner_radius(void) {
-  ui__pop(corner_radius_stack);
-}
-internal void ui_push_child_axis(UI_Axis axis) {
-  ui__push(child_axis_stack, axis);
-}
-internal void ui_pop_child_axis(void) {
-  ui__pop(child_axis_stack);
-}
-internal void ui_push_child_align(UI_Align align) {
-  ui__push(child_align_stack, align);
-}
-internal void ui_pop_child_align(void) {
-  ui__pop(child_align_stack);
-}
-internal void ui_push_padding(V2 padding) {
-  ui__push(padding_stack, padding);
-}
-internal void ui_pop_padding(void) {
-  ui__pop(padding_stack);
-}
-internal void ui_push_child_gap(F32 gap) {
-  ui__push(child_gap_stack, gap);
-}
-internal void ui_pop_child_gap(void) {
-  ui__pop(child_gap_stack);
-}
+
+#define X(name, type, default_value)                                          \
+  internal void ui_push_##name(type value) { ui__push(name##_stack, value); } \
+  internal void ui_pop_##name(void) { ui__pop(name##_stack); }
+UI_STYLE_STACK_LIST
+#undef X
 
 ////////////////////////////////
 //~ fp: Tags / Theme
@@ -623,41 +486,16 @@ internal void ui_frame_begin(Arena* frame_arena, UI_Input input) {
   //  stack of colors: a color whose stack holds no push comes from the
   //  theme.
   s->parent_stack.top = 0;
-  s->seed_stack.top = 0;
   s->tag_stack.top = 0;
   s->tag_key_stack.top = 0;
-  s->pref_width_stack.top = 0;
-  s->pref_height_stack.top = 0;
-  s->font_stack.top = 0;
-  s->font_size_stack.top = 0;
-  s->text_color_stack.top = 0;
-  s->text_align_stack.top = 0;
-  s->background_color_stack.top = 0;
-  s->border_color_stack.top = 0;
-  s->border_thickness_stack.top = 0;
-  s->corner_radius_stack.top = 0;
-  s->child_axis_stack.top = 0;
-  s->child_align_stack.top = 0;
-  s->padding_stack.top = 0;
-  s->child_gap_stack.top = 0;
   ui__push(parent_stack, root);
-  ui__push(seed_stack, 0);
   ui__push(tag_stack, str8_lit(""));
   ui__push(tag_key_stack, 0);
-  ui__push(pref_width_stack, ui_size_children(0));
-  ui__push(pref_height_stack, ui_size_children(0));
-  ui__push(font_stack, 0);
-  ui__push(font_size_stack, 16.0f);
-  ui__push(text_color_stack, ((V4){0}));
-  ui__push(text_align_stack, UI_TextAlign_Left);
-  ui__push(background_color_stack, ((V4){0}));
-  ui__push(border_color_stack, ((V4){0}));
-  ui__push(border_thickness_stack, 1.0f);
-  ui__push(corner_radius_stack, 0.0f);
-  ui__push(child_axis_stack, UI_Axis_Y);
-  ui__push(child_align_stack, UI_Align_Start);
-  ui__push(padding_stack, ((V2){0, 0}));
-  ui__push(child_gap_stack, 0.0f);
+#define X(name, type, default_value)  \
+  s->name##_stack.top = 0;            \
+  ui__push(name##_stack, default_value);
+  UI_STYLE_STACK_LIST
+#undef X
 }
 
 ////////////////////////////////

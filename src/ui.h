@@ -352,40 +352,39 @@ internal V2 ui_mouse(void);     // the mouse of this frame, in points
 // ui_frame_begin sets each stack to a default that suits a struct of zeros. A
 // box takes the value at the top of each stack at its build. Each push needs a
 // pop inside the same frame, which an assert tests.
+//
+// One row of UI_STYLE_STACK_LIST is one stack: its name, the type of its
+// values, and its default at the start of a frame. The row generates the
+// member of the state, the push and pop functions, and the reset at the frame
+// begin, so the four places cannot disagree. The stack of the parent and the
+// stacks of the tags carry more than this shape, so they stay written out.
+
+#define UI_STYLE_STACK_LIST                                  \
+  X(seed,             U64,          0)                       \
+  X(pref_width,       UI_Size,      ui_size_children(0))     \
+  X(pref_height,      UI_Size,      ui_size_children(0))     \
+  X(font,             U64,          0)                       \
+  X(font_size,        F32,          16.0f)                   \
+  X(text_color,       V4,           ((V4){0}))               \
+  X(text_align,       UI_TextAlign, UI_TextAlign_Left)       \
+  X(background_color, V4,           ((V4){0}))               \
+  X(border_color,     V4,           ((V4){0}))               \
+  X(border_thickness, F32,          1.0f)                    \
+  X(corner_radius,    F32,          0.0f)                    \
+  X(child_axis,       UI_Axis,      UI_Axis_Y)               \
+  X(child_align,      UI_Align,     UI_Align_Start)          \
+  X(padding,          V2,           ((V2){0, 0}))            \
+  X(child_gap,        F32,          0.0f)
 
 internal void ui_push_parent(UI_Box* box);
 internal void ui_pop_parent(void);
-internal void ui_push_seed(U64 seed);
-internal void ui_pop_seed(void);
 // ui_push_tag and ui_pop_tag are in the Tags / Theme section above.
-internal void ui_push_pref_width(UI_Size size);
-internal void ui_pop_pref_width(void);
-internal void ui_push_pref_height(UI_Size size);
-internal void ui_pop_pref_height(void);
-internal void ui_push_font(U64 font);
-internal void ui_pop_font(void);
-internal void ui_push_font_size(F32 size);
-internal void ui_pop_font_size(void);
-internal void ui_push_text_color(V4 color);
-internal void ui_pop_text_color(void);
-internal void ui_push_text_align(UI_TextAlign align);
-internal void ui_pop_text_align(void);
-internal void ui_push_background_color(V4 color);
-internal void ui_pop_background_color(void);
-internal void ui_push_border_color(V4 color);
-internal void ui_pop_border_color(void);
-internal void ui_push_border_thickness(F32 thickness);
-internal void ui_pop_border_thickness(void);
-internal void ui_push_corner_radius(F32 radius);
-internal void ui_pop_corner_radius(void);
-internal void ui_push_child_axis(UI_Axis axis);
-internal void ui_pop_child_axis(void);
-internal void ui_push_child_align(UI_Align align);
-internal void ui_pop_child_align(void);
-internal void ui_push_padding(V2 padding);
-internal void ui_pop_padding(void);
-internal void ui_push_child_gap(F32 gap);
-internal void ui_pop_child_gap(void);
+
+#define X(name, type, default_value)      \
+  internal void ui_push_##name(type value); \
+  internal void ui_pop_##name(void);
+UI_STYLE_STACK_LIST
+#undef X
 
 ////////////////////////////////
 //~ fp: Building / Signals

@@ -47,6 +47,19 @@ internal V2I  dir4_delta(Dir4 dir);
 internal Dir4 dir4_opposite(Dir4 dir);
 internal Dir4 dir4_from_delta(V2I delta); // Dir4_COUNT when delta isn't a single step
 
+// A rectangle of cells on a V2I grid. Both corners are inside the range. A
+// range whose max is below its min on an axis is empty, and holds no cell.
+typedef struct {
+  V2I min;
+  V2I max;
+} Rng2I32;
+
+internal Rng2I32 rng2i32(V2I min, V2I max);
+internal B32 rng2i32_is_empty(Rng2I32 rng);
+internal B32 rng2i32_contains(Rng2I32 rng, V2I p);
+internal Rng2I32 rng2i32_intersect(Rng2I32 a, Rng2I32 b); // empty when a and b share no cell
+internal U64 rng2i32_area(Rng2I32 rng); // the number of cells, which is 0 for an empty range
+
 typedef struct {
   F32 x;
   F32 y;

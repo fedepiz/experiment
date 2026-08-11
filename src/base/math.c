@@ -67,6 +67,29 @@ internal Dir4 dir4_from_delta(V2I delta) {
   return result;
 }
 
+internal Rng2I32 rng2i32(V2I min, V2I max) {
+  return (Rng2I32){min, max};
+}
+
+internal B32 rng2i32_is_empty(Rng2I32 rng) {
+  return rng.max.x < rng.min.x || rng.max.y < rng.min.y;
+}
+
+internal B32 rng2i32_contains(Rng2I32 rng, V2I p) {
+  return rng.min.x <= p.x && p.x <= rng.max.x &&
+         rng.min.y <= p.y && p.y <= rng.max.y;
+}
+
+internal Rng2I32 rng2i32_intersect(Rng2I32 a, Rng2I32 b) {
+  return (Rng2I32){{Max(a.min.x, b.min.x), Max(a.min.y, b.min.y)},
+                   {Min(a.max.x, b.max.x), Min(a.max.y, b.max.y)}};
+}
+
+internal U64 rng2i32_area(Rng2I32 rng) {
+  if(rng2i32_is_empty(rng)) { return 0; }
+  return (U64)(rng.max.x - rng.min.x + 1) * (U64)(rng.max.y - rng.min.y + 1);
+}
+
 internal F32 v2_magnitude(V2 a) {
   return sqrtf(a.x * a.x + a.y * a.y);
 }

@@ -31,7 +31,8 @@ struct Map_View {
   //  it is. Where an entry is absent, this module calls the tiler and keeps the
   //  answer. tl_cell always gives one piece or more, so a cell of zeros says
   //  that the cache has no entry.
-  TL_Cell* cells; // (width+1) by (height+1). The extra ring holds the dual cells of the far edges.
+  Arena* cell_arena; // the memory of the cells. Each new world clears it.
+  TL_Cell* cells;    // (width+1) by (height+1). The extra ring holds the dual cells of the far edges.
   I32 cache_w;
   I32 cache_h;
 };
@@ -68,10 +69,11 @@ internal U32 map__load(Map_View* map, Arena* scratch, String8 path) {
   return result;
 }
 
-internal void map_world_changed(Map_View* map, Arena* arena, I32 board_w, I32 board_h) {
+internal void map_world_changed(Map_View* map, I32 board_w, I32 board_h) {
+  arena_clear(map->cell_arena);
   map->cache_w = board_w + 1;
   map->cache_h = board_h + 1;
-  map->cells = push_array(arena, TL_Cell, (U64)map->cache_w * (U64)map->cache_h);
+  map->cells = push_array(map->cell_arena, TL_Cell, (U64)map->cache_w * (U64)map->cache_h);
 }
 
 internal TL_Cell* map__cell(Map_View* map, GM_MapGround* ground) {
@@ -90,6 +92,7 @@ internal TL_Cell* map__cell(Map_View* map, GM_MapGround* ground) {
 
 internal Map_View* map_init(Arena* arena) {
   Map_View* map = push_array(arena, Map_View, 1);
+  map->cell_arena = arena_alloc();
   map->sprite_count = 1; // the id 0 is the nil sprite
   ArenaTemp scratch = arena_get_scratch(0, 0);
   d_spritesheet_begin(512, 512, D_Sampling_Smooth);
@@ -257,21 +260,23 @@ internal void map__draw_ground(Map_View* map, GM_MapItems items, TL_Layer layer)
 //   art that is absent a placeholder, because the loader found no file for the
 //                      sprite that the shape names
 internal void map__draw_shapes(Map_View* map, GM_MapItems items) {
-  for(U64 i = 0; i < items.shape_count; i += 1) {
-    GM_MapShape* shape = &items.shapes[i];
-    U32 variant_count = map->gm_sprite_counts[shape->sprite];
-    if(shape->sprite == GM_Sprite_Nil) {
-      d_rect(map_tile_rect(shape->pos.x, shape->pos.y, 0), shape->color);
-    } else if(variant_count > 0) {
-      // A hash of the id chooses the variant, so that variant stays equal for
-      // the life of the thing, and two things take two variants.
-      U32 variant = (U32)(rng_hash_u64(0, shape->id) % variant_count);
-      D_Sprite sprite = map->sprites[map->gm_sprites[shape->sprite][variant]];
-      d_sprite(sprite, map_tile_rect(shape->pos.x, shape->pos.y, 0), shape->color);
-    } else {
-      F32 inset = MAP_TILE * 0.2f;
-      F32 rounding = (MAP_TILE - 2 * inset) * 0.35f;
-      d_rect_rounded(map_tile_rect(shape->pos.x, shape->pos.y, inset), shape->color, rounding);
+  for(GM_MapShapeChunk* chunk = items.shapes.first; chunk != 0; chunk = chunk->next) {
+    for(U64 i = 0; i < chunk->count; i += 1) {
+      GM_MapShape* shape = &chunk->shapes[i];
+      U32 variant_count = map->gm_sprite_counts[shape->sprite];
+      if(shape->sprite == GM_Sprite_Nil) {
+        d_rect(map_tile_rect(shape->pos.x, shape->pos.y, 0), shape->color);
+      } else if(variant_count > 0) {
+        // A hash of the id chooses the variant, so that variant stays equal for
+        // the life of the thing, and two things take two variants.
+        U32 variant = (U32)(rng_hash_u64(0, shape->id) % variant_count);
+        D_Sprite sprite = map->sprites[map->gm_sprites[shape->sprite][variant]];
+        d_sprite(sprite, map_tile_rect(shape->pos.x, shape->pos.y, 0), shape->color);
+      } else {
+        F32 inset = MAP_TILE * 0.2f;
+        F32 rounding = (MAP_TILE - 2 * inset) * 0.35f;
+        d_rect_rounded(map_tile_rect(shape->pos.x, shape->pos.y, inset), shape->color, rounding);
+      }
     }
   }
 }

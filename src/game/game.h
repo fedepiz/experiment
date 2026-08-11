@@ -67,9 +67,9 @@ typedef struct {
   TH_Id id; // Thing only
 } GM_Selection;
 
-typedef struct GM_UpdateInfo GM_UpdateInfo;
-
 typedef struct {
+  Arena* arena; // the memory of the game. gm_init makes it at the first call,
+                // and clears it for each new world.
   B32 initialised;
   B32 paused;
   U64 tick_num;
@@ -77,10 +77,11 @@ typedef struct {
   BD_Board* board;
   F32 move_timer;
   GM_Selection selection;
-  GM_UpdateInfo* update_info;
 } GM_Game;
 
-internal void gm_init(Arena* arena, GM_Game* game, U64 seed);
+// A caller must call wg_terrain_table_load first: the generator and the
+// feeding rules read the terrain table.
+internal void gm_init(GM_Game* game, U64 seed);
 internal void gm_update(GM_Game* game, F32 dt);
 
 // A thing that stands on the tile wins against the tile. A tile off the board
@@ -144,11 +145,28 @@ typedef struct {
                     // the life of a thing, so the choice is stable too.
 } GM_MapShape;
 
+// The shapes are an unrolled list, because every reader walks them in order
+// and no reader indexes them. A chunk holds a block of shapes, so a push never
+// counts ahead, and a read still walks contiguous memory.
+#define GM_MAP_SHAPE_CHUNK_CAP 256
+
+typedef struct GM_MapShapeChunk GM_MapShapeChunk;
+struct GM_MapShapeChunk {
+  GM_MapShapeChunk* next;
+  U64 count;
+  GM_MapShape shapes[GM_MAP_SHAPE_CHUNK_CAP];
+};
+
 typedef struct {
-  GM_MapGround* ground;
+  GM_MapShapeChunk* first;
+  GM_MapShapeChunk* last;
+  U64 total_count;
+} GM_MapShapeList;
+
+typedef struct {
+  GM_MapGround* ground; // flat: the window gives its exact size in one multiply
   U64 ground_count;
-  GM_MapShape* shapes;
-  U64 shape_count;
+  GM_MapShapeList shapes;
   // The tile of the selection, which the display layer marks above everything.
   // The mark takes a color of the theme, so the display layer owns how it
   // looks, and it is not a shape.
@@ -162,13 +180,12 @@ enum {
   GM_MapModeFlag_Influence = (1 << 2),
 };
 
-// The mode asks for one ground item at each cell of [min, max], with both
+// The mode asks for one ground item at each cell of the window, with both
 // corners. The window can go one cell past the edge of the board, to give the
 // boundary shapes at that edge an owner. The mode then asks for one surface
 // item at each pawn that stands inside the window.
 typedef struct {
-  V2 min;
-  V2 max;
+  Rng2I32 window;
   GM_MapModeFlags flags;
 } GM_MapMode;
 

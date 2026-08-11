@@ -240,6 +240,10 @@ internal void th_ifield_set(TH_Db* db, V2I pos, TH_IField ifield, I32 value);
 internal B32 th_ifield_get_bit(TH_Db* db, V2I pos, TH_IField ifield, U32 bit);
 internal B32 th_ifield_set_bit(TH_Db* db, V2I pos, TH_IField ifield, U32 bit, B32 value);
 
+// Set every cell of one column to 0, which is its nil value (ZII). One call
+// takes the place of a loop over the world, and its cost is one memset.
+internal void th_ifield_clear(TH_Db* db, TH_IField ifield);
+
 // A field ref holds one thing at each position, for each kind of ref. A read
 // examines the target, so a thing that the database removed reads back as nil.
 typedef U16 TH_FieldRef;
@@ -251,6 +255,8 @@ enum {
 
 internal TH_Id th_field_ref_get(TH_Db* db, TH_FieldRef ref, V2I pos);
 internal void th_field_ref_set(TH_Db* db, TH_FieldRef ref, V2I pos, TH_Id target);
+// set every cell of the column to the nil id, as th_ifield_clear does
+internal void th_field_ref_clear(TH_Db* db, TH_FieldRef ref);
 
 // a field flag is a boolean at each position. The database holds it as a bitset.
 typedef U8 TH_FieldFlag;

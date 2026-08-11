@@ -24,8 +24,8 @@
 typedef struct Map_View Map_View;
 
 internal Map_View* map_init(Arena* arena); // It loads the assets. A caller must call wg_terrain_table_load first.
-// Set the size of the cache of the cells to the size of a new world. The cells
-// go on `arena`.
-internal void map_world_changed(Map_View* map, Arena* arena, I32 board_w, I32 board_h);
+// Set the size of the cache of the cells to the size of a new world. The
+// cells go on an arena that the view owns, and this call clears it.
+internal void map_world_changed(Map_View* map, I32 board_w, I32 board_h);
 internal V2I map_tile_from_screen(D_Camera camera, V2 screen);
 internal void map_draw(Map_View* map, GM_MapItems items, D_Camera camera);

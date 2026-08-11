@@ -574,6 +574,14 @@ internal void th_ifield_set(TH_Db* db, V2I pos, TH_IField ifield, I32 value) {
   if(p != &TH_NIL_IVAR) { *p = value; }
 }
 
+// The memset covers the whole column, past the world too. A cell outside the
+// world is unreachable by a read, and it holds 0 already, so this is correct
+// and stays one operation.
+internal void th_ifield_clear(TH_Db* db, TH_IField ifield) {
+  if(ifield == TH_IField_Nil || ifield >= TH_IField_COUNT) { return; }
+  MemoryZeroArray(db->ifields[ifield]);
+}
+
 internal B32 th_ifield_get_bit(TH_Db* db, V2I pos, TH_IField ifield, U32 bit) {
   if(bit >= 32) { return false; }
   return (th_ifield_get(db, pos, ifield) >> bit) & 1;
@@ -602,6 +610,11 @@ internal void th_field_ref_set(TH_Db* db, TH_FieldRef ref, V2I pos, TH_Id target
   if(!th_world_in_bounds(db, pos) || ref == TH_FieldRef_Nil || ref >= TH_FieldRef_COUNT) { return; }
   if(th__slot(db, target) == 0) { target = 0; } // nil / stale clears
   db->field_refs[ref][th__cell(pos)] = target;
+}
+
+internal void th_field_ref_clear(TH_Db* db, TH_FieldRef ref) {
+  if(ref == TH_FieldRef_Nil || ref >= TH_FieldRef_COUNT) { return; }
+  MemoryZeroArray(db->field_refs[ref]);
 }
 
 internal B32 th_field_flag_get(TH_Db* db, V2I pos, TH_FieldFlag flag) {

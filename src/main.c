@@ -215,10 +215,9 @@ int main(int argc, char** argv) {
   ui_init(hud_measure_text, hud_font_metrics, 0);
   ui_set_theme(ui_theme_load(arena_alloc(), str8_lit("data/ui.tabula")));
 
-  //- fp: The state of the game, which exists for the run of the program. The
-  //  view of the map follows it: a new seed builds the cache of the cells of
-  //  that view again.
-  Arena* game_arena = arena_alloc();
+  //- fp: The state of the game, which exists for the run of the program and
+  //  owns its arena. The view of the map follows it: a new seed builds the
+  //  cache of the cells of that view again.
   GM_Game game = {0};
   U64 game_next_seed = 2704;
 
@@ -289,9 +288,12 @@ int main(int argc, char** argv) {
     pace_60fps_update();
 
     if(!game.initialised) {
-      arena_clear(game_arena);
-      gm_init(game_arena, &game, game_next_seed++);
-      map_world_changed(map, game_arena, game.board->width, game.board->height);
+      // The terrain table reloads with the world, so a hot edit of the file
+      // shows on the next reload. The assets of the map keep the rows of the
+      // read at map_init.
+      wg_terrain_table_load(str8_lit("data/terrain_types.tabula"));
+      gm_init(&game, game_next_seed++);
+      map_world_changed(map, game.board->width, game.board->height);
       // set the camera to its first state
       camera.center = (V2){game.board->width * MAP_TILE / 2, game.board->height * MAP_TILE / 2};
       camera.zoom = 1.0f; // the whole map is in view. The wheel makes the view smaller.
@@ -314,9 +316,10 @@ int main(int argc, char** argv) {
       I32 board_h = game.board->height;
       V2I tile_min = map_tile_from_screen(camera, (V2){0, 0});
       V2I tile_max = map_tile_from_screen(camera, wnd_size());
-      mode.min = (V2){ClampBot(tile_min.x - 1, 0), ClampBot(tile_min.y - 1, 0)};
-      mode.max = (V2){ClampTop(tile_max.x + 1, board_w - 1) + 1,
-                      ClampTop(tile_max.y + 1, board_h - 1) + 1};
+      mode.window = rng2i32(
+          (V2I){ClampBot(tile_min.x - 1, 0), ClampBot(tile_min.y - 1, 0)},
+          (V2I){ClampTop(tile_max.x + 1, board_w - 1) + 1,
+                ClampTop(tile_max.y + 1, board_h - 1) + 1});
 
       mode.flags = map_mode_flags;
       GM_MapItems map_items = gm_map_items(frame_arena, &game, mode);
