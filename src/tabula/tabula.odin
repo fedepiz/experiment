@@ -743,8 +743,7 @@ print_errors :: proc(label: string, errors: Error_List) {
 // The cases below hold the decisions of the grammar: which atom is a number
 // and which stays an identifier, how the parser recovers from a wrong token,
 // and how a chain of reads passes the absence of a value through. The data
-// files of the project parse at the end, with no error, as the C parser
-// parses them.
+// files of the project parse at the end, with no error.
 
 @(test)
 numbers_and_identifiers :: proc(t: ^testing.T) {
@@ -881,8 +880,8 @@ builder :: proc(t: ^testing.T) {
 ////////////////////////////////
 //~ fp: The Data Files Of The Project
 //
-// Each file parses with no error, as it does through the C parser. The reads
-// below hold a few values that the files are known to hold.
+// Each file parses with no error. The reads below hold a few values that the
+// files are known to hold.
 
 @(private)
 TERRAIN_TYPES_SRC :: #load("../../data/terrain_types.tabula", string)

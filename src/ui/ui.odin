@@ -683,9 +683,9 @@ theme_load :: proc(path: string, allocator := context.allocator) -> Theme {
 	patterns := make([dynamic]Theme_Pattern, context.temp_allocator)
 	theme_walk(style, &tag_path, 0, &patterns, allocator)
 	theme.patterns = slice.clone(patterns[:], allocator)
-	// The C build fills its array from a prepended list, so a tie between two
-	// patterns of one length resolves to the later one in the file. Keep that
-	// order.
+	// A tie between two patterns of one length resolves to the later one in
+	// the file. The search takes the first best match, so the reverse puts
+	// the later patterns first.
 	slice.reverse(theme.patterns)
 	return theme
 }
@@ -742,13 +742,15 @@ color_from_key_name :: proc(tags_key: u64, name: string) -> geo.V4 {
 		for &p in s.theme.patterns {
 			has_name := false
 			all_present := true
-			for t := 0; t < len(p.tags) && all_present; t += 1 {
-				present := p.tags[t] == name
+			for tag in p.tags {
+				present := tag == name
 				has_name |= present
-				for k := 0; !present && k < len(tags); k += 1 {
-					present = p.tags[t] == tags[k]
+				for candidate in tags {
+					if present { break }
+					present = tag == candidate
 				}
 				all_present = present
+				if !all_present { break }
 			}
 			if has_name && all_present && len(p.tags) > best {
 				best = len(p.tags)
@@ -1486,7 +1488,7 @@ panel_end :: proc() {
 }
 
 //- fp: The scoped forms. Each one runs its end when the scope of the caller
-//  ends, which is what the DeferLoop macros of the C build did.
+//  ends.
 //
 //  Rule: a scoped call is the first statement of its scope. Style the widget
 //  through the pointer it gives back, not with a push before the call: a box

@@ -34,8 +34,7 @@ import "worldgen"
 
 // The database column that holds the connection mask of each board feature.
 // The switch is exhaustive: a new defs.Feature member does not compile until
-// its column exists, which is the guarantee that the X-macro list of the C
-// build gave.
+// its column exists, so the enum and the columns cannot drift apart.
 feature_ifield :: proc(feature: defs.Feature) -> thing.I_Field {
 	switch feature {
 	case .River:
@@ -377,7 +376,7 @@ demo_road :: proc(game: ^Game, params: ^worldgen.Params) {
 	west := board.snap_passable(b, {b.width / 6, b.height / 2})
 	east := board.snap_passable(b, {b.width * 5 / 6, b.height / 2})
 	path := board.path_find(b, west, east, context.temp_allocator)
-	for idx := 0; idx + 1 < len(path.points); idx += 1 {
+	for idx in 0 ..< len(path.points) - 1 {
 		dir, ok := geo.dir4_from_delta(path.points[idx + 1] - path.points[idx])
 		if ok {worldgen.field_connect(game.db, path.points[idx], dir, .Road_Mask)}
 	}
@@ -748,7 +747,6 @@ group_facts :: proc(
 
 	way := fact_row(out, "way_of_life", "Way of Life", "text", allocator)
 	tabula.add_string(way, "value", type.name, allocator)
-
 	people := fact_row(out, "people", "People", "x_of_y", allocator)
 	tabula.add_num(people, "value", population, allocator)
 	tabula.add_num(people, "limit", type.population_cap, allocator)
@@ -786,44 +784,58 @@ group_facts :: proc(
 		)
 	}
 	tabula.add_string(granary, "hover", hover, allocator)
+}
 
+// The actions that the player can take on this thing. A thing with no group
+// type offers no action.
+@(private)
+group_actions :: proc(
+	db: ^thing.Db,
+	out: ^tabula.Value,
+	id: thing.Id,
+	allocator := context.allocator,
+) {
+	type_idx := int(thing.ivar_get(db, id, .Group_Type))
+	if type_idx == 0 || type_idx >= len(GROUP_TYPES) {return}
 
 	actions := tabula.add_object(out, "actions", allocator)
-
 	if thing.flag_get(db, id, .Player) {
 		tabula.add_string(actions, "label", "This is the player.", allocator)
 	} else {
 		tabula.add_string(actions, "label", "This is a target", allocator)
 		{
 			act := tabula.add_object(actions, "action", allocator)
-			tabula.add_string(act, "kind", "talk")
+			tabula.add_string(act, "kind", "talk", allocator)
 			tabula.add_string(act, "name", "Talk", allocator)
-
 		}
 		{
 			act := tabula.add_object(actions, "action", allocator)
-			tabula.add_string(act, "kind", "attack")
+			tabula.add_string(act, "kind", "attack", allocator)
 			tabula.add_string(act, "name", "Attack", allocator)
-
 		}
 	}
 }
 
+// The selection is one object: a `name` for the title, a `facts` object that
+// holds the rows and the sections, and an `actions` object that holds what
+// the player can do.
 @(private)
 selection_info :: proc(game: ^Game, root: ^tabula.Value, allocator := context.allocator) {
 	db := game.db
 	selection := game.selection
 	if selection.kind == .None {return}
 	info_obj := tabula.add_object(root, "selection", allocator)
+	facts := tabula.add_object(info_obj, "facts", allocator)
 	if selection.kind == .Thing {
 		names := SPRITE_NAMES
 		sprite := Sprite(clamp(int(thing.ivar_get(db, selection.id, .Sprite)), 0, len(Sprite) - 1))
 		name := thing_name(db, selection.id, allocator)
 		if len(name) == 0 {name = names[sprite]}
 		tabula.add_string(info_obj, "name", name, allocator)
-		group_facts(db, info_obj, selection.id, allocator)
+		group_facts(db, facts, selection.id, allocator)
+		group_actions(db, info_obj, selection.id, allocator)
 	}
-	tile := tabula.add_object(info_obj, "tile", allocator)
+	tile := tabula.add_object(facts, "tile", allocator)
 	tabula.add_string(tile, "name", "Tile", allocator)
 	tile_facts(game, tile, selection.tile, allocator)
 }

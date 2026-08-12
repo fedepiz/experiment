@@ -27,9 +27,9 @@ import "../thing"
 // generator.
 //
 // The trigonometry and the power function go through libc, and not through
-// core:math. The C build calls libm, and a difference of one ulp in a noise
-// value can move a tile across a band limit, which changes the world. The
-// worlds of the two builds must stay equal seed for seed.
+// core:math. A difference of one ulp in a noise value can move a tile across
+// a band limit, which changes the world. A change of the math library
+// therefore changes every world of every seed, so these calls must stay.
 
 ////////////////////////////////
 //~ fp: Terrain Types
@@ -983,7 +983,7 @@ carve_rivers :: proc(db: ^thing.Db, params: ^Params, seed: u64, elevation: []f32
 		length := 0
 		in_basin := false
 		at := source
-		for step := 0; step < max_steps; step += 1 {
+		for _ in 0 ..< max_steps {
 			here := elevation[at.y * w + at.x]
 			down_dir: geo.Dir4
 			down_found := false

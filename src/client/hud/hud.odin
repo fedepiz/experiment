@@ -133,8 +133,8 @@ typed_row :: proc(key: string, row: ^tabula.Value) {
 // members of that object become the rows below that header. A plain string or
 // number becomes a simple row.
 //
-// `omit` names one key of the top level that this function does not show,
-// which is the key of the title above and the `name` of a section.
+// `omit` names one key that this function does not show at its level. A
+// section recurses with "name", which is the key of its own header.
 //
 // Each string is on the allocator of the caller, for the time of the build.
 @(private)
@@ -176,15 +176,16 @@ selection_panel :: proc(info: ^tabula.Value) {
 		panel.floating_pos = {12, 12}
 		panel.pref_size[.X] = ui.size_points(240, 1)
 
+		facts := tabula.get(info, "facts")
 		title, has_title := tabula.get_string(info, "name")
 		if !has_title {
-			terrain := tabula.get(tabula.get(info, "tile"), "terrain")
+			terrain := tabula.get(tabula.get(facts, "tile"), "terrain")
 			title = tabula.get_string(terrain, "value") or_else "tile"
 		}
 		ui.push_font_size(19)
 		ui.label(title)
 		ui.pop_font_size()
-		fact_rows(info, "name")
+		fact_rows(facts, "")
 	}
 
 	actions := tabula.get(info, "actions")

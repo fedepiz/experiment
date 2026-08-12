@@ -6,12 +6,11 @@ package defs
 // This package holds the vocabularies that two or more packages must agree
 // on, and that cannot live in one of them without a wrong dependency.
 //
-// The C build wrote these as X-macro lists, which expanded into the enums of
-// each module. Odin cannot write into another package's enum, so the shared
-// enum lives here, and each dependent names it directly: a feature is a
-// defs.Feature on the board, a <Name>_Mask column of the thing database, and
-// a prefix of the art files. The exhaustive switch in game.feature_ifield
-// holds the enum and the columns together: a new member breaks its compile
+// The shared enum lives here, and each dependent names it directly: a
+// feature is a defs.Feature on the board, a <Name>_Mask column of the thing
+// database, and a prefix of the art files. The exhaustive switch in
+// game.feature_ifield holds the enum and the columns together: a new member
+// breaks its compile
 // until the column exists.
 //
 // Put a vocabulary here only when the packages that share it must not depend

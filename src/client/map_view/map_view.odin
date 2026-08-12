@@ -29,8 +29,7 @@ import "../../window"
 // This module draws and does nothing more. It reads no input, and the camera
 // arrives as a value.
 //
-// The C build called this module `map`, which Odin reserves for its map type,
-// so the package is map_view.
+// Odin reserves `map` for its map type, so the package is map_view.
 
 TILE :: f32(8.0) // the units of the world for each tile
 

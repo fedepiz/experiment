@@ -18,9 +18,9 @@ import "core:testing"
 //
 // Nothing here is safe for cryptography.
 //
-// This port must draw the same values as src/base/rng.c, or each world
-// changes. The tests at the end of this file hold values that the C
-// implementation printed.
+// These functions must draw the same values forever, or each world changes.
+// The tests at the end of this file hold golden values that guard the
+// sequences.
 
 // An odd constant from the golden ratio. A step of this size reaches each u64.
 @(private) GOLDEN64 :: 0x9E3779B97F4A7C15
@@ -156,10 +156,9 @@ chance :: proc(r: ^Stream, p: f32) -> bool {
 ////////////////////////////////
 //~ fp: Tests
 
-// Each value below came from the C implementation at src/base/rng.c, through
-// a small harness that printed it. The port must give each value exactly, or
-// each world changes. The two f32 values compare as bits, so that no decimal
-// text sits between the two implementations.
+// The values below are golden: a change that moves one of them changes each
+// world. The two f32 values compare as bits, so no decimal text sits between
+// the test and the implementation.
 
 @(test)
 golden_values :: proc(t: ^testing.T) {

@@ -19,7 +19,7 @@ import "ui"
 import "window"
 
 ////////////////////////////////
-//~ fp: temp: Test Render
+//~ fp: Test Render
 //
 // A scene that shows what the draw layer does. No code calls it now. Call it
 // inside the frame, in place of map_view.draw or after it, to test the draw
@@ -178,7 +178,7 @@ camera_inertial_move :: proc(camera: ^draw.Camera, translation: geo.V2, zooming:
 //~ fp: Entry Point
 
 main :: proc() {
-	//- fp: temp: The mode that writes a report stops the program before a
+	//- fp: The mode that writes a report stops the program before a
 	//  window exists.
 	args := os.args
 	if len(args) >= 3 && args[1] == "worlds" {
@@ -194,9 +194,8 @@ main :: proc() {
 		return
 	}
 
-	//- The arena of one frame. The loop frees it after each swap, as the C
-	//  program clears its frame arena. The arenas below it live for the run of
-	//  the program.
+	//- The arena of one frame. The loop frees it after each swap. The arenas
+	//  below it live for the run of the program.
 	frame_arena: virtual.Arena
 	if virtual.arena_init_growing(&frame_arena) != nil { panic("out of memory: frame arena") }
 	frame_allocator := virtual.arena_allocator(&frame_arena)

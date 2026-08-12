@@ -9,19 +9,18 @@ import "game/worldgen"
 import "geo"
 
 ////////////////////////////////
-//~ fp: temp: Worldgen Report
+//~ fp: Worldgen Report
 //
 // `app worlds N [first_seed]` generates N worlds with no window, and writes
 // one CSV row of measurements for each world to stdout. Read those rows with
-// another program. The C build writes the same rows, so a diff of the two
-// outputs tests that the two builds grow the same worlds.
+// another program. The rows of a seed never change, so a diff of two runs
+// tests that a change keeps the worlds.
 
-// The C build writes its fractions with stb_sprintf, which rounds a decimal
-// tie away from zero. The libc of this machine rounds it to the even digit,
-// and a fraction such as 800/25600 lands exactly on a tie. This function
-// therefore prints the exact decimal expansion first, and rounds the STRING
-// to four digits with the rule of stb, so a diff of the two outputs reads the
-// worlds and not the rounding. Every fraction of the report is 0 or more.
+// A printf rounds a decimal tie by the rule of its libc, and a fraction such
+// as 800/25600 lands exactly on a tie. This function therefore prints the
+// exact decimal expansion first, and rounds the STRING to four digits, with
+// a tie away from zero. The report of a seed therefore reads the same on
+// each toolchain. Every fraction of the report is 0 or more.
 @(private)
 csv_f4 :: proc(v: f32) -> string {
 	// An f32 is a dyadic rational, so 24 digits after the point hold its exact
