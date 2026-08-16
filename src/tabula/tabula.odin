@@ -540,6 +540,17 @@ num_from_value :: proc(value: ^Value) -> (result: f32, ok: bool) #optional_ok {
 	return 0, false
 }
 
+// yes reads as true, and no reads as false. Each other value reads as not ok,
+// so `or_else` names the default at the call site.
+bool_from_value :: proc(value: ^Value) -> (result: bool, ok: bool) #optional_ok {
+	text := string_from_value(value) or_else ""
+	switch text {
+	case "yes": return true, true
+	case "no":  return false, true
+	}
+	return false, false
+}
+
 //- fp: the reads by key
 
 get_string :: proc(object: ^Value, key: string) -> (string, bool) #optional_ok {
@@ -548,6 +559,10 @@ get_string :: proc(object: ^Value, key: string) -> (string, bool) #optional_ok {
 
 get_num :: proc(object: ^Value, key: string) -> (f32, bool) #optional_ok {
 	return num_from_value(get(object, key))
+}
+
+get_bool :: proc(object: ^Value, key: string) -> (bool, bool) #optional_ok {
+	return bool_from_value(get(object, key))
 }
 
 // A list of [x y], which is how a size and a position read. A key that is
@@ -824,6 +839,13 @@ nil_chain_and_fallbacks :: proc(t: ^testing.T) {
 	// get_v2 reads the first two elements, and follows the same rules.
 	testing.expect_value(t, get_v2(result.root, "color"), geo.V2{0.1, 0.2})
 	testing.expect_value(t, get_v2(result.root, "no") or_else {7, 7}, geo.V2{7, 7})
+
+	// yes and no read as a bool. Each other value takes the whole or_else.
+	flags := parse("a = yes  b = no  c = maybe", context.temp_allocator)
+	testing.expect_value(t, get_bool(flags.root, "a"), true)
+	testing.expect_value(t, get_bool(flags.root, "b"), false)
+	testing.expect_value(t, get_bool(flags.root, "c") or_else true, true)
+	testing.expect_value(t, get_bool(flags.root, "absent") or_else true, true)
 }
 
 @(test)

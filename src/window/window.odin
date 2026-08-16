@@ -25,10 +25,41 @@ import "../geo"
 @(private)
 window: glfw.WindowHandle
 
+////////////////////////////////
+//~ fp: Scale Override
+//
+// The platform speaks in its own screen units. On macOS those units are
+// points, and the content scale of GLFW says how many pixels each one holds.
+// On X11 those units are pixels, and a session that sets no Xft.dpi reports a
+// content scale of 1 on every screen, which makes each point one pixel and
+// the window small on a screen of a high density.
+//
+// The override says: one point is `s` screen units. Each function of this
+// layer converts at its own border, so the rest of the program sees points
+// everywhere. A value of 0 removes the override, and the platform value
+// stands (ZII).
+
+@(private) forced_scale: f32
+
+// Call it before open, so the window opens at the size in points that open
+// receives.
+set_scale :: proc(s: f32) {
+	forced_scale = s
+}
+
+// the screen units of the platform for each point
+@(private)
+screen_per_point :: proc() -> f32 {
+	return (forced_scale > 0) ? forced_scale : 1.0
+}
+
 // w and h are in points
 open :: proc(title: string, w, h: int) {
 	ok := glfw.Init()
 	assert(bool(ok))
+	s := screen_per_point()
+	w := int(f32(w) * s)
+	h := int(f32(h) * s)
 
 	// The renderer writes its shaders at #version 410 core, and macOS gives a
 	// core profile only with the forward compatibility flag.
@@ -57,7 +88,8 @@ close :: proc() {
 
 size :: proc() -> geo.V2 {
 	w, h := glfw.GetWindowSize(window)
-	return {f32(w), f32(h)}
+	s := screen_per_point()
+	return {f32(w) / s, f32(h) / s}
 }
 
 size_px :: proc() -> geo.V2 {
@@ -66,6 +98,7 @@ size_px :: proc() -> geo.V2 {
 }
 
 scale :: proc() -> f32 {
+	if forced_scale > 0 {return forced_scale}
 	sx, _ := glfw.GetWindowContentScale(window)
 	return sx
 }
@@ -420,13 +453,14 @@ mouse_button_callback :: proc "c" (w: glfw.WindowHandle, button, action, mods: i
 		return
 	}
 	x, y := glfw.GetCursorPos(w)
+	s := screen_per_point()
 	type := Event_Type.Mouse_Down if action == glfw.PRESS else Event_Type.Mouse_Up
 	append(
 		&events,
 		Event {
 			type = type,
 			button = b,
-			pos = {f32(x), f32(y)},
+			pos = {f32(x) / s, f32(y) / s},
 			modifiers = modifiers_from_glfw(mods),
 		},
 	)
@@ -435,20 +469,25 @@ mouse_button_callback :: proc "c" (w: glfw.WindowHandle, button, action, mods: i
 @(private)
 cursor_pos_callback :: proc "c" (w: glfw.WindowHandle, x, y: f64) {
 	context = runtime.default_context()
-	append(&events, Event{type = .Mouse_Moved, pos = {f32(x), f32(y)}})
+	s := screen_per_point()
+	append(&events, Event{type = .Mouse_Moved, pos = {f32(x) / s, f32(y) / s}})
 }
 
 @(private)
 scroll_callback :: proc "c" (w: glfw.WindowHandle, dx, dy: f64) {
 	context = runtime.default_context()
 	x, y := glfw.GetCursorPos(w)
-	append(&events, Event{type = .Scroll, scroll = {f32(dx), f32(dy)}, pos = {f32(x), f32(y)}})
+	s := screen_per_point()
+	// The scroll is in steps of the wheel and not in screen units, so it does
+	// not convert.
+	append(&events, Event{type = .Scroll, scroll = {f32(dx), f32(dy)}, pos = {f32(x) / s, f32(y) / s}})
 }
 
 @(private)
 size_callback :: proc "c" (w: glfw.WindowHandle, width, height: i32) {
 	context = runtime.default_context()
-	append(&events, Event{type = .Resize, size = {f32(width), f32(height)}})
+	s := screen_per_point()
+	append(&events, Event{type = .Resize, size = {f32(width) / s, f32(height) / s}})
 }
 
 @(private)

@@ -144,18 +144,25 @@ pace_60fps_update :: proc(vsync: bool) {
 ////////////////////////////////
 //~ fp: Options
 //
-// The choices of one machine: the resolution of the window, and the vertical
-// sync. data/options.tabula gives their first values, and later code can
-// change them. A file that is absent reads as an empty tree, so each value
-// below takes its or_else default.
+// The choices of one machine: the resolution of the window, the vertical
+// sync, the scale, and the perf panel. The file gives their first values, and
+// later code can change them. A file that is absent reads as an empty tree,
+// so each value below takes its or_else default.
 //
 //   resolution = [1600 900]
+//   scale = 2
 //   vsync = no
+//   show_perf = no
+//
+// The resolution is in points. The scale gives the screen units for each
+// point, for a system that reports no scale of its own. See window.set_scale.
+// A scale of 0, and an absent scale, keep the value of the platform (ZII).
 
 OPTIONS_PATH :: "config/options.tabula"
 
 Options :: struct {
 	resolution: geo.V2i,
+	scale:      f32,
 	vsync:      bool,
 	show_perf:  bool,
 }
@@ -165,8 +172,9 @@ options_load :: proc() -> Options {
 	root := tabula.parse_file_and_report(OPTIONS_PATH, context.temp_allocator)
 	resolution := tabula.get_v2(root, "resolution") or_else {1600, 900}
 	options.resolution = {int(resolution.x), int(resolution.y)}
-	options.vsync = (tabula.get_string(root, "vsync") or_else "yes") != "no"
-	options.show_perf = (tabula.get_string(root, "show_perf") or_else "yes") != "no"
+	options.scale = tabula.get_num(root, "scale")
+	options.vsync = tabula.get_bool(root, "vsync") or_else true
+	options.show_perf = tabula.get_bool(root, "show_perf") or_else true
 	return options
 }
 
@@ -218,10 +226,18 @@ Perf :: struct {
 	},
 }
 
+// Add the time of one phase. A nil perf collects nothing (ZII).
+perf_add :: proc(perf: ^Perf, phase: Perf_Phase, duration: time.Duration) {
+	if perf == nil {return}
+	perf.phase[phase] += duration
+}
+
 // Add one frame, and roll the accumulation over into the averages when a
 // full second is in it. The caller adds the phases that it times itself;
 // this call adds the phases and the counts that come from the render stats.
+// A nil perf collects nothing and reports nothing (ZII).
 perf_frame :: proc(perf: ^Perf, stats: draw.Frame_Stats, frame_duration: time.Duration) {
+	if perf == nil {return}
 	perf.frames += 1
 	perf.seconds += f32(time.duration_seconds(frame_duration))
 	perf.phase[.Frame] += frame_duration
@@ -253,8 +269,10 @@ perf_frame :: proc(perf: ^Perf, stats: draw.Frame_Stats, frame_duration: time.Du
 }
 
 // The averages, as rows under "perf", which the panel of the HUD shows. Each
-// value is a string here, so the panel prints and does not format.
+// value is a string here, so the panel prints and does not format. A nil perf
+// adds no rows, and the panel then does not appear (ZII).
 perf_info_add :: proc(info: ^tabula.Value, perf: ^Perf, allocator := context.allocator) {
+	if perf == nil {return}
 	p := tabula.add_object(info, "perf", allocator)
 	for ph in Perf_Phase {
 		tabula.add_string(
@@ -348,6 +366,7 @@ main :: proc() {
 	persist_allocator := virtual.arena_allocator(&persist_arena)
 
 	options := options_load()
+	window.set_scale(options.scale)
 	window.open("Imperium", options.resolution.x, options.resolution.y)
 	window.equip_gl()
 	draw.init()
@@ -367,7 +386,9 @@ main :: proc() {
 
 	hud_font := draw.font_open("assets/fonts/Arial.ttf")
 	fps_counter: client.FPS_Counter
-	perf: Perf
+	// A nil perf turns the measurement off at the source. See perf_add.
+	perf: ^Perf
+	if options.show_perf {perf = new(Perf, persist_allocator)}
 
 	camera: draw.Camera
 	hud_mouse_over := false // as of the last frame that the code built
@@ -389,7 +410,7 @@ main :: proc() {
 	for keep_going := true; keep_going && !window.close_requested(); {
 		frame_start := time.tick_now()
 		window.poll()
-		perf.phase[.Poll] += time.tick_since(frame_start)
+		perf_add(perf, .Poll, time.tick_since(frame_start))
 
 		cmd: client.Command
 		client.cmd_from_keyboard(&cmd)
@@ -399,18 +420,18 @@ main :: proc() {
 			phase_start := time.tick_now()
 			info := game.info(&g, frame_allocator)
 
-			if options.show_perf {
+			{
 				// add the frames for each second
 				text := fmt.aprintf("%.1f", fps_counter.display, allocator = frame_allocator)
 				tabula.add_string(info, "fps", text, frame_allocator)
-				perf_info_add(info, &perf, frame_allocator)
 			}
+			perf_info_add(info, perf, frame_allocator)
 
 			client.fps_update(&fps_counter)
 			ui.frame_begin(frame_allocator, hud.gather_input())
 			hud.build(hud_font, info, &cmd)
 			hud_list = ui.frame_end()
-			perf.phase[.Hud] += time.tick_since(phase_start)
+			perf_add(perf, .Hud, time.tick_since(phase_start))
 		}
 
 		if cmd.quit {keep_going = false}
@@ -451,13 +472,13 @@ main :: proc() {
 		{
 			phase_start := time.tick_now()
 			game.update(&g, window.frame_time())
-			perf.phase[.Sim] += time.tick_since(phase_start)
+			perf_add(perf, .Sim, time.tick_since(phase_start))
 		}
 
 		{
 			phase_start := time.tick_now()
 			draw.frame_begin(frame_allocator, window.size_px(), window.scale())
-			perf.phase[.Begin] += time.tick_since(phase_start)
+			perf_add(perf, .Begin, time.tick_since(phase_start))
 		}
 		{
 			mode: game.Map_Mode
@@ -482,22 +503,22 @@ main :: proc() {
 			mode.flags = map_mode_flags
 			phase_start := time.tick_now()
 			items := game.map_items(&g, mode, frame_allocator)
-			perf.phase[.Items] += time.tick_since(phase_start)
+			perf_add(perf, .Items, time.tick_since(phase_start))
 
 			phase_start = time.tick_now()
 			map_view.draw(view, items, camera)
 			// test_render(camera) // fp: the scene that shows what the draw layer does
-			perf.phase[.Map] += time.tick_since(phase_start)
+			perf_add(perf, .Map, time.tick_since(phase_start))
 
 			phase_start = time.tick_now()
 			hud.replay_draw_list(hud_list)
-			perf.phase[.Hud] += time.tick_since(phase_start)
+			perf_add(perf, .Hud, time.tick_since(phase_start))
 			hud_mouse_over = hud_list.mouse_over_ui
 		}
 		{
 			phase_start := time.tick_now()
 			draw.frame_end()
-			perf.phase[.Submit] += time.tick_since(phase_start)
+			perf_add(perf, .Submit, time.tick_since(phase_start))
 		}
 
 		camera_inertial_move(&camera, cmd.translation, cmd.zooming) // It runs after the draw. See the comment on the phases above the loop.
@@ -505,14 +526,14 @@ main :: proc() {
 		{
 			phase_start := time.tick_now()
 			window.swap() // The vertical sync makes the loop run at the rate of the display.
-			perf.phase[.Swap] += time.tick_since(phase_start)
+			perf_add(perf, .Swap, time.tick_since(phase_start))
 		}
 		{
 			phase_start := time.tick_now()
 			free_all(frame_allocator) // context.temp_allocator is this same arena
-			perf.phase[.Free] += time.tick_since(phase_start)
+			perf_add(perf, .Free, time.tick_since(phase_start))
 		}
-		perf_frame(&perf, draw.frame_stats(), time.tick_since(frame_start))
+		perf_frame(perf, draw.frame_stats(), time.tick_since(frame_start))
 	}
 	window.close()
 }
