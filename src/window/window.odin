@@ -22,7 +22,8 @@ import "../geo"
 // point, which is 2 on a screen of a high density. The renderer needs those
 // two values to set up its framebuffer. No other code needs them.
 
-@(private) window: glfw.WindowHandle
+@(private)
+window: glfw.WindowHandle
 
 // w and h are in points
 open :: proc(title: string, w, h: int) {
@@ -102,9 +103,9 @@ set_swap_interval :: proc(interval: int) {
 // where no rate exists, and a value of 0 stops the step in frame_mark.
 refresh_rate :: proc() -> f32 {
 	monitor := glfw.GetPrimaryMonitor()
-	if monitor == nil { return 0 }
+	if monitor == nil {return 0}
 	mode := glfw.GetVideoMode(monitor)
-	if mode == nil { return 0 }
+	if mode == nil {return 0}
 	return f32(mode.refresh_rate)
 }
 
@@ -127,10 +128,14 @@ refresh_rate :: proc() -> f32 {
 // the window, pays out at once as a number of whole periods. The caller
 // chooses what to do with such a frame.
 
-@(private) frame_last: time.Tick
-@(private) frame_dt: f32
-@(private) frame_dt_raw: f32
-@(private) frame_debt: f32 // the seconds of measured time that no frame reported yet
+@(private)
+frame_last: time.Tick
+@(private)
+frame_dt: f32
+@(private)
+frame_dt_raw: f32
+@(private)
+frame_debt: f32 // the seconds of measured time that no frame reported yet
 
 @(private)
 frame_mark :: proc() {
@@ -151,8 +156,8 @@ frame_mark :: proc() {
 			period := 1.0 / hz
 			frame_debt += dt - period
 			dt = period
-			for frame_debt > 1.5 * period { dt += period; frame_debt -= period }
-			for frame_debt < -0.5 * period && dt > 0 { dt -= period; frame_debt += period }
+			for frame_debt > 1.5 * period {dt += period; frame_debt -= period}
+			for frame_debt < -0.5 * period && dt > 0 {dt -= period; frame_debt += period}
 		}
 		frame_dt = dt
 	}
@@ -184,17 +189,64 @@ Key :: enum {
 	None,
 
 	//- the letters. They are contiguous, so Key.A + (c - 'a') gives a key.
-	A, B, C, D, E, F, G, H, I, J, K, L, M,
-	N, O, P, Q, R, S, T, U, V, W, X, Y, Z,
+	A,
+	B,
+	C,
+	D,
+	E,
+	F,
+	G,
+	H,
+	I,
+	J,
+	K,
+	L,
+	M,
+	N,
+	O,
+	P,
+	Q,
+	R,
+	S,
+	T,
+	U,
+	V,
+	W,
+	X,
+	Y,
+	Z,
 
 	//- the digits, which are contiguous
-	Num0, Num1, Num2, Num3, Num4, Num5, Num6, Num7, Num8, Num9,
+	Num0,
+	Num1,
+	Num2,
+	Num3,
+	Num4,
+	Num5,
+	Num6,
+	Num7,
+	Num8,
+	Num9,
 
 	//- the function keys, which are contiguous
-	F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
+	F1,
+	F2,
+	F3,
+	F4,
+	F5,
+	F6,
+	F7,
+	F8,
+	F9,
+	F10,
+	F11,
+	F12,
 
 	//- the arrows
-	Left, Right, Up, Down,
+	Left,
+	Right,
+	Up,
+	Down,
 
 	//- the keys that edit and control
 	Escape,
@@ -254,16 +306,17 @@ Event_Type :: enum {
 // Each event carries each member of this struct. `type` says which of them
 // hold a value.
 Event :: struct {
-	type: Event_Type,
-	pos: geo.V2,    // the position of the mouse, in the points of the client area, for a mouse event
-	scroll: geo.V2, // the change of the wheel, for a Scroll. A y above 0 goes away from the person.
-	size: geo.V2,   // the new size of the client area, for a Resize
+	type:      Event_Type,
+	pos:       geo.V2, // the position of the mouse, in the points of the client area, for a mouse event
+	scroll:    geo.V2, // the change of the wheel, for a Scroll. A y above 0 goes away from the person.
+	size:      geo.V2, // the new size of the client area, for a Resize
 	modifiers: Modifiers, // the modifiers that were down at the event, for a key event and a mouse event
-	key: Key,
-	button: Mouse_Button,
+	key:       Key,
+	button:    Mouse_Button,
 }
 
-@(private) events: [dynamic]Event
+@(private)
+events: [dynamic]Event
 
 ////////////////////////////////
 //~ fp: Event Translation
@@ -278,33 +331,57 @@ key_from_glfw :: proc(key: i32) -> (Key, bool) {
 	case glfw.KEY_F1 ..= glfw.KEY_F12:
 		return Key(int(Key.F1) + int(key - glfw.KEY_F1)), true
 
-	case glfw.KEY_LEFT: return .Left, true
-	case glfw.KEY_RIGHT: return .Right, true
-	case glfw.KEY_UP: return .Up, true
-	case glfw.KEY_DOWN: return .Down, true
+	case glfw.KEY_LEFT:
+		return .Left, true
+	case glfw.KEY_RIGHT:
+		return .Right, true
+	case glfw.KEY_UP:
+		return .Up, true
+	case glfw.KEY_DOWN:
+		return .Down, true
 
-	case glfw.KEY_ESCAPE: return .Escape, true
-	case glfw.KEY_SPACE: return .Space, true
-	case glfw.KEY_ENTER: return .Enter, true
-	case glfw.KEY_TAB: return .Tab, true
-	case glfw.KEY_BACKSPACE: return .Backspace, true
-	case glfw.KEY_DELETE: return .Delete, true
-	case glfw.KEY_INSERT: return .Insert, true
-	case glfw.KEY_HOME: return .Home, true
-	case glfw.KEY_END: return .End, true
-	case glfw.KEY_PAGE_UP: return .Page_Up, true
-	case glfw.KEY_PAGE_DOWN: return .Page_Down, true
+	case glfw.KEY_ESCAPE:
+		return .Escape, true
+	case glfw.KEY_SPACE:
+		return .Space, true
+	case glfw.KEY_ENTER:
+		return .Enter, true
+	case glfw.KEY_TAB:
+		return .Tab, true
+	case glfw.KEY_BACKSPACE:
+		return .Backspace, true
+	case glfw.KEY_DELETE:
+		return .Delete, true
+	case glfw.KEY_INSERT:
+		return .Insert, true
+	case glfw.KEY_HOME:
+		return .Home, true
+	case glfw.KEY_END:
+		return .End, true
+	case glfw.KEY_PAGE_UP:
+		return .Page_Up, true
+	case glfw.KEY_PAGE_DOWN:
+		return .Page_Down, true
 
-	case glfw.KEY_LEFT_SHIFT, glfw.KEY_RIGHT_SHIFT: return .Shift, true
-	case glfw.KEY_LEFT_CONTROL, glfw.KEY_RIGHT_CONTROL: return .Ctrl, true
-	case glfw.KEY_LEFT_ALT, glfw.KEY_RIGHT_ALT: return .Alt, true
+	case glfw.KEY_LEFT_SHIFT, glfw.KEY_RIGHT_SHIFT:
+		return .Shift, true
+	case glfw.KEY_LEFT_CONTROL, glfw.KEY_RIGHT_CONTROL:
+		return .Ctrl, true
+	case glfw.KEY_LEFT_ALT, glfw.KEY_RIGHT_ALT:
+		return .Alt, true
 
-	case glfw.KEY_MINUS: return .Minus, true
-	case glfw.KEY_EQUAL: return .Equals, true
-	case glfw.KEY_COMMA: return .Comma, true
-	case glfw.KEY_PERIOD: return .Period, true
-	case glfw.KEY_SLASH: return .Slash, true
-	case glfw.KEY_GRAVE_ACCENT: return .Backtick, true
+	case glfw.KEY_MINUS:
+		return .Minus, true
+	case glfw.KEY_EQUAL:
+		return .Equals, true
+	case glfw.KEY_COMMA:
+		return .Comma, true
+	case glfw.KEY_PERIOD:
+		return .Period, true
+	case glfw.KEY_SLASH:
+		return .Slash, true
+	case glfw.KEY_GRAVE_ACCENT:
+		return .Backtick, true
 	}
 	return .None, false
 }
@@ -312,18 +389,18 @@ key_from_glfw :: proc(key: i32) -> (Key, bool) {
 @(private)
 modifiers_from_glfw :: proc(mods: i32) -> Modifiers {
 	result: Modifiers
-	if mods & glfw.MOD_SHIFT != 0 { result += {.Shift} }
-	if mods & glfw.MOD_CONTROL != 0 { result += {.Ctrl} }
-	if mods & glfw.MOD_ALT != 0 { result += {.Alt} }
+	if mods & glfw.MOD_SHIFT != 0 {result += {.Shift}}
+	if mods & glfw.MOD_CONTROL != 0 {result += {.Ctrl}}
+	if mods & glfw.MOD_ALT != 0 {result += {.Alt}}
 	return result
 }
 
 @(private)
 key_callback :: proc "c" (w: glfw.WindowHandle, key, scancode, action, mods: i32) {
 	context = runtime.default_context()
-	if action == glfw.REPEAT { return } // the digest wants the edges, without the automatic repeat
+	if action == glfw.REPEAT {return} 	// the digest wants the edges, without the automatic repeat
 	k, ok := key_from_glfw(key)
-	if !ok { return }
+	if !ok {return}
 	type := Event_Type.Key_Down if action == glfw.PRESS else Event_Type.Key_Up
 	append(&events, Event{type = type, key = k, modifiers = modifiers_from_glfw(mods)})
 }
@@ -333,15 +410,26 @@ mouse_button_callback :: proc "c" (w: glfw.WindowHandle, button, action, mods: i
 	context = runtime.default_context()
 	b: Mouse_Button
 	switch button {
-	case glfw.MOUSE_BUTTON_LEFT: b = .Left
-	case glfw.MOUSE_BUTTON_RIGHT: b = .Right
-	case glfw.MOUSE_BUTTON_MIDDLE: b = .Middle
-	case: return
+	case glfw.MOUSE_BUTTON_LEFT:
+		b = .Left
+	case glfw.MOUSE_BUTTON_RIGHT:
+		b = .Right
+	case glfw.MOUSE_BUTTON_MIDDLE:
+		b = .Middle
+	case:
+		return
 	}
 	x, y := glfw.GetCursorPos(w)
 	type := Event_Type.Mouse_Down if action == glfw.PRESS else Event_Type.Mouse_Up
-	append(&events, Event{type = type, button = b, pos = {f32(x), f32(y)},
-	                      modifiers = modifiers_from_glfw(mods)})
+	append(
+		&events,
+		Event {
+			type = type,
+			button = b,
+			pos = {f32(x), f32(y)},
+			modifiers = modifiers_from_glfw(mods),
+		},
+	)
 }
 
 @(private)
@@ -385,17 +473,18 @@ close_callback :: proc "c" (w: glfw.WindowHandle) {
 
 @(private)
 Input_State :: struct {
-	key_down: [Key]bool,
-	key_pressed: [Key]bool, // It holds for the frame: the key went down at some point of this frame.
-	mouse_down: [Mouse_Button]bool,
-	mouse_pressed: [Mouse_Button]bool,  // It holds for the frame, as key_pressed does.
-	mouse_released: [Mouse_Button]bool, // It holds for the frame: the button went up at some point of this frame.
+	key_down:        [Key]bool,
+	key_pressed:     [Key]bool, // It holds for the frame: the key went down at some point of this frame.
+	mouse_down:      [Mouse_Button]bool,
+	mouse_pressed:   [Mouse_Button]bool, // It holds for the frame, as key_pressed does.
+	mouse_released:  [Mouse_Button]bool, // It holds for the frame: the button went up at some point of this frame.
 	close_requested: bool,
-	mouse_pos: geo.V2,
-	scroll: geo.V2, // the sum across the frame, because the wheel can make more than one event
+	mouse_pos:       geo.V2,
+	scroll:          geo.V2, // the sum across the frame, because the wheel can make more than one event
 }
 
-@(private) input: Input_State
+@(private)
+input: Input_State
 
 // one time in each frame, before each query below
 poll :: proc() {
@@ -467,3 +556,4 @@ mouse_pos :: proc() -> geo.V2 {
 scroll :: proc() -> geo.V2 {
 	return input.scroll
 }
+

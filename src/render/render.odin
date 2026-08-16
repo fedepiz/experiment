@@ -2,6 +2,7 @@ package render
 
 import "core:fmt"
 import "core:mem"
+import "core:time"
 import gl "vendor:OpenGL"
 
 import "../chunk"
@@ -135,6 +136,31 @@ Batch :: struct {
 }
 
 ////////////////////////////////
+//~ fp: Frame Stats
+//
+// The measurements of one frame. frame_end writes them, and frame_stats gives
+// them back. The GPU time comes from a timer query. The answer of a query
+// arrives some frames after its frame, so gpu_ms describes a recent frame and
+// not the last one. It reads 0 until the first answer arrives.
+
+Frame_Stats :: struct {
+	batches: int,      // the count of the draw calls
+	insts: int,        // the count of the quads
+	upload_bytes: int, // the bytes of instance data that went to the GPU
+	upload_ms: f32,    // the CPU time inside frame_end: the buffer writes and the draw calls
+	gpu_ms: f32,       // the time on the GPU from frame_begin to the last draw
+}
+
+// the measurements of the frame that frame_end closed last
+frame_stats :: proc() -> Frame_Stats {
+	return state.stats
+}
+
+// The ring of the timer queries. A query of one frame keeps its slot until
+// its answer arrives, so the read never blocks the CPU on the GPU.
+@(private) GPU_QUERY_RING :: 4
+
+////////////////////////////////
 //~ fp: State
 
 @(private) TEX_CAP :: 512
@@ -160,6 +186,15 @@ State :: struct {
 	u_tex_r8: i32,
 	textures: [TEX_CAP]Tex,
 	white_slot: int, // The white texture of 1x1 texels. A quad with a nil texture reads it.
+
+	//- the measurements
+	stats: Frame_Stats,
+	gpu_timer: struct {
+		queries: [GPU_QUERY_RING]u32,
+		pending: [GPU_QUERY_RING]bool, // the slot waits for its answer
+		slot: int,                     // the slot of the next query
+		active: bool,                  // this frame runs a query
+	},
 
 	//- the members of one frame
 	in_frame: bool,
@@ -330,6 +365,10 @@ init :: proc() {
 	white := [4]u8{255, 255, 255, 255}
 	white_handle := tex_alloc(1, 1, .RGBA8, .Nearest, white[:])
 	state.white_slot = int(white_handle - 1)
+
+	//- the timer queries of the frame stats
+	gl.GenQueries(GPU_QUERY_RING, &state.gpu_timer.queries[0])
+
 	state.initialized = true
 }
 
@@ -409,6 +448,30 @@ frame_begin :: proc(frame_allocator: mem.Allocator, framebuffer_size_px: geo.V2,
 	state.first_batch = nil
 	state.last_batch = nil
 
+	//- Read each timer answer that is complete. An answer some frames old is
+	//  correct for the stats: the GPU time of a frame changes slowly.
+	timer := &state.gpu_timer
+	for i in 0 ..< GPU_QUERY_RING {
+		if timer.pending[i] {
+			available: i32
+			gl.GetQueryObjectiv(timer.queries[i], gl.QUERY_RESULT_AVAILABLE, &available)
+			if available != 0 {
+				ns: u64
+				gl.GetQueryObjectui64v(timer.queries[i], gl.QUERY_RESULT, &ns)
+				state.stats.gpu_ms = f32(f64(ns) / 1e6)
+				timer.pending[i] = false
+			}
+		}
+	}
+
+	//- Start the timer of this frame, before the clear, so the query holds the
+	//  whole frame. A ring with no free slot skips one frame.
+	timer.active = false
+	if !timer.pending[timer.slot] {
+		gl.BeginQuery(gl.TIME_ELAPSED, timer.queries[timer.slot])
+		timer.active = true
+	}
+
 	gl.Viewport(0, 0, i32(framebuffer_size_px.x), i32(framebuffer_size_px.y))
 	gl.ClearColor(0.0, 0.0, 0.0, 1.0)
 	gl.Clear(gl.COLOR_BUFFER_BIT)
@@ -460,6 +523,9 @@ push_quad :: proc(quad: ^Quad) {
 frame_end :: proc() {
 	if !state.in_frame { return }
 
+	upload_start := time.tick_now()
+	batches, insts, upload_bytes: int
+
 	gl.Enable(gl.BLEND)
 	gl.BlendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
 	gl.Disable(gl.DEPTH_TEST)
@@ -491,6 +557,24 @@ frame_end :: proc() {
 			offset += chunk_size
 		}
 		gl.DrawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, i32(batch.insts.count))
+
+		batches += 1
+		insts += batch.insts.count
+		upload_bytes += total_size
+	}
+
+	//- Close the measurements of this frame. gpu_ms stays as it is: its answer
+	//  arrives in a later frame_begin.
+	state.stats.batches = batches
+	state.stats.insts = insts
+	state.stats.upload_bytes = upload_bytes
+	state.stats.upload_ms = f32(time.duration_milliseconds(time.tick_since(upload_start)))
+	timer := &state.gpu_timer
+	if timer.active {
+		gl.EndQuery(gl.TIME_ELAPSED)
+		timer.pending[timer.slot] = true
+		timer.slot = (timer.slot + 1) % GPU_QUERY_RING
+		timer.active = false
 	}
 
 	when ODIN_DEBUG {

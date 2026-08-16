@@ -245,6 +245,27 @@ action_bar :: proc(cmd: ^client.Command) {
 	ui.pop_pref_height()
 }
 
+// The bottom right corner: the rows under "perf", which main measures. The
+// panel shows each member in its order, so a new measurement shows here with
+// no change to this file.
+@(private)
+perf_panel :: proc(info: ^tabula.Value) {
+	perf := tabula.get(info, "perf")
+	if tabula.value_is_nil(perf) {return}
+
+	panel := ui.panel("perf_panel")
+	panel.padding = {8, 6}
+	panel.flags += {.Floating}
+	panel.floating_anchor = {1, 1}
+	panel.floating_pos = {-12, -52} // above the action bar
+	panel.pref_size[.X] = ui.size_points(180, 1)
+
+	it := tabula.iterator(perf)
+	for key, value in tabula.iterate(&it) {
+		stat_row(key, value.text, ui.color_from_name("accent"), "")
+	}
+}
+
 // The top right corner, which shows the value that fps_update writes.
 @(private)
 fps_panel :: proc(info: ^tabula.Value) {
@@ -266,6 +287,7 @@ build :: proc(font: draw.Font, info: ^tabula.Value, cmd: ^client.Command) {
 	selection_panel(selection)
 	action_bar(cmd)
 	fps_panel(info)
+	perf_panel(info)
 
 	ui.pop_child_gap()
 	ui.pop_font_size()

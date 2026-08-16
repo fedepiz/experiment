@@ -550,6 +550,17 @@ get_num :: proc(object: ^Value, key: string) -> (f32, bool) #optional_ok {
 	return num_from_value(get(object, key))
 }
 
+// A list of [x y], which is how a size and a position read. A key that is
+// absent, a kind that is different, and a list of less than two elements each
+// read as not ok.
+get_v2 :: proc(object: ^Value, key: string) -> (result: geo.V2, ok: bool) #optional_ok {
+	list := get(object, key)
+	if list.kind != .List || list.count < 2 {return {}, false}
+	result.x = num_from_value(list.first)
+	result.y = num_from_value(list.first.next)
+	return result, true
+}
+
 // A list of [r g b a], which is how a color reads. A list of three elements
 // gives an alpha of 1. A key that is absent, a kind that is different, and a
 // list of less than three elements each read as not ok.
@@ -809,6 +820,10 @@ nil_chain_and_fallbacks :: proc(t: ^testing.T) {
 	testing.expect_value(t, v, [4]f32{0.1, 0.2, 0.3, 1})
 	// A key that is absent takes the whole or_else.
 	testing.expect_value(t, get_v4(result.root, "no") or_else {9, 9, 9, 9}, [4]f32{9, 9, 9, 9})
+
+	// get_v2 reads the first two elements, and follows the same rules.
+	testing.expect_value(t, get_v2(result.root, "color"), geo.V2{0.1, 0.2})
+	testing.expect_value(t, get_v2(result.root, "no") or_else {7, 7}, geo.V2{7, 7})
 }
 
 @(test)

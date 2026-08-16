@@ -140,6 +140,14 @@ frame_end :: proc() {
 	state.in_frame = false
 }
 
+// The measurements of the last frame, from the render layer. The application
+// reads them for a display of the performance.
+Frame_Stats :: render.Frame_Stats
+
+frame_stats :: proc() -> Frame_Stats {
+	return render.frame_stats()
+}
+
 ////////////////////////////////
 //~ fp: Camera + Quad Emission
 //
